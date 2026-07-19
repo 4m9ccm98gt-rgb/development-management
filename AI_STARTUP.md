@@ -1,0 +1,66 @@
+# AI Startup
+
+このファイルは、新しいチャットや別のCodex環境が安全に作業を開始するための入口です。
+
+## このリポジトリの役割
+
+`development-management` は、業務システム全体の設計判断、開発ルール、進行状況、AIとの共同開発知識を管理する正式な知識ベースです。コード本体は管理しません。
+
+## 開始時の確認順序
+
+1. [README.md](README.md) — この知識ベースの目的と運用方法
+2. [PROJECT_STATUS.md](PROJECT_STATUS.md) — Current Focus、未確認事項、次の作業
+3. 本ファイル — 作業開始前の確認事項
+4. [AI_MEMORY.md](AI_MEMORY.md) — ユーザー固有の開発方針、作業順序、報告形式
+5. [docs/ai_handoff.md](docs/ai_handoff.md) — 正式ソース、安定版、変更禁止領域
+6. 対象プロジェクトの `projects/*.md` — 個別の現在地
+7. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHubと実運用版の確認状況
+8. 必要に応じて対象リポジトリのREADME、Git状態、関連コード
+
+## 管理対象と正式ソース
+
+| プロジェクト | 正式ソース | 最新確認タグ |
+|---|---|---|
+| next-day-setup | `C:\Users\suisy\Documents\Development\repos\next-day-setup` | `v1.1.0` |
+| inventory-reconciliation-system | `C:\Users\suisy\Documents\Development\repos\inventory-reconciliation-system` | `v2.0.0` |
+
+タグは2026-07-16時点の最新確認タグです。実運用中の版との一致や未コミット変更の安定性は未確認です。
+
+## 現在の重点作業
+
+- `next-day-setup`: Google Sheetsシフト取得、印刷、ビルド、共有版更新の未コミット変更を整理・検証する。
+- `inventory-reconciliation-system`: Google Sheets休館日取得、キャッシュ、夜間自動実行、警告メールの未コミット変更を整理・検証する。
+- `development-management`: 開発知識をチャットだけに残さない運用を定着させる。
+
+## 作業前チェック
+
+- 対象が `Development\repos` 配下の正式ソースであることを確認する。
+- 対象リポジトリのブランチ、最新タグ、未コミット変更を確認する。
+- [VERSION_MATRIX.md](VERSION_MATRIX.md)でGitHub、実運用版、デモ機版の一致状況を確認する。
+- 旧フォルダ、共有版、業務データ、実運用設定を変更対象にしない。
+- [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) と関連する設計判断を読む。
+- 不明点をチャットの記憶だけで補わず、文書・Git差分・動作確認で確かめる。
+
+## 作業中・作業後の記録
+
+- 重要な判断は [docs/decisions.md](docs/decisions.md) に記録する。
+- 進行状況と次の作業は [PROJECT_STATUS.md](PROJECT_STATUS.md) と対象の `projects/*.md` に記録する。
+- 日々の作業は [DAILY_LOG.md](DAILY_LOG.md) に簡潔に記録する。
+- 再発防止に使える知見は [LESSONS_LEARNED.md](LESSONS_LEARNED.md) に記録する。
+- 変更履歴は [CHANGELOG.md](CHANGELOG.md) に記録する。
+- コードを変更した場合は、対象リポジトリのREADMEも更新する。
+
+## 禁止事項
+
+- チャットだけに重要な判断を残すこと。
+- 正式ソース以外で開発すること。
+- 秘密情報、認証情報、実運用設定、顧客データ、業務データをGit管理すること。
+- 未確認の内容を、完了済み・安定版・実運用確認済みとして記録すること。
+
+## 新しいチャットへの標準指示文
+
+> 新しいチャットでは、まず development-management リポジトリを確認してください。
+>
+> README.md、PROJECT_STATUS.md、AI_STARTUP.md、AI_MEMORY.md、docs/ai_handoff.md、対象の projects/*.md、VERSION_MATRIX.md を順番に読み、必要に応じて対象リポジトリを確認してください。
+>
+> 現在の進行状況、正式ソース、未完了作業、未コミット変更を把握してから作業を開始してください。重要な判断や作業結果はチャットだけに残さず、development-managementへ記録してください。
