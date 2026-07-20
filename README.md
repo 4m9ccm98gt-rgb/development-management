@@ -4,15 +4,26 @@
 
 新しいチャットでは、作業を始める前に次の順番で確認します。
 
-1. [PROJECT_STATUS.md](PROJECT_STATUS.md)
-2. [AI_STARTUP.md](AI_STARTUP.md)
-3. [AI_MEMORY.md](AI_MEMORY.md)
-4. [docs/ai_handoff.md](docs/ai_handoff.md)
-5. 対象プロジェクトの `projects/*.md`
+1. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md)
+2. [AI_CHECKLIST.md](AI_CHECKLIST.md)
+3. [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md)
+4. [AI_MEMORY.md](AI_MEMORY.md)
+5. [PROJECT_STATUS.md](PROJECT_STATUS.md)
 6. [VERSION_MATRIX.md](VERSION_MATRIX.md)
-7. 必要に応じて対象リポジトリ本体
+7. [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)
+8. [docs/decisions.md](docs/decisions.md)
+9. [LESSONS_LEARNED.md](LESSONS_LEARNED.md)
 
 短い開始手順と確認事項は [AI_STARTUP.md](AI_STARTUP.md) にまとめています。
+
+## AI関連ドキュメント
+
+- [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割、思考順序、Codexとの役割分担
+- [AI_CHECKLIST.md](AI_CHECKLIST.md) — 新しいチャット開始時の確認チェックリスト
+- [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md) — ユーザーが期待する回答・提案・思考品質の基準
+- [AI_STARTUP.md](AI_STARTUP.md) — 新規チャットの開始手順と読む順番
+- [AI_MEMORY.md](AI_MEMORY.md) — プロジェクト固有のルール
+- [docs/ai_handoff.md](docs/ai_handoff.md) — AI／新規担当者向けの短い引き継ぎ
 
 ## 目的
 
@@ -22,14 +33,19 @@
 
 ## 最初に読むファイル
 
-1. [PROJECT_STATUS.md](PROJECT_STATUS.md) — 全体の現在地と次の作業
-2. [AI_STARTUP.md](AI_STARTUP.md) — 新規チャットの開始手順
-3. [AI_MEMORY.md](AI_MEMORY.md) — ユーザー固有の開発方針と報告ルール
-4. [docs/ai_handoff.md](docs/ai_handoff.md) — AI／新規担当者向けの短い引き継ぎ
-5. 対象プロジェクトの `projects/*.md` — 個別状況
+開始時は [AI_STARTUP.md](AI_STARTUP.md) を入口とし、次の順序で読みます。
+
+1. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割と運用基準
+2. [AI_CHECKLIST.md](AI_CHECKLIST.md) — 開始時の確認項目
+3. [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md) — 回答・提案・思考品質の基準
+4. [AI_MEMORY.md](AI_MEMORY.md) — プロジェクト固有のルール
+5. [PROJECT_STATUS.md](PROJECT_STATUS.md) — 全体の現在地と次の作業
 6. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHub、実運用版、デモ機版の対応
-7. [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — 作業前に守るルール
-8. 必要に応じて対象リポジトリ本体のREADMEとGit状態
+7. [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — 管理対象と全体構成
+8. [docs/decisions.md](docs/decisions.md) — 重要な設計判断
+9. [LESSONS_LEARNED.md](LESSONS_LEARNED.md) — 再発防止に使う知見
+
+対象プロジェクトがある場合は、続けて対象の `projects/*.md`、README、Git状態、関連する管理文書を確認します。
 
 ## 管理対象プロジェクト
 
@@ -56,13 +72,14 @@
 >
 > 確認順序
 >
-> 1. README.md
-> 2. PROJECT_STATUS.md
-> 3. AI_STARTUP.md
+> 1. AI_OPERATING_MANUAL.md
+> 2. AI_CHECKLIST.md
+> 3. PROMPT_PRINCIPLES.md
 > 4. AI_MEMORY.md
-> 5. docs/ai_handoff.md
-> 6. 対象プロジェクト（projects/*.md）
-> 7. VERSION_MATRIX.md
-> 8. 必要に応じて対象リポジトリ
+> 5. PROJECT_STATUS.md
+> 6. VERSION_MATRIX.md
+> 7. SYSTEM_OVERVIEW.md
+> 8. docs/decisions.md
+> 9. LESSONS_LEARNED.md
 >
-> その後、現在の進行状況・正式ソース・未完了作業を把握してから作業を開始してください。正式ソース以外は変更せず、重要な判断は development-management に記録してください。
+> その後、必要に応じて対象の projects/*.md と対象リポジトリを確認し、現在の進行状況・正式ソース・未完了作業を把握してから作業を開始してください。正式ソース以外は変更せず、重要な判断は development-management に記録してください。

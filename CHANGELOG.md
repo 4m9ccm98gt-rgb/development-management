@@ -4,6 +4,8 @@
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-07-20 | development-management | AI回答品質・提案品質を標準化する`PROMPT_PRINCIPLES.md`を追加。回答方針、提案方針、開発方針、Codex連携、回答スタイル、継続開発の原則を定義し、AI開始順序とREADMEへ組み込み | 文書差分・リンク・読む順番を確認済み。コード・業務システム変更なし |
+| 2026-07-20 | development-management | AI運用を標準化。`AI_OPERATING_MANUAL.md`と`AI_CHECKLIST.md`を追加し、AIの役割、Codexとの役割分担、思考順序、指示書優先、開始時の確認順序を整理。README、AI_STARTUP、AI_MEMORYを更新 | 文書差分・リンク・責務分離を確認済み。コード・業務システム変更なし |
 | 2026-07-18 | next-day-setup | PMS番号付き手配枠の構造化、3日後ケーキ検出、CSV期間警告、確認画面、マクロ転記仕様メモ、テストを追加 | 構文確認・自動テスト14件・実CSV解析済み。画面・転記・印刷は実運用未確認。コミット／pushなし |
 | 2026-07-16 | development-management | `VERSION_MATRIX.md`と`AI_MEMORY.md`を追加し、README、AI開始手順、AI引き継ぎ、現在地へ組み込み | ローカル文書作成・必須項目確認済み。コミット／push前 |
 | 2026-07-16 | development-management | AI開始手順、Current Focus、知識管理ルール、判断・依頼テンプレート、日次ログ、全体構成図を追加 | ローカル文書作成済み。コミット／push前 |

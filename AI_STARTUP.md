@@ -8,14 +8,17 @@
 
 ## 開始時の確認順序
 
-1. [README.md](README.md) — この知識ベースの目的と運用方法
-2. [PROJECT_STATUS.md](PROJECT_STATUS.md) — Current Focus、未確認事項、次の作業
-3. 本ファイル — 作業開始前の確認事項
-4. [AI_MEMORY.md](AI_MEMORY.md) — ユーザー固有の開発方針、作業順序、報告形式
-5. [docs/ai_handoff.md](docs/ai_handoff.md) — 正式ソース、安定版、変更禁止領域
-6. 対象プロジェクトの `projects/*.md` — 個別の現在地
-7. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHubと実運用版の確認状況
-8. 必要に応じて対象リポジトリのREADME、Git状態、関連コード
+1. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割、思考順序、Codexとの役割分担
+2. [AI_CHECKLIST.md](AI_CHECKLIST.md) — 新しいチャット開始時の確認項目
+3. [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md) — 回答・提案・思考品質の基準
+4. [AI_MEMORY.md](AI_MEMORY.md) — プロジェクト固有のルール
+5. [PROJECT_STATUS.md](PROJECT_STATUS.md) — Current Focus、未確認事項、次の作業
+6. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHubと実運用版の確認状況
+7. [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — 管理対象と全体構成
+8. [docs/decisions.md](docs/decisions.md) — 重要な設計判断
+9. [LESSONS_LEARNED.md](LESSONS_LEARNED.md) — 再発防止に使う知見
+
+対象プロジェクトがある場合は、上記に続けて対象の `projects/*.md`、README、Git状態、関連コードを確認します。
 
 ## 管理対象と正式ソース
 
@@ -61,6 +64,6 @@
 
 > 新しいチャットでは、まず development-management リポジトリを確認してください。
 >
-> README.md、PROJECT_STATUS.md、AI_STARTUP.md、AI_MEMORY.md、docs/ai_handoff.md、対象の projects/*.md、VERSION_MATRIX.md を順番に読み、必要に応じて対象リポジトリを確認してください。
+> AI_OPERATING_MANUAL.md、AI_CHECKLIST.md、PROMPT_PRINCIPLES.md、AI_MEMORY.md、PROJECT_STATUS.md、VERSION_MATRIX.md、SYSTEM_OVERVIEW.md、docs/decisions.md、LESSONS_LEARNED.md を順番に読み、必要に応じて対象の projects/*.md と対象リポジトリを確認してください。
 >
 > 現在の進行状況、正式ソース、未完了作業、未コミット変更を把握してから作業を開始してください。重要な判断や作業結果はチャットだけに残さず、development-managementへ記録してください。
