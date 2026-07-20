@@ -6,6 +6,8 @@
 
 `development-management` は、業務システム全体の設計判断、開発ルール、進行状況、AIとの共同開発知識を管理する正式な知識ベースです。コード本体は管理しません。
 
+[AGENTS.md](AGENTS.md) はAIがこのリポジトリで作業する際の短い入口ガイドです。本ファイルは開始時に読む文書と確認順序の正本です。単体タスクを正式プロジェクトへ昇格する場合は [PROJECT_BOOTSTRAP.md](PROJECT_BOOTSTRAP.md) を適用します。
+
 ## 開始時の確認順序
 
 1. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割、思考順序、Codexとの役割分担
@@ -44,6 +46,7 @@
 - [VERSION_MATRIX.md](VERSION_MATRIX.md)でGitHub、実運用版、デモ機版の一致状況を確認する。
 - 旧フォルダ、共有版、業務データ、実運用設定を変更対象にしない。
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) と関連する設計判断を読む。
+- 単体タスクを正式プロジェクトへ昇格する場合は [PROJECT_BOOTSTRAP.md](PROJECT_BOOTSTRAP.md) のチェックリストを使用する。
 - 不明点をチャットの記憶だけで補わず、文書・Git差分・動作確認で確かめる。
 
 ## 作業中・作業後の記録

@@ -1,6 +1,15 @@
-# development-management 開発ルール
+# development-management AI入口ガイド
 
-このリポジトリは、開発ルールを管理する正本である。
+このリポジトリは、設計判断、開発ルール、進行状況、AI共同開発知識を管理する司令塔である。作業を始めるAIは、最初に [AI_STARTUP.md](AI_STARTUP.md) を読み、そこに定めた順序で関連文書を確認する。詳細な運用基準は [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) を正本とし、このファイルには重複して記載しない。
+
+## 基本方針
+
+- ChatGPTは設計、仕様整理、レビュー、Codexへの指示書作成、重要判断を担当する。
+- Codexは実装、Git操作、commit、push、リポジトリ整理、テスト、ビルドを担当する。
+- Codexへ任せられる作業はCodexを優先し、ユーザーへPowerShellやGit操作を依頼するのは最終手段とする。
+- 回答は説明だけで終わらせず、可能な限りCodexへそのまま渡せる完成した指示書を優先する。
+- チャットを唯一の情報源にせず、重要な設計判断、仕様変更、運用変更、Lessons Learnedを `development-management` へ記録する。
+- Gitは正式ソースを基準とし、既存変更を保護する。commit、push、タグ作成はユーザーの明示的な指示がある場合にのみ行う。
 
 ## GitHubプロジェクト初期確認ルール
 

@@ -2,8 +2,34 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## v1.0.0 - 2026-07-20
+
+Initial stable release.
+
+### Added
+
+- `AI_OPERATING_MANUAL.md`
+- `AI_CHECKLIST.md`
+- `PROMPT_PRINCIPLES.md`
+- `PROJECT_BOOTSTRAP.md`
+- `AGENTS.md`
+- AI引き継ぎとAI共同開発フロー
+- プロジェクト化完了の定義
+
+### Changed
+
+- `AI_STARTUP.md` の開始手順
+- ChatGPTとCodexの役割分担
+- `development-management` の位置付け
+- 新規プロジェクト立ち上げ手順
+
+### Result
+
+`development-management` を「AI共同開発基盤」v1.0.0として正式化。
+
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-07-20 | development-management | `AGENTS.md`をAI向け入口ガイドとして整備し、ChatGPT／Codexの役割分担、指示書優先、知識記録、Git運用を要約。`PROJECT_BOOTSTRAP.md`を追加し、単体タスクの正式プロジェクト化手順と完了定義を標準化 | 文書差分・リンク・役割分担を確認済み。コード・業務システム変更なし |
 | 2026-07-20 | beverage-inventory-ordering-system | 正式ソースのローカル`main`をGitHub `main`（`8d2ab9c`）へfast-forward。アプリ本体と文書のGitHub反映、ローカル同期完了を管理文書へ反映し、次工程を飲料発注アプリの取り込み調査へ更新 | HEAD・main・origin/main一致、Git statusクリーン、JavaScript構文、ブラウザ起動、コンソールエラーなしを確認。機能・UI・保存方式の変更なし |
 | 2026-07-20 | development-management | AI回答品質・提案品質を標準化する`PROMPT_PRINCIPLES.md`を追加。回答方針、提案方針、開発方針、Codex連携、回答スタイル、継続開発の原則を定義し、AI開始順序とREADMEへ組み込み | 文書差分・リンク・読む順番を確認済み。コード・業務システム変更なし |
 | 2026-07-20 | development-management | AI運用を標準化。`AI_OPERATING_MANUAL.md`と`AI_CHECKLIST.md`を追加し、AIの役割、Codexとの役割分担、思考順序、指示書優先、開始時の確認順序を整理。README、AI_STARTUP、AI_MEMORYを更新 | 文書差分・リンク・責務分離を確認済み。コード・業務システム変更なし |

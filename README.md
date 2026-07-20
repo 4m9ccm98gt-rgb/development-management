@@ -1,5 +1,7 @@
 # development-management
 
+Current stable version: **v1.0.0**
+
 ## AI Startup
 
 新しいチャットでは、作業を始める前に次の順番で確認します。
@@ -18,6 +20,7 @@
 
 ## AI関連ドキュメント
 
+- [AGENTS.md](AGENTS.md) — このリポジトリで作業するAI向けの入口ガイド
 - [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割、思考順序、Codexとの役割分担
 - [AI_CHECKLIST.md](AI_CHECKLIST.md) — 新しいチャット開始時の確認チェックリスト
 - [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md) — ユーザーが期待する回答・提案・思考品質の基準
@@ -25,7 +28,18 @@
 - [AI_MEMORY.md](AI_MEMORY.md) — プロジェクト固有のルール
 - [docs/ai_handoff.md](docs/ai_handoff.md) — AI／新規担当者向けの短い引き継ぎ
 
+## 開発運用文書一覧
+
+- [PROJECT_BOOTSTRAP.md](PROJECT_BOOTSTRAP.md) — 単体タスクを正式プロジェクトへ昇格する標準手順
+- [VERSIONING.md](VERSIONING.md) — バージョン番号とリリース運用の基準
+- [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — 開発時に守る共通ルール
+- [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) — リリース前の確認項目
+- [DECISION_TEMPLATE.md](DECISION_TEMPLATE.md) — 重要な設計判断の記録テンプレート
+- [ISSUE_TEMPLATE.md](ISSUE_TEMPLATE.md) — 調査・実装依頼の整理テンプレート
+
 ## 目的
+
+`development-management` は、AIと人が継続的に共同開発するための「AI共同開発基盤」（AI Collaborative Development Framework）です。
 
 このリポジトリは、業務システム全体の設計判断・開発ルール・進行状況・AIとの共同開発知識を管理する正式な知識ベースです。
 
