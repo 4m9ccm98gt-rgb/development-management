@@ -48,6 +48,25 @@
 | GitHubと実運用版が一致しているか | 未確認 |
 | 備考 | `main` に未コミット変更と未追跡ファイルがある。タグ以後の変更や未コミット変更が実運用版へ反映済みかは未確認。 |
 
+## beverage-inventory-ordering-system
+
+| 項目 | 内容 |
+|---|---|
+| GitHubリポジトリ名 | `beverage-inventory-ordering-system` |
+| 最新確認タグ | なし |
+| mainの最新コミット | `8d2ab9c` — `Import beverage inventory management system`（2026-07-20） |
+| 実運用中バージョン | 正式化前から運用中の飲料在庫管理版。コミットによる版番号は未設定 |
+| デモ機版 | 未確認 |
+| 共有版または本番版 | ブラウザローカル保存で実運用中。配布先とのファイル一致は未確認 |
+| 正式ソースのローカルパス | `C:\Users\suisy\Documents\Development\repos\beverage-inventory-ordering-system` |
+| 使用環境 | ブラウザで`index.html`を起動 |
+| 主要依存関係 | 外部パッケージなし。静的HTML、CSS、JavaScript |
+| 最終動作確認日 | 2026-07-20 |
+| 確認済み機能 | JavaScript構文、ブラウザ起動、コンソールエラーなし、発注中数量を加味した要発注判定の実装、JSON保存・復元 |
+| 未確認機能 | 実運用端末とのファイル一致、複数PC共有、飲料発注アプリ統合 |
+| GitHubと正式ローカルが一致しているか | 一致。`HEAD`、`main`、`origin/main`はいずれも`8d2ab9c`、Git statusクリーン |
+| 備考 | アプリ本体と文書はGitHub反映済み。次は飲料発注アプリの取り込み調査を行う。 |
+
 ## development-management
 
 | 項目 | 内容 |
@@ -73,4 +92,3 @@
 2. 実機で確認した日付と機能だけを「確認済み」として記録する。
 3. `PROJECT_STATUS.md`、対象の`projects/*.md`、`CHANGELOG.md`と同時に更新する。
 4. 未コミット変更が配布されている場合は、タグではなくコミットまたは差分を特定してから記録する。
-
