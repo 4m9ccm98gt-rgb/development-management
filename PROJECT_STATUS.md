@@ -6,9 +6,9 @@
 
 | プロジェクト | 現在の作業 |
 |---|---|
-| next-day-setup | 実運用中。ケーキ発注書自動印刷をExcel自動印刷へ統合済み。確認画面は廃止し、夕食印刷後に自動判定・自動印刷する。GitHub反映済み。 |
+| next-day-setup | 実運用中。ケーキ発注書の休館日前倒しと緊急用の受取日指定手動印刷を実装し、開発環境テスト済み。実運用確認・GitHub反映は未実施。 |
 | inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、メール送信時間など細かな調整を行う。 |
-| beverage-inventory-ordering-system | 正式ソースとGitHubの同期完了。次は飲料発注アプリの取り込み調査を行う。 |
+| beverage-inventory-ordering-system | 飲料在庫管理＋飲料発注システムとして管理。発注システムを `apps/ordering/` へ移管済み。発注システムは開発中。 |
 | development-management | GitHub初回push済み、main運用中。AI共同開発の司令塔として継続更新する。 |
 
 ## 全体の現在地
@@ -18,12 +18,12 @@
 - 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下に統一する。
 - `next-day-setup` はケーキ発注書自動印刷まで実装・実運用・GitHub反映済み。
 - `inventory-reconciliation-system` は実運用中で、自動実行も概ね安定している。
-- `beverage-inventory-ordering-system` は正式ソースを確定し、アプリ本体と文書をGitHubへ反映済み。ローカル`main`もGitHub `main`（`8d2ab9c`）へ同期済み。
+- `beverage-inventory-ordering-system` は飲料在庫管理＋飲料発注システムとして管理する。飲料発注システムは独立プロジェクトにせず、同一リポジトリ内の `apps/ordering/` サブシステムとして継続開発する。
 
 ## 進行中の作業
 
-- `beverage-inventory-ordering-system`: 飲料発注アプリの正式ソース、機能、データ構造、保存方式、運用フローを読み取り専用で調査する。
-- `beverage-inventory-ordering-system`: 在庫管理側との共通商品マスタと段階的な統合手順を設計する。
+- `next-day-setup`: ケーキ発注書の休館日前倒し印刷を実装済み。実Excel／プリンター、画面警告、EXE・共有版での確認待ち。
+- `beverage-inventory-ordering-system`: `apps/ordering/` へ移管した飲料発注システムを開発中として、在庫管理側との共通商品マスタ・発注履歴統合を段階的に進める。
 - `inventory-reconciliation-system`: メール送信時間など細かな運用調整。
 
 ## 完了済み作業
@@ -36,6 +36,7 @@
 - `inventory-reconciliation-system` の実運用と自動実行を概ね安定化。
 - `beverage-inventory-ordering-system` の正式ソースを確定し、アプリ本体、初期マスタ、運用文書をGitHubへ反映。
 - `beverage-inventory-ordering-system` のローカル`main`をGitHub `main`（`8d2ab9c`）へfast-forwardし、同期後の起動・JavaScript構文・クリーンなGit状態を確認。
+- `beverage-inventory-ordering-system` へ開発途中の飲料発注システムを `apps/ordering/` サブシステムとして移管。README、docs、AI引き継ぎを在庫管理＋発注システム構成へ更新。
 - 飲料在庫管理の現行版でブラウザ保存と発注中数量を加味した要発注判定を実装し、運用開始。
 - 新規フォルダ作成失敗の原因をWindows ACLと特定。
 - `projects/beverage-inventory-ordering-system.md` を作成。
@@ -43,12 +44,11 @@
 ## 未確認項目
 
 - ブラウザ保存データの移行時保持方法と正式な保存仕様。
-- 飲料発注システム統合の対象機能、データ構造、運用フロー。
+- 飲料発注システムと在庫管理側の商品マスタ・発注履歴の統合仕様。
 - `inventory-reconciliation-system` のメール送信時間の最終設定。
 
 ## 次にやること
 
-1. 飲料発注アプリの正式ソースと現行運用版を特定する。
-2. 機能、商品データ、発注設定、履歴、保存方式、運用フローを読み取り専用で調査する。
-3. 在庫管理側との商品識別子、名称、単位、入数を比較し、共通商品マスタの移行対応表を作成する。
-4. 複数PC共有を前提とした保存方式と、既存在庫データを保護する段階的な統合手順を設計する。
+1. `apps/ordering/` の発注システムを、在庫管理側の商品マスタ・発注履歴とどう統合するか設計する。
+2. 実業者名、実FAX番号、実発注履歴をGit管理しない前提で、実運用データの安全な投入・移行手順を決める。
+3. 複数PC共有を前提とした保存方式と、既存在庫データを保護する段階的な統合手順を設計する。

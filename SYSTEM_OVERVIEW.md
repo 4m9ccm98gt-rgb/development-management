@@ -39,6 +39,7 @@
 | development-management | 設計判断、ルール、現在地、引き継ぎ、教訓 | 業務コード、実運用設定、業務データ |
 | next-day-setup | 翌日準備、席割・担当割、帳票・印刷、共有版配布 | 販売在庫照合 |
 | inventory-reconciliation-system | 販売在庫照合、休館日判定、夜間実行、警告メール | 印刷プラットフォーム |
+| beverage-inventory-ordering-system | 飲料在庫管理、飲料発注システム（開発中） | 実業者名、実FAX番号、実発注履歴 |
 
 ## 開発情報の流れ
 
@@ -46,4 +47,3 @@
 2. コードの詳細は対象リポジトリへ記録する。
 3. プロジェクト横断の現在地、重要判断、ルール、教訓を `development-management` へ記録する。
 4. 新しいチャットは `development-management` から状況を把握して作業を再開する。
-

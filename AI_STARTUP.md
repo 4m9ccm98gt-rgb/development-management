@@ -36,7 +36,7 @@
 
 - `next-day-setup`: Google Sheetsシフト取得、印刷、ビルド、共有版更新の未コミット変更を整理・検証する。
 - `inventory-reconciliation-system`: Google Sheets休館日取得、キャッシュ、夜間自動実行、警告メールの未コミット変更を整理・検証する。
-- `beverage-inventory-ordering-system`: 正式ソースとGitHubの同期完了。次は飲料発注アプリの取り込み調査を行う。
+- `beverage-inventory-ordering-system`: 飲料在庫管理＋飲料発注システムとして管理。発注システムは `apps/ordering/` へ移管済みで開発中。
 - `development-management`: 開発知識をチャットだけに残さない運用を定着させる。
 
 ## 作業前チェック
