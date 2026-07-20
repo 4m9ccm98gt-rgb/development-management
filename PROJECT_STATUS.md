@@ -1,56 +1,60 @@
 # プロジェクト状況
 
-最終更新: 2026-07-18（JST）
+最終更新: 2026-07-20（JST）
 
 ## Current Focus
 
 | プロジェクト | 現在の作業 |
 |---|---|
-| next-day-setup | ケーキ手配の検出確認機能を追加済み。実運用確認後に発注マクロ転記・印刷へ進み、既存のシフト取得・印刷・ビルド差分も併せて整理する。 |
-| inventory-reconciliation-system | Google Sheets休館日取得、キャッシュ、夜間自動実行、警告メールの未コミット差分を整理し、実運用相当条件で検証する。 |
-| development-management | `VERSION_MATRIX.md`と`AI_MEMORY.md`を作成済み。実運用版との対応確認と、AI共同開発ルールの継続運用に移る。 |
+| next-day-setup | 実運用中。ケーキ発注書自動印刷をExcel自動印刷へ統合済み。確認画面は廃止し、夕食印刷後に自動判定・自動印刷する。GitHub反映済み。 |
+| inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、メール送信時間など細かな調整を行う。 |
+| beverage-inventory-ordering-system | 現行運用版を正式リポジトリ化する。Windows ACLを解消後、正式ソースへ移行し、初回push、その後に飲料発注システムを統合する。 |
+| development-management | GitHub初回push済み、main運用中。AI共同開発の司令塔として継続更新する。 |
 
 ## 全体の現在地
 
-- `development-management` を司令塔リポジトリとして初期整備中。管理文書一式を作成済みだが、まだコミット／pushしていない。
-- 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下の2リポジトリに統一する。
-- `next-day-setup` の最新確認タグは `v1.1.0`。Google Sheetsからのシフト取得、印刷、ビルド／共有版更新に関する未コミット変更がある。
-- `inventory-reconciliation-system` の最新確認タグは `v2.0.0`。Google Sheets休館日取得、夜間実行、警告処理などに関する未コミット変更がある。
-- 上記タグはローカルGitで確認した最新タグであり、未コミット変更を含む最新版や実運用確認済み版を意味しない。
+- `development-management` を業務システム全体の司令塔として運用中。
+- 各システムは独立リポジトリで管理し、設計・運用・履歴・AI引き継ぎは本リポジトリへ記録する。
+- 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下に統一する。
+- `next-day-setup` はケーキ発注書自動印刷まで実装・実運用・GitHub反映済み。
+- `inventory-reconciliation-system` は実運用中で、自動実行も概ね安定している。
+- `beverage-inventory-ordering-system` のGitHubリポジトリは作成済みだが空。現行運用版はCodex配下にあり、正式ソース移行前。
 
 ## 進行中の作業
 
-- `next-day-setup`: Google Sheetsシフト取得、印刷処理、ビルド、共有版更新方式の変更整理と検証。
-- `next-day-setup`: PMS手配枠から3日後宿泊のケーキを検出する機能の実運用確認。自動転記・印刷は未実装。
-- `inventory-reconciliation-system`: Google Sheets休館日取得、キャッシュ、夜間自動実行、警告メールの変更整理と検証。
-- 両プロジェクト: 未コミット差分の内容確認、テスト、実運用確認、README／管理文書との整合。
+- `beverage-inventory-ordering-system`: Windows ACLの解消。
+- `beverage-inventory-ordering-system`: 現行運用版を正式ソースへ移行し、構成・データ・Git管理対象を整理する。
+- `beverage-inventory-ordering-system`: README、`.gitignore`、初回コミット・pushを実施する。
+- `beverage-inventory-ordering-system`: 正式化後に飲料発注システム統合へ進む。
+- `inventory-reconciliation-system`: メール送信時間など細かな運用調整。
 
 ## 完了済み作業
 
-- 正式ソースの配置先を `Development\repos` に統一。
-- 両プロジェクトで `.venv` を使う方針を確立。
-- `next-day-setup` へ印刷プラットフォームを集約する方針を確立。
-- Google Sheetsをシフト／休館日の正式参照元とする方針を記録。
-- 本リポジトリの管理文書構成を作成。
-- `VERSION_MATRIX.md`を作成し、GitHub、実運用版、デモ機版の確認状況を整理。
-- `AI_MEMORY.md`を作成し、ユーザー固有の開発方針、作業順序、報告形式を記録。
-- `next-day-setup`でケーキ手配の構造化、CSV範囲3状態判定、明示的な期間警告、確認画面を実装し、自動テスト14件を確認。
+- `development-management` の初回pushとmain運用開始。
+- `AI_STARTUP.md`、`AI_MEMORY.md`、`VERSION_MATRIX.md`、`SYSTEM_OVERVIEW.md`等の管理文書整備。
+- `next-day-setup` のケーキ発注書自動印刷を実装し、Excel自動印刷へ統合。
+- `next-day-setup` の確認画面を廃止し、夕食印刷後の自動判定・自動印刷へ移行。
+- `next-day-setup` の変更をGitHubへ反映。
+- `inventory-reconciliation-system` の実運用と自動実行を概ね安定化。
+- `beverage-inventory-ordering-system` のGitHub空リポジトリを作成。
+- 飲料在庫管理の現行版でブラウザ保存と発注中数量を加味した要発注判定を実装し、運用開始。
+- 新規フォルダ作成失敗の原因をWindows ACLと特定。
+- `projects/beverage-inventory-ordering-system.md` を作成。
 
 ## 未確認項目
 
-- 両プロジェクトの未コミット変更がすべて意図したものか。
-- `next-day-setup` の最新ビルドが対象PCで起動・印刷できるか。
-- 共有版更新後も業務データが保持され、`_internal` が完全同期されるか。
-- `inventory-reconciliation-system` の夜間自動実行、キャッシュ利用、警告メールが実運用環境で正常か。
-- 最新タグが実運用中の版と一致するか。
-- ケーキ検出の画面確認、手配済みフラグの正式定義、マクロ転記・印刷、複数ケーキの発注書単位。
-- 旧フォルダの具体的な一覧、共有先パス、担当者、確認日。
+- `Development\repos` または新規プロジェクトフォルダへの `CodexSandboxUsers` の `Modify` 権限付与。
+- 現行飲料在庫管理システムの正確なファイル構成とGit管理対象。
+- ブラウザ保存データの移行時保持方法と正式な保存仕様。
+- 正式ソース移行後の起動・保存・要発注判定の動作確認。
+- 飲料発注システム統合の対象機能、データ構造、運用フロー。
+- `inventory-reconciliation-system` のメール送信時間の最終設定。
 
 ## 次にやること
 
-1. 両プロジェクトの未コミット差分をレビューし、変更単位を確定する。
-2. 各プロジェクトで構文確認、テスト、手動起動を行う。
-3. `next-day-setup` をビルドし、専用スクリプトで共有版を更新して実運用確認する。
-4. `inventory-reconciliation-system` の夜間自動実行と警告メールを実運用相当条件で確認する。
-5. 結果を各 `projects/*.md`、本ファイル、`CHANGELOG.md` に反映する。
-6. 内容確認後に本リポジトリをコミット／pushする。
+1. Windows側で `Development\repos` または `beverage-inventory-ordering-system` フォルダに `CodexSandboxUsers` の `Modify` 権限を付与する。
+2. 現行運用版を `C:\Users\suisy\Documents\Development\repos\beverage-inventory-ordering-system` へ移行する。
+3. ファイル構成、保存データ、秘密情報、生成物を確認し、READMEと`.gitignore`を整備する。
+4. 正式ソースで動作確認後、GitHubへ初回コミット・pushする。
+5. 結果を本ファイル、対象プロジェクト文書、`CHANGELOG.md`、必要に応じて`VERSION_MATRIX.md`へ反映する。
+6. 飲料発注システム統合の設計に進む。
