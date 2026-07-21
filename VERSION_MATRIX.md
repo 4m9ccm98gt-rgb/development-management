@@ -86,6 +86,20 @@
 | GitHubと正式ローカルが一致しているか | 一致。`HEAD`、`main`、`origin/main`はいずれも`95bd3ca`、Git statusクリーン |
 | 備考 | 電話回線、手間いらず・Hub実接続、実在庫変更、PMS自動入力は初期対象外。プロジェクト化完了、アプリ本体未実装 |
 
+## menu-sheet-generator
+
+| 区分 | バージョン / コミット | 状態 |
+|---|---|---|
+| GitHub版 | `main` / `6e97ccea6b8afe237af9b83dc4bae9eae9495cdf` | Private、正式版 |
+| 正式ローカル版 | `C:\Users\suisy\Documents\Development\repos\menu-sheet-generator` / 同上 | GitHub `main`と同期、作業ツリー clean |
+| 開発版 | 正式ローカル版の`main` / 同上 | 登録時点で正式版と同一 |
+| `publish`配布版 | 自己完結型`win-x64` / 同上 | `BUILD_RELEASE.cmd`で再生成可能 |
+| 共有フォルダ実運用版 | ワンクリック配布版 / 同上 | 実運用・実プリンター確認済み |
+
+- 最新コミット: `6e97ccea6b8afe237af9b83dc4bae9eae9495cdf`
+- 同期状態: GitHub版、正式ローカル版、開発版、`publish`配布版、共有フォルダ実運用版は2026-07-21時点で同一コミット由来。
+- 実運用データと配布先実パスはGit管理外。
+
 ## development-management
 
 | 項目 | 内容 |

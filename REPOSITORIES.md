@@ -31,6 +31,14 @@
 - 役割: 開発管理・進行状況・設計判断・引き継ぎの集約
 - GitHub: `https://github.com/4m9ccm98gt-rgb/development-management.git`
 
+### menu-sheet-generator
+
+- 正式ローカルパス: `C:\Users\suisy\Documents\Development\repos\menu-sheet-generator`
+- GitHubリポジトリ名: `menu-sheet-generator`
+- GitHub: `https://github.com/4m9ccm98gt-rgb/menu-sheet-generator.git`
+- GitHub `main`: `6e97ccea`（2026-07-21同期確認）
+- 状態: GitHub管理、正式配布、実運用、実プリンター確認済み
+
 ## 旧フォルダの扱い
 
 `Development\repos` 配下以外にある旧フォルダは参照専用です。調査や差分確認には使えますが、新規開発、修正、ビルド、コミットの起点には使用しません。旧フォルダで見つけた修正が必要な場合は、正式ソースへ内容を移してから検証します。

@@ -10,6 +10,7 @@
 | inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、メール送信時間など細かな調整を行う。 |
 | beverage-inventory-ordering-system | 飲料在庫管理＋飲料発注システムとして管理。発注システムを `apps/ordering/` へ移管済み。発注システムは開発中。 |
 | call-reception-assistant | `PROJECT_BOOTSTRAP v1.0.0`に基づくプロジェクト化完了。初期管理文書をGitHub `main`へ反映し、正式ローカルと同期済み。アプリ本体は未実装。次は設計。 |
+| menu-sheet-generator | 実運用中。PMS CSVから対象日・泊目・料理通し・部屋数を集計し、客用お品書きと泊目別の従業員確認用を自動印刷。ワンクリック共有配布と実プリンター確認済み。 |
 | development-management | GitHub初回push済み、main運用中。AI共同開発の司令塔として継続更新する。 |
 
 ## 全体の現在地
@@ -30,6 +31,10 @@
 - `call-reception-assistant`: 対話仕様、データモデル、ローカル音声技術、将来連携境界、検証計画をChatGPTで設計する。
 
 ## 完了済み作業
+
+- menu-sheet-generatorを正式プロジェクト化し、GitHub `main`から正式ローカルパスへクローン・同期確認
+- PMS CSVの対象日・泊目・料理通し・部屋数による自動印刷と泊目別従業員確認用印刷を実装・実機確認
+- 自己完結型`win-x64`配布とワンクリック共有フォルダ配布を整備・実運用確認
 
 - `development-management` の初回pushとmain運用開始。
 - `AI_STARTUP.md`、`AI_MEMORY.md`、`VERSION_MATRIX.md`、`SYSTEM_OVERVIEW.md`等の管理文書整備。

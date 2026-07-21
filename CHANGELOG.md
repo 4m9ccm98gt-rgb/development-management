@@ -29,6 +29,7 @@ Initial stable release.
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-07-21 | menu-sheet-generator | GitHub管理開始と正式ソース確定。自己完結型`win-x64`配布、ワンクリック共有フォルダ配布、PMS CSV自動集計印刷、対象日絞り込み、泊目別集計、泊目別従業員確認用自動印刷を登録 | GitHub `main`・正式ローカル`6e97ccea`同期、ビルド・全自動テスト成功、実プリンター確認完了 |
 | 2026-07-21 | call-reception-assistant | 空の正式GitHubリポジトリを `Development\repos` 配下へcloneし、README、`docs/`、AI引き継ぎ、AI作業ガイド、`.gitignore`を作成。初回commit・pushと管理文書への登録を実施 | `main`と`origin/main`が`95bd3ca`で一致、Git状態クリーン、文書リンク・秘密情報を確認。アプリ本体は未実装。`PROJECT_BOOTSTRAP v1.0.0`に基づくプロジェクト化完了 |
 | 2026-07-20 | beverage-inventory-ordering-system | 単体タスクで開発していた飲料発注システムを正式プロジェクトの `apps/ordering/` へ移管。在庫管理画面から起動するサブシステムとして位置付け、README、docs、AI引き継ぎ、development-managementを「飲料在庫管理＋飲料発注システム」へ更新 | JavaScript構文確認、静的ファイル存在確認、Git差分確認済み。発注システムは開発中。実業者名・実FAX番号・実発注履歴はGit管理対象外 |
 | 2026-07-20 | next-day-setup | ケーキ発注書の緊急用手動印刷を追加。受取日を直接指定し、業務日＝受取日－4日を確認表示して、自動印刷と同じ単日生成・Excel印刷処理を1回だけ実行 | 構文確認・自動テスト38件成功。テスト用出力ファイル生成と注文なし時の未出力を確認。実画面・実Excel・実プリンターは未確認。コミット／pushなし |
