@@ -18,6 +18,14 @@
 - GitHubリポジトリ名: `beverage-inventory-ordering-system`
 - GitHub `main`: `8d2ab9c`（2026-07-20同期確認）
 
+### call-reception-assistant
+
+- 正式ローカルパス: `C:\Users\suisy\Documents\Development\repos\call-reception-assistant`
+- GitHubリポジトリ名: `call-reception-assistant`
+- GitHub: `https://github.com/4m9ccm98gt-rgb/call-reception-assistant.git`
+- GitHub `main`: `95bd3ca`（2026-07-21同期確認）
+- 状態: 初期管理文書をpushし、正式ローカル`main`とGitHub `origin/main`の同期完了
+
 ### development-management
 
 - 役割: 開発管理・進行状況・設計判断・引き継ぎの集約
@@ -26,3 +34,5 @@
 ## 旧フォルダの扱い
 
 `Development\repos` 配下以外にある旧フォルダは参照専用です。調査や差分確認には使えますが、新規開発、修正、ビルド、コミットの起点には使用しません。旧フォルダで見つけた修正が必要な場合は、正式ソースへ内容を移してから検証します。
+
+`C:\Users\suisy\Documents\Call Reception Assistant` は正式ソースではありません。`call-reception-assistant` の変更先には使用しません。

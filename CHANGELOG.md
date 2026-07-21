@@ -29,6 +29,7 @@ Initial stable release.
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-07-21 | call-reception-assistant | 空の正式GitHubリポジトリを `Development\repos` 配下へcloneし、README、`docs/`、AI引き継ぎ、AI作業ガイド、`.gitignore`を作成。初回commit・pushと管理文書への登録を実施 | `main`と`origin/main`が`95bd3ca`で一致、Git状態クリーン、文書リンク・秘密情報を確認。アプリ本体は未実装。`PROJECT_BOOTSTRAP v1.0.0`に基づくプロジェクト化完了 |
 | 2026-07-20 | beverage-inventory-ordering-system | 単体タスクで開発していた飲料発注システムを正式プロジェクトの `apps/ordering/` へ移管。在庫管理画面から起動するサブシステムとして位置付け、README、docs、AI引き継ぎ、development-managementを「飲料在庫管理＋飲料発注システム」へ更新 | JavaScript構文確認、静的ファイル存在確認、Git差分確認済み。発注システムは開発中。実業者名・実FAX番号・実発注履歴はGit管理対象外 |
 | 2026-07-20 | next-day-setup | ケーキ発注書の緊急用手動印刷を追加。受取日を直接指定し、業務日＝受取日－4日を確認表示して、自動印刷と同じ単日生成・Excel印刷処理を1回だけ実行 | 構文確認・自動テスト38件成功。テスト用出力ファイル生成と注文なし時の未出力を確認。実画面・実Excel・実プリンターは未確認。コミット／pushなし |
 | 2026-07-20 | next-day-setup | ケーキ受取日を対象業務日＋4日に固定。Google Sheets休館日を在庫照合と同じ取得・解析・3日キャッシュ方式で参照し、休館前日・連続休館日の未実行分を受取日別に前倒し連続印刷する処理とテストを追加 | 構文確認・自動テスト36件・公開CSV実取得成功。実Excel／実プリンター、画面表示、EXE、共有版は未確認。コミット／pushなし |

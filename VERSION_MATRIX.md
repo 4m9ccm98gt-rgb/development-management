@@ -2,7 +2,7 @@
 
 実運用中の版、GitHub上の版、ローカルの作業状態を混同しないための確認表です。
 
-最終調査日: 2026-07-16（JST）
+最終調査日: 2026-07-21（JST）
 
 ## 判定上の注意
 
@@ -66,6 +66,25 @@
 | 未確認機能 | 実運用端末とのファイル一致、複数PC共有、飲料発注アプリ統合 |
 | GitHubと正式ローカルが一致しているか | 一致。`HEAD`、`main`、`origin/main`はいずれも`8d2ab9c`、Git statusクリーン |
 | 備考 | アプリ本体と文書はGitHub反映済み。次は飲料発注アプリの取り込み調査を行う。 |
+
+## call-reception-assistant
+
+| 項目 | 内容 |
+|---|---|
+| GitHubリポジトリ名 | `call-reception-assistant` |
+| 最新確認タグ | なし |
+| mainの最新コミット | `95bd3ca` — `Record initial repository synchronization`（2026-07-21） |
+| 実運用中バージョン | なし |
+| デモ機版 | なし（無課金社内試作の設計前） |
+| 共有版または本番版 | なし |
+| 正式ソースのローカルパス | `C:\Users\suisy\Documents\Development\repos\call-reception-assistant` |
+| 使用環境 | Windows PCを予定。技術構成は未決定 |
+| 主要依存関係 | 未決定。外部AI API・有料APIは初期試作で使用しない |
+| 最終動作確認日 | 未確認（アプリ本体なし） |
+| 確認済み機能 | 対象なし。GitHub到達、空リポジトリclone、初期文書構成を確認 |
+| 未確認機能 | 全機能。音声認識、音声合成、対話、外部連携はいずれも未実装 |
+| GitHubと正式ローカルが一致しているか | 一致。`HEAD`、`main`、`origin/main`はいずれも`95bd3ca`、Git statusクリーン |
+| 備考 | 電話回線、手間いらず・Hub実接続、実在庫変更、PMS自動入力は初期対象外。プロジェクト化完了、アプリ本体未実装 |
 
 ## development-management
 

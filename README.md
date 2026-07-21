@@ -68,6 +68,7 @@ Current stable version: **v1.0.0**
 | next-day-setup | 翌日準備、席割・担当割、帳票・印刷 | [projects/next-day-setup.md](projects/next-day-setup.md) |
 | inventory-reconciliation-system | PMS・手間いらず・JTBの販売在庫照合 | [projects/inventory-reconciliation-system.md](projects/inventory-reconciliation-system.md) |
 | beverage-inventory-ordering-system | 飲料在庫管理＋飲料発注システム | [projects/beverage-inventory-ordering-system.md](projects/beverage-inventory-ordering-system.md) |
+| call-reception-assistant | 旅館の電話受付支援・将来自動化 | [projects/call-reception-assistant.md](projects/call-reception-assistant.md) |
 
 正式なローカルパスは [REPOSITORIES.md](REPOSITORIES.md) を参照してください。
 

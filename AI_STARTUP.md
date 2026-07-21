@@ -29,6 +29,7 @@
 | next-day-setup | `C:\Users\suisy\Documents\Development\repos\next-day-setup` | `v1.1.0` |
 | inventory-reconciliation-system | `C:\Users\suisy\Documents\Development\repos\inventory-reconciliation-system` | `v2.0.0` |
 | beverage-inventory-ordering-system | `C:\Users\suisy\Documents\Development\repos\beverage-inventory-ordering-system` | なし |
+| call-reception-assistant | `C:\Users\suisy\Documents\Development\repos\call-reception-assistant` | なし |
 
 タグは2026-07-16時点の最新確認タグです。実運用中の版との一致や未コミット変更の安定性は未確認です。
 
@@ -37,6 +38,7 @@
 - `next-day-setup`: Google Sheetsシフト取得、印刷、ビルド、共有版更新の未コミット変更を整理・検証する。
 - `inventory-reconciliation-system`: Google Sheets休館日取得、キャッシュ、夜間自動実行、警告メールの未コミット変更を整理・検証する。
 - `beverage-inventory-ordering-system`: 飲料在庫管理＋飲料発注システムとして管理。発注システムは `apps/ordering/` へ移管済みで開発中。
+- `call-reception-assistant`: 初期管理文書を整備済み。アプリ本体は未実装で、対話・データ・ローカル音声・将来連携・検証計画の設計待ち。
 - `development-management`: 開発知識をチャットだけに残さない運用を定着させる。
 
 ## 作業前チェック
