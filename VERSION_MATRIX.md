@@ -2,7 +2,7 @@
 
 実運用中の版、GitHub上の版、ローカルの作業状態を混同しないための確認表です。
 
-最終調査日: 2026-07-21（JST）
+最終調査日: 2026-07-23（JST）
 
 ## 判定上の注意
 
@@ -90,14 +90,16 @@
 
 | 区分 | バージョン / コミット | 状態 |
 |---|---|---|
-| GitHub版 | `main` / `6e97ccea6b8afe237af9b83dc4bae9eae9495cdf` | Private、正式版 |
-| 正式ローカル版 | `C:\Users\suisy\Documents\Development\repos\menu-sheet-generator` / 同上 | GitHub `main`と同期、作業ツリー clean |
-| 開発版 | 正式ローカル版の`main` / 同上 | 登録時点で正式版と同一 |
-| `publish`配布版 | 自己完結型`win-x64` / 同上 | `BUILD_RELEASE.cmd`で再生成可能 |
-| 共有フォルダ実運用版 | ワンクリック配布版 / 同上 | 実運用・実プリンター確認済み |
+| GitHub版 | `v1.0.0` / `2376c216dfc6900a9e559da7f3804ae411d05f34` | Private、GitHub Release公開済み |
+| 正式ローカル版 | `C:\Users\suisy\Documents\Development\repos\menu-sheet-generator` / 同上 | GitHub `main`・`v1.0.0`と同期、作業ツリーclean |
+| 開発版 | 正式ローカル版の`main` / 同上 | v1.0.0正式版と同一 |
+| `publish`配布版 | 自己完結型`win-x64` / 同上 | Releaseビルド・publish成功 |
+| 共有フォルダ実運用版 | ワンクリック配布対応 | 実運用・実プリンター確認済み。タグ対象コミットとの配布一致は別途確認 |
 
-- 最新コミット: `6e97ccea6b8afe237af9b83dc4bae9eae9495cdf`
-- 同期状態: GitHub版、正式ローカル版、開発版、`publish`配布版、共有フォルダ実運用版は2026-07-21時点で同一コミット由来。
+- 正式リリース: `v1.0.0`（2026-07-23）
+- タグ対象コミット: `2376c216dfc6900a9e559da7f3804ae411d05f34`
+- GitHub Release: `menu-sheet-generator v1.0.0`
+- 確認済み機能: WPFお品書き印刷、日本語・英語・従業員用印刷、PMS CSV自動集計、宿泊日指定、泊目別印刷、部屋数自動集計、従業員確認用自動印刷、共有フォルダへのワンクリック配布、実運用データ保持。
 - 実運用データと配布先実パスはGit管理外。
 
 ## development-management
