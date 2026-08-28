@@ -1,0 +1,170 @@
+# Cross-Project Reuse Map
+
+この文書は、既存プロジェクトで確立済みの方式を別プロジェクトへ応用するための入口です。
+
+## 原則
+
+新しい実装方式、ビルド方式、配布方式、外部データ取得方式、印刷方式、Windows運用方式を考える前に、まず `development-management` と既存プロジェクトを横断確認する。
+
+探索順序は次を標準とする。
+
+1. 対象プロジェクト自身に既存方式がないか確認する。
+2. `REUSE_MAP.md` と `projects/*.md` から類似資産を探す。
+3. 類似プロジェクトの正式ソースを確認し、実績のある方式を比較する。
+4. 流用できる場合は既存方式を優先する。
+5. 差異により流用できない場合だけ、新方式を調査する。
+6. 新方式を確立したら、この文書へ再利用導線を追記する。
+
+「対象リポジトリ内に手順がない」ことは「既存資産がない」ことを意味しない。
+
+## Windows EXE・ビルド・配布
+
+### next-day-setup
+
+正式ソース: `C:\Users\suisy\Documents\Development\repos\next-day-setup`
+
+再利用候補:
+
+- Windows向けEXEビルドの考え方
+- `dist\DinnerSystem` の配布構成
+- `DinnerSystem.exe` と `_internal` の扱い
+- 共有版更新
+- `update_shared_folder.ps1`
+- `UPDATE_SHARED_FOLDER.cmd`
+- ランタイム領域の完全同期
+- 配布物と業務データの分離
+
+Windowsデスクトップアプリを新たにEXE化するときは、対象プロジェクト内に正式手順がなくても、最初にNDSの方式を比較対象にする。
+
+フレームワークや依存関係が異なる場合は、その差分を確認してから別方式へ進む。単に対象リポジトリに `.spec` やビルドスクリプトがないという理由だけで、PyInstaller、cx_Freeze、Nuitka等の探索をゼロから開始しない。
+
+### food-cost-calculation-system
+
+2026-08-28時点で、PySide6アプリのWindows凍結ではPyInstallerとcx_FreezeでQtWidgets DLLロードに失敗し、Nuitkaのstandalone/onedir方式で配布物作成・EXE起動検証まで成功した実績がある。
+
+再利用候補:
+
+- PySide6アプリのNuitka standalone/onedir
+- 凍結後のQt画面スモークテスト
+- 配布物へのDB・runtime・認証情報・実データ混入監査
+- 旧DBコピーを使ったマイグレーション互換確認
+- ビルド元commit SHA、EXEサイズ、更新日時、SHA-256の記録
+
+今後PySide6アプリをEXE化する場合は、NDSの既存Windows配布運用と、このNuitka実績の両方を比較する。
+
+## PMS・CSV・業務データ取込
+
+### next-day-setup
+
+再利用候補:
+
+- PMS CSVの解析
+- PMS由来データの正規化
+- CSV期間の扱い
+- 予約・料理・手配情報の構造化
+
+PMS CSVを扱う新機能では、新規parserを書く前にNDSのPMS取込処理を確認する。
+
+### food-cost-calculation-system
+
+再利用候補:
+
+- PMS料理売上CSVの読込
+- CSV選択後の即時反映
+- 最終利用CSVフォルダの記憶
+- 月次売上・人数・平均単価・予約数の集計
+
+PMSからCSVを自動取得する機能を検討する場合も、NDSや在庫・予約系プロジェクトに既存のログイン、ブラウザ操作、HTTP取得、CSV取得資産がないか先に横断調査する。
+
+## Google Sheets・外部表データ
+
+### next-day-setup
+
+Google Sheets公開CSVからスタッフシフトを取得する実装・設計がある。取得失敗時に現在表示または前回取得データを保持する考え方も再利用候補。
+
+### food-cost-calculation-system
+
+再利用候補:
+
+- Google Sheets月別シート取得
+- `/gviz/tq` によるシート指定取得
+- 対象月検証
+- SQLite UPSERTによる重複防止
+- 起動時・定期・表示月変更時の同期
+- バックグラウンド同期
+- 同期中の多重実行防止
+- 自動同期失敗時に既存DBデータを保持
+
+Google Sheets連携を新設する場合は、この2系統を先に比較する。
+
+## 印刷・帳票
+
+### next-day-setup
+
+帳票・印刷処理を集約しており、Windows配布と印刷プラットフォームの実績がある。
+
+### menu-sheet-generator
+
+再利用候補:
+
+- Windowsでの帳票生成
+- GDI直接印刷
+- 300dpi印刷
+- CSVからの帳票生成
+- 客用・従業員用など用途別帳票
+
+新しい帳票・印刷機能では、独自の印刷方式を作る前にNDSとmenu-sheet-generatorを比較する。
+
+## Qt / PySide6 UI
+
+### food-cost-calculation-system
+
+再利用候補:
+
+- QApplicationレベルのライトテーマ固定
+- Windows/Qtダークパレットからの隔離
+- QDialog / QMessageBox / QInputDialog / QComboBox / QAbstractItemView / QScrollArea等の明示スタイル
+- viewport / content QWidgetがシステムPaletteを拾う問題への対策
+- 暗いPaletteを意図的に設定する回帰テスト
+- オフスクリーン描画による黒塗り検証
+
+Qt/PySide6アプリでテーマ崩れが起きた場合は、Widget単体への場当たり修正より、この共通テーマ方式を先に参照する。
+
+## SQLite・ローカル業務データ
+
+### food-cost-calculation-system
+
+再利用候補:
+
+- SQLiteの後方互換マイグレーション
+- 実運用DBを直接使わずコピーで検証
+- 配布物とLOCALAPPDATA等の実行時データを分離
+- 月次集計キーを表示用/会計用キーとして明示する設計
+- 外部同期データと手入力データをDB上では分離し、表示集計で統合する設計
+
+## Windows定期実行・自動処理
+
+Windows上で定期処理、スリープ復帰、ネットワークアクセス、夜間実行を追加する場合は、既存の在庫突合・自動実行系プロジェクトにTask Scheduler、WakeToRun、ログ、文字コード、外部通信の実績がないか確認する。
+
+特に子プロセスと親プロセス間の標準出力文字コード、Windowsのcp932/UTF-8差異、復帰直後のネットワーク状態は再発しやすいため、新規自動処理で先に確認する。
+
+## Git・正式ソース・開発環境
+
+すべての横断流用は `C:\Users\suisy\Documents\Development\repos` 配下の正式ソースを基準にする。旧cloneやChatGPT/Codex作業フォルダを流用元の正本にしない。
+
+流用はコードのコピーを意味しない。まず設計・依存関係・ライセンス・実運用実績・テスト方法を確認し、共通化、移植、参照のどれが適切か判断する。
+
+## 新しい再利用資産を見つけたとき
+
+次のいずれかに該当したら `REUSE_MAP.md` を更新する。
+
+- 別プロジェクトでも使えるビルド方式を確立した
+- 配布・更新方式を確立した
+- 外部サービス/PMS/Google Sheets等の取得方式を確立した
+- 印刷方式を確立した
+- 認証・同期・バックグラウンド処理の安全な方式を確立した
+- Windows固有不具合の再発防止策を確立した
+- UIフレームワーク固有の回帰対策を確立した
+- DBマイグレーションやデータ保護の再利用可能な方式を確立した
+
+プロジェクト固有の詳細は `projects/*.md`、横断して使える入口はこの文書へ置く。
