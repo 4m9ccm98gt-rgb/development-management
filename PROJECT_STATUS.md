@@ -1,65 +1,59 @@
 # プロジェクト状況
 
-最終更新: 2026-07-21（JST）
+最終更新: 2026-09-01（JST）
 
 ## Current Focus
 
 | プロジェクト | 現在の作業 |
 |---|---|
-| next-day-setup | 実運用中。ケーキ発注書の休館日前倒しと緊急用の受取日指定手動印刷を実装し、開発環境テスト済み。実運用確認・GitHub反映は未実施。 |
-| inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、メール送信時間など細かな調整を行う。 |
-| beverage-inventory-ordering-system | 飲料在庫管理＋飲料発注システムとして管理。発注システムを `apps/ordering/` へ移管済み。発注システムは開発中。 |
-| call-reception-assistant | `PROJECT_BOOTSTRAP v1.0.0`に基づくプロジェクト化完了。初期管理文書をGitHub `main`へ反映し、正式ローカルと同期済み。アプリ本体は未実装。次は設計。 |
-| menu-sheet-generator | 実運用中。PMS CSVから対象日・泊目・料理通し・部屋数を集計し、客用お品書きと泊目別の従業員確認用を自動印刷。ワンクリック共有配布と実プリンター確認済み。 |
-| development-management | GitHub初回push済み、main運用中。AI共同開発の司令塔として継続更新する。 |
+| next-day-setup | 実運用中。GitHub・正式ローカル・共有版の一致を確認しながら継続開発する。 |
+| inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、運用設定を継続管理する。 |
+| beverage-inventory-ordering-system | 現行ブラウザ版を仕様正本としてPython/PySide6版へ段階移行中。`python-desktop-migration` / Draft PR #2で候補版を隔離し、Windows実機・EXE・共有サーバー確認前は本番へマージしない。 |
+| call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
+| menu-sheet-generator | 実運用中。共有フォルダ配布・実プリンター運用済み。 |
+| development-management | ChatGPTをGitHub側の第一実装担当、CodexをWindows実機・ローカル環境作業の第一担当とする分業へ更新。 |
 
 ## 全体の現在地
 
 - `development-management` を業務システム全体の司令塔として運用中。
-- 各システムは独立リポジトリで管理し、設計・運用・履歴・AI引き継ぎは本リポジトリへ記録する。
 - 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下に統一する。
-- `next-day-setup` はケーキ発注書自動印刷まで実装・実運用・GitHub反映済み。
-- `inventory-reconciliation-system` は実運用中で、自動実行も概ね安定している。
-- `beverage-inventory-ordering-system` は飲料在庫管理＋飲料発注システムとして管理する。飲料発注システムは独立プロジェクトにせず、同一リポジトリ内の `apps/ordering/` サブシステムとして継続開発する。
-- `call-reception-assistant` は正式ソースを `Development\repos` 配下に確定し、無課金・ローカル音声による社内試作の開発開始前文書をGitHubへ反映済み。ローカル`main`と`origin/main`は`95bd3ca`で一致し、プロジェクト化完了。
+- GitHub上で完結する調査・設計・実装・テスト・branch・commit・push・PR・レビューは、GitHubへ直接アクセスできるChatGPTが原則担当する。
+- CodexはWindows実機、正式ローカル、EXEビルド、実プリンター、共有サーバー、複数PC試験などChatGPTから直接扱えない作業へ優先して使用する。
+- GitHub上の自動テスト成功とWindows実機・共有版・実プリンター確認を別の確認レベルとして扱う。
+- PR merge、安定版タグ、本番共有版更新は、必要な実機確認と明示的な判断後に行う。
+- `beverage-inventory-ordering-system` はブラウザ版からPython/PySide6版への移行を開始。現行JSON互換を維持し、共有サーバー上の1つのJSONを全PCで利用する構成を候補として実装中。
 
 ## 進行中の作業
 
-- `next-day-setup`: ケーキ発注書の休館日前倒し印刷を実装済み。実Excel／プリンター、画面警告、EXE・共有版での確認待ち。
-- `beverage-inventory-ordering-system`: `apps/ordering/` へ移管した飲料発注システムを開発中として、在庫管理側との共通商品マスタ・発注履歴統合を段階的に進める。
-- `inventory-reconciliation-system`: メール送信時間など細かな運用調整。
-- `call-reception-assistant`: 対話仕様、データモデル、ローカル音声技術、将来連携境界、検証計画をChatGPTで設計する。
+- `beverage-inventory-ordering-system`: GitHub `python-desktop-migration` / Draft PR #2でPython候補版を実装。旧JSON互換、在庫計算、売上CSV、棚卸、レシピ、定期消費、発注、商品マスタ、共有JSONロック・backup・atomic replace、PySide6 UI等を実装済み。2026-09-01の実運用JSONでローカルpytest 11件成功、主要コレクションの保存・再読込一致を確認済み。次はWindows実機・EXE・共有サーバー試験。
+- `next-day-setup`: 実運用を維持しながら継続開発。
+- `inventory-reconciliation-system`: 自動実行と運用設定の継続管理。
+- `call-reception-assistant`: アプリ本体の設計・実装待ち。
 
 ## 完了済み作業
 
-- menu-sheet-generatorを正式プロジェクト化し、GitHub `main`から正式ローカルパスへクローン・同期確認
-- PMS CSVの対象日・泊目・料理通し・部屋数による自動印刷と泊目別従業員確認用印刷を実装・実機確認
-- 自己完結型`win-x64`配布とワンクリック共有フォルダ配布を整備・実運用確認
-
-- `development-management` の初回pushとmain運用開始。
-- `AI_STARTUP.md`、`AI_MEMORY.md`、`VERSION_MATRIX.md`、`SYSTEM_OVERVIEW.md`等の管理文書整備。
-- `next-day-setup` のケーキ発注書自動印刷を実装し、Excel自動印刷へ統合。
-- `next-day-setup` の確認画面を廃止し、夕食印刷後の自動判定・自動印刷へ移行。
-- `next-day-setup` の変更をGitHubへ反映。
-- `inventory-reconciliation-system` の実運用と自動実行を概ね安定化。
-- `beverage-inventory-ordering-system` の正式ソースを確定し、アプリ本体、初期マスタ、運用文書をGitHubへ反映。
-- `call-reception-assistant` の正式GitHubリポジトリを正式ローカルパスへcloneし、README、docs、AI引き継ぎ、除外設定を作成。初回commit・pushとGitHub同期を完了。
-- `beverage-inventory-ordering-system` のローカル`main`をGitHub `main`（`8d2ab9c`）へfast-forwardし、同期後の起動・JavaScript構文・クリーンなGit状態を確認。
-- `beverage-inventory-ordering-system` へ開発途中の飲料発注システムを `apps/ordering/` サブシステムとして移管。README、docs、AI引き継ぎを在庫管理＋発注システム構成へ更新。
-- 飲料在庫管理の現行版でブラウザ保存と発注中数量を加味した要発注判定を実装し、運用開始。
-- 新規フォルダ作成失敗の原因をWindows ACLと特定。
-- `projects/beverage-inventory-ordering-system.md` を作成。
+- `development-management` のGitHub運用開始とAI共同開発基盤の整備。
+- 正式ソースを `Development\repos` 配下へ統一。
+- ChatGPT / Codexの役割分担を2026-09-01に更新。ChatGPTがGitHub側実装まで担当し、Codexを実機作業へ優先配分する運用を正式化。
+- `beverage-inventory-ordering-system` の旧GAS共有保存案 Draft PR #1を未mergeでclose。
+- `beverage-inventory-ordering-system` のPython移行 branch `python-desktop-migration` とDraft PR #2を作成。
+- menu-sheet-generator、next-day-setup、inventory-reconciliation-system等の既存業務システムを継続管理。
 
 ## 未確認項目
 
-- ブラウザ保存データの移行時保持方法と正式な保存仕様。
-- 飲料発注システムと在庫管理側の商品マスタ・発注履歴の統合仕様。
-- `inventory-reconciliation-system` のメール送信時間の最終設定。
-- `call-reception-assistant` の公開範囲、ブランチ保護設定、業務要件、技術構成、保存・評価仕様。
+- `beverage-inventory-ordering-system` Python版のWindows実機PySide6表示。
+- Python版のPyInstaller onedir実ビルド。
+- 現行ブラウザ版とPython版の在庫・要発注・発注履歴の全件突合。
+- Python版棚卸表の実プリンター確認。
+- 共有サーバー上からの直接起動と2台以上のPCによる同時更新試験。
+- `apps/ordering/` の業者/FAX機能とPython在庫側の統合。
+- GASスマホ棚卸連携。
 
 ## 次にやること
 
-1. `call-reception-assistant` の対話状態、データモデル、ローカル音声方式、外部連携境界、検証基準を設計する。
-2. `apps/ordering/` の発注システムを、在庫管理側の商品マスタ・発注履歴とどう統合するか設計する。
-3. 実業者名、実FAX番号、実発注履歴をGit管理しない前提で、実運用データの安全な投入・移行手順を決める。
-4. 複数PC共有を前提とした保存方式と、既存在庫データを保護する段階的な統合手順を設計する。
+1. `beverage-inventory-ordering-system` の `python-desktop-migration` をCodex / Windows実機で取得する。
+2. Python版のテスト・EXEビルド・GUI起動を確認する。
+3. 実運用JSONを読み込み、現行ブラウザ版と全件突合する。
+4. 共有サーバーのテスト領域で複数PC更新を確認する。
+5. 問題がなければPython版の本番切替判断を行う。
+6. その後、GASスマホ棚卸と発注システム統合へ進む。
