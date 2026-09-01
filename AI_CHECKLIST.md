@@ -11,8 +11,12 @@
 - [ ] [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)
 - [ ] [docs/decisions.md](docs/decisions.md)
 - [ ] [LESSONS_LEARNED.md](LESSONS_LEARNED.md)
-- [ ] Codexへ任せられる作業か
+- [ ] GitHub上でChatGPTが直接進められる作業か
+- [ ] Windows実機でしか確認できずCodexが必要な作業か
+- [ ] Python/Windowsアプリならソース起動経路があるか
+- [ ] EXE配布するアプリなら手動ワンクリックビルドがあるか
+- [ ] 配布対象なら `UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` があるか
+- [ ] Codexへ通常のEXEビルドを依頼しようとしていないか
 - [ ] `development-management` へ残す内容があるか
-- [ ] 指示書形式で回答すべきか
 
 対象プロジェクトがある場合は、対象の `projects/*.md`、README、Git状態、関連する管理文書も確認します。
