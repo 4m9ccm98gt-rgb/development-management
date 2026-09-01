@@ -71,17 +71,19 @@ python_app\RUN_DEV.cmd
 python_app\BUILD_EXE_CLICK_ME.cmd
 
 配布先更新
-UPDATE_SHARED_FOLDER.cmd
+python_app\UPDATE_SHARED_FOLDER.cmd
   ↓
-update_shared_folder.ps1
+python_app\update_shared_folder.ps1
 ```
 
-`RUN_DEV.cmd` と `BUILD_EXE_CLICK_ME.cmd` はPython候補版に存在。配布先更新スクリプトは本番切替前に追加する。
+`RUN_DEV.cmd`、`BUILD_EXE_CLICK_ME.cmd`、`UPDATE_SHARED_FOLDER.cmd`、`update_shared_folder.ps1` は候補版に存在します。
 
 ### GitHub上の候補版
 
 - branch: `python-desktop-migration`
 - Draft PR: #2 `Start Python desktop migration`
+- Windows実機確認後HEAD: `94f0b5fa48c473897a5e60989536865cea3e1279`
+- commit: `Verify Windows Python workflow and shared updater`
 - `main` には未マージ。本番運用版は変更していない。
 - 旧GAS共有保存案のDraft PR #1は方針変更によりclose済み、未merge。
 
@@ -107,11 +109,13 @@ update_shared_folder.ps1
 - PySide6 UI
 - `RUN_DEV.cmd`
 - `BUILD_EXE_CLICK_ME.cmd`
+- `UPDATE_SHARED_FOLDER.cmd`
+- `update_shared_folder.ps1`
 - GitHub Actions用Pythonテスト定義
 
-## 実データ互換確認
+## GitHub / 非Windows実データ互換確認
 
-2026-09-01に現行ブラウザ版から書き出した実運用JSONでローカル検証済み。
+2026-09-01に現行ブラウザ版から書き出した実運用JSONでChatGPT側の検証済み。
 
 - pytest: 11 passed
 - 共有JSONへ保存して再読込後、主要コレクションが内容ごと一致
@@ -125,22 +129,111 @@ update_shared_folder.ps1
   - deletedItemKeys: 4
 - 2026-09-01時点のPython計算確認: 66商品 / 販売16 / 要発注0 / 未記入0
 
-この検証はデータ互換とPythonロジックの確認であり、Windows実機・EXE・共有サーバー・実プリンター確認済みを意味しません。
+この66件版JSONはWindows正式ローカルでは未発見のため、Windows実機で同一データを使った全件突合は未完了です。
+
+## Windows Pythonソース版確認
+
+2026-09-01、正式ローカル `python-desktop-migration` でCodexにより確認・整備。
+
+- Python: 3.13.14
+- PySide6: 6.8.3
+- PySide6 6.11.2は既定Windowsパス長を超えて正式パスの`.venv`へ導入できなかったため、検証済み6.8系へ固定。
+- pytest: 11 passed / 0 failed / 1 skipped
+- skipは `BEVERAGE_REAL_EXPORT` 指定時のみ実行する任意実データテスト。
+- `RUN_DEV.cmd` からPythonソース版を起動確認。
+- `.venv` 初回作成・依存導入、2回目以降の不要なpip省略、エラー時画面保持を確認。
+- Windows native Qtで起動時例外なし、日本語表示、主要タブ、表、ボタン、ファイルダイアログ、Windows/UNCパス変換を確認。
+- 900x600 / 1600x1000 / 1100x720で致命的なレイアウト崩れなし。
+- URL・共有ファイルは外部影響を避け、変換・呼出導線まで確認。
+
+## Windowsで使用したJSON
+
+PCのDownloads内で見つかった最新候補 `drink-inventory-data (2).json` をコピーして確認。
+
+内容:
+
+- items: 50
+- recipes: 8
+- orderSettings: 47
+- periodicConsumptions: 1
+- salesDates: 0
+- productMaster: 0
+- orderHistory: 0
+- deletedItemKeys: 0
+
+コピーの保存・再読込後は内容一致。Python計算は51商品 / 販売0 / 要発注0 / 未記入0。
+
+このJSONはChatGPT側で確認した66件・売上履歴90日・発注履歴130件の2026-09-01版とは別物であり、最新実運用正本とは扱わない。現行ブラウザ版から最新JSONを再出力してWindows側で再確認する必要がある。
+
+## ブラウザ版比較
+
+Windows側で見つかった50件版JSONについて、`app.js` の正式式と同じ条件で51行を比較し、現在庫・判定在庫の不一致0行を確認。
+
+ただし売上・発注履歴・商品マスタが空のJSONだったため、これらを含む実運用全件比較は未確認。
+
+## 共有保存ローカル模擬
+
+Windows一時フォルダで確認済み。
+
+- 読込・保存・再読込: 成功
+- backup生成: 成功
+- lock取得・解放: 成功
+- atomic replace: 成功、一時ファイル残留なし
+- JSON破損: なし
+- Qtウィンドウ2インスタンス間の変更検知: 成功
+- 別Pythonプロセス2本の同時更新: 両方成功
+- 更新消失: なし
+- 同時保存後のJSON再解析: 成功
+
+## 手動EXE / 配布更新
+
+`BUILD_EXE_CLICK_ME.cmd` はユーザー手動実行用として整備済み。
+
+- 環境・依存確認
+- pytest
+- build/dist整理
+- PyInstaller onedir
+- EXE存在確認
+- パス、サイズ、SHA-256表示
+- 成功/失敗時の画面保持
+
+CodexはPyInstaller、Nuitka、ビルドCMDを実行していない。`build` / `dist` も未生成。手動EXEビルドは未確認。
+
+追加済み:
+
+- `python_app/UPDATE_SHARED_FOLDER.cmd`
+- `python_app/update_shared_folder.ps1`
+
+Windows PowerShell 5.1の模擬確認済み。
+
+- 配布先は入力または `-TargetPath` で明示指定。推測・ハードコードなし。
+- 更新対象は `BeverageInventory.exe` と `_internal` のみ。
+- `_internal` 内だけを同期して古いランタイムを除去。
+- `data` 全ファイルを更新前後にSHA-256検証。
+- `inventory-data.json` が存在しない配布先は拒否。
+- lock存在時は更新拒否。
+- 更新元欠落時は配布先無変更。
+- 模擬試験でdata / backup / 設定のハッシュ不変を確認。
+- 本番共有フォルダへの実行は未実施。
+
+## development-management ローカル状態
+
+Codex確認時、指定された `C:\Users\suisy\Documents\Development\repos\development-management` およびDocuments配下にローカルcloneが存在せず、必読文書をローカルで確認できなかった。
+
+GitHub上の `4m9ccm98gt-rgb/development-management` は正本として存在するため、今後のCodex開始前に正式ローカルへclone / 同期する必要がある。ローカル不在を放置すると、新しい運用ルールをCodexが読めないため優先して修正する。
 
 ## 本番切替前の未確認事項
 
-- Windows実機でPythonソース版のPySide6画面を確認
-- 現行ブラウザ版と在庫・要発注・発注履歴を全件突合
-- 棚卸表を実プリンターで確認
-- 共有保存をローカル模擬環境で確認
-- `update_shared_folder.ps1` / `UPDATE_SHARED_FOLDER.cmd` を追加して安全性確認
-- 必要時にユーザーが `BUILD_EXE_CLICK_ME.cmd` を手動実行し、EXE固有動作を確認
-- 共有サーバーのテスト領域へ手動配布し、直接起動
-- 2台以上のPCで共有JSONの同時更新を確認
-- 配送カレンダー表示そのものの移植・確認
-- ブラウザ通知のデスクトップ向け置換
-- `apps/ordering/` の業者マスタ / FAX発注機能統合
-- GASスマホ棚卸連携
+- 現行ブラウザ版から最新実運用JSONを再出力し、Windows Python版へ読み込む。
+- 66件版相当の実運用データで在庫・要発注・発注履歴・商品マスタを全件突合。
+- 必要時にユーザーが `BUILD_EXE_CLICK_ME.cmd` を手動実行し、EXE固有動作を確認。
+- 棚卸表を実プリンターで確認。
+- 共有サーバーのテスト領域へ手動配布し、直接起動。
+- 2台以上のPCで共有JSONの同時更新を確認。
+- 配送カレンダー表示そのものの移植・確認。
+- ブラウザ通知のデスクトップ向け置換。
+- `apps/ordering/` の業者マスタ / FAX発注機能統合。
+- GASスマホ棚卸連携。
 
 上記を確認するまではDraft PR #2を `main` へマージせず、現行ブラウザ版を本番正本として残します。
 
@@ -171,15 +264,13 @@ GitHub上だけで完結する作業や単純EXEビルドをCodexへ重複依頼
 
 ## 次にやること
 
-1. Codex / Windows実機で `python-desktop-migration` を正式ローカルへ取得する。
-2. `python_app/RUN_DEV.cmd` または `.venv` のPythonから候補版を起動し、テスト・GUI・実運用JSON互換を確認する。
-3. 共有保存をローカル模擬環境で確認する。
-4. 問題があればChatGPT側でGitHub修正を進める。
-5. Python版へ `update_shared_folder.ps1` / `UPDATE_SHARED_FOLDER.cmd` を追加する。
-6. EXE固有確認が必要な段階で、ユーザーが `python_app/BUILD_EXE_CLICK_ME.cmd` を手動実行する。
-7. 共有サーバーのテスト領域へ専用更新スクリプトで手動配布し、複数PC更新を試験する。
-8. 問題がなければPython版の本番切替手順を確定する。
-9. 本体移行後にGASスマホ棚卸、発注システム統合へ進む。
+1. 現行ブラウザ版から最新の `drink-inventory-data.json` を新しく出力する。
+2. 出力した最新JSONを原本保護したコピーでWindows Python版へ読み込み、66件版相当の実運用内容を全件突合する。
+3. `development-management` を正式ローカル `C:\Users\suisy\Documents\Development\repos\development-management` にclone / 同期する。
+4. 上記で問題がなければ、ユーザーが必要時に `BUILD_EXE_CLICK_ME.cmd` を手動実行してEXE固有確認へ進む。
+5. 共有サーバーのテスト領域へ専用更新スクリプトで手動配布し、複数PC更新を試験する。
+6. 問題がなければPython版の本番切替手順を確定する。
+7. 本体移行後にGASスマホ棚卸、発注システム統合へ進む。
 
 ## 注意
 
