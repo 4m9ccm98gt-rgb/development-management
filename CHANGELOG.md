@@ -11,12 +11,14 @@
 - WebView等へ切り替えず、PySide6ネイティブUIとして現行の色、余白、寸法、配置、情報密度、操作順を再現する。
 - 共有サーバー試験はUI一致確認まで停止する。
 - ユーザー手動EXEビルドは成功済みだが、EXE起動成功とUI同等性確認を別ゲートとして管理する。
+- PySide6 UI全面再構築第一弾を `python-desktop-migration` に実装。旧 `QTabWidget` を撤去し、業務順1画面ダッシュボード、商品調整・個別発注・棚卸し管理画面を再構成。
+- ブラウザCSSの主要色・寸法をPySide6側へ反映し、UIソース検査を追加。
 
 ### Result
 
-データ・業務計算互換性は66/66商品一致のまま維持し、UI品質を独立した本番切替条件として追加した。
+データ・業務計算互換性は66/66商品一致のまま維持。UI全面再構築第一弾HEAD `d5d3e65c` はWindows-latestのPython compile / migration tests成功。次工程はWindows `RUN_DEV.cmd` でブラウザ版との横並び見比べと微調整。
 
-確認状況: GitHub上でPySide6 UI全面再構築を実装中。Windows実機で現行ブラウザ版との見比べ・微調整は未完了。
+確認状況: GitHub実装・Actions確認済み。Windows実機での新UI見比べは未確認。
 
 ## v1.1.1 - 2026-09-01
 
@@ -86,7 +88,7 @@ Initial stable release.
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
-| 2026-09-01 | beverage-inventory-ordering-system | 旧PySide6タブUIのUI差異を実機で確認し、現行ブラウザUIを正本としたPySide6全面再構築へ移行。データ互換は維持し、UI同等性を独立本番ゲート化 | GitHub実装中。Windows実機見比べ未完了。共有サーバー試験停止 |
+| 2026-09-01 | beverage-inventory-ordering-system | 旧PySide6タブUIのUI差異を実機で確認し、現行ブラウザUIを正本としたPySide6全面再構築へ移行。データ互換は維持し、UI同等性を独立本番ゲート化 | GitHub第一弾実装・Actions成功。Windows実機見比べ未完了。共有サーバー試験停止 |
 | 2026-09-01 | development-management | Python/Windowsアプリをソース起動・手動EXEビルド・手動配布更新の3経路へ統一。Codexの通常担当からEXEビルドを外し、`BUILD_EXE_CLICK_ME.cmd` と `UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` を標準化 | 管理文書をGitHub `main`で更新。既存各アプリへのスクリプト適用状況は別途確認 |
 | 2026-09-01 | development-management | ChatGPTをGitHub側の第一実装担当、CodexをWindows実機・ローカル環境作業の第一担当とする分業へ変更。GitHub上の実装・テスト・branch・commit・push・PR・レビューをChatGPT側で進め、Codexクレジットを実機作業へ優先配分する運用を正式化 | `AGENTS.md`、`AI_OPERATING_MANUAL.md`、`AI_STARTUP.md`、`DEVELOPMENT_RULES.md`、`docs/decisions.md`、`PROJECT_STATUS.md`、飲料在庫プロジェクト文書をGitHub `main`で更新。コード・本番環境変更なし |
 | 2026-09-01 | beverage-inventory-ordering-system | 現行ブラウザ版を仕様正本としてPython/PySide6移行を開始。`python-desktop-migration` / Draft PR #2に候補版を隔離し、旧JSON互換、共有JSON、在庫計算、棚卸、売上CSV、レシピ、定期消費、発注、商品マスタ、PySide6 UI等を実装 | 現行実運用JSONでローカルpytest 11件成功、主要コレクション保存・再読込一致。Windows実機、EXE、実プリンター、共有サーバー試験は未確認。`main`・本番未変更 |
