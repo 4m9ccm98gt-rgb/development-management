@@ -37,9 +37,19 @@
 
 - `next-day-setup`: 実運用中。GitHubと正式ローカル、共有版の一致を確認しながら継続開発する。
 - `inventory-reconciliation-system`: 実運用中。自動実行と運用設定を継続管理する。
-- `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本としてPython/PySide6版へ段階移行中。GitHubの `python-desktop-migration` / Draft PR #2 で候補版を隔離し、Windows実機・EXE・共有サーバー確認前は本番へマージしない。
+- `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本としてPython/PySide6版へ段階移行中。GitHubの `python-desktop-migration` / Draft PR #2 で候補版を隔離し、CodexではまずPythonソース版のWindows実機確認を行う。EXEは必要時だけユーザーが手動ビルドし、本番共有版は確認完了まで更新しない。
 - `call-reception-assistant`: 初期管理文書を整備済み。アプリ本体は未実装。
-- `development-management`: ChatGPTがGitHub側の実装まで担当し、CodexをWindows実機・ローカル環境作業へ優先配分する新しい分業を正式運用とする。
+- `development-management`: ChatGPTがGitHub側の実装まで担当し、CodexをWindows実機・ローカル環境の問題確認へ優先配分する。Windowsアプリはソース起動、手動EXEビルド、手動配布更新の3経路を標準とする。
+
+## Windowsアプリ標準
+
+Python等のWindowsアプリでは、次を標準確認する。
+
+- 開発版は `RUN_DEV.cmd` 等から正式ソースを直接起動できる。
+- EXEが必要な場合は `BUILD_EXE_CLICK_ME.cmd` 等をユーザーが手動実行できる。
+- 配布対象では `UPDATE_SHARED_FOLDER.cmd` → `update_shared_folder.ps1` で手動更新できる。
+- Codexへ通常のEXEビルドを依頼しない。
+- Codexは手動ビルド失敗、EXE固有不具合、実プリンター、共有サーバー、ローカル専用ファイル等の実機問題確認に使う。
 
 ## 作業前チェック
 
@@ -49,7 +59,8 @@
 - 旧フォルダ、共有版、業務データ、実運用設定を無断で変更対象にしない。
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) と関連する設計判断を読む。
 - ChatGPTでGitHub側の作業が完結できるかを先に判断し、可能ならGitHub上で実装・テスト・PRまで進める。
-- Windows実機、正式ローカル、EXE、プリンター、共有サーバーが必要な作業だけCodexへ引き継ぐ。
+- Windows実機、正式ローカル、プリンター、共有サーバー等が必要な確認だけCodexへ引き継ぐ。
+- EXEビルドや配布更新は、原則としてユーザー向けワンクリックスクリプトを整備する。
 - 不明点をチャットの記憶だけで補わず、文書・Git差分・動作確認で確かめる。
 
 ## 作業中・作業後の記録
@@ -66,8 +77,9 @@
 - チャットだけに重要な判断を残すこと。
 - 正式ソース以外で開発すること。
 - 秘密情報、認証情報、実運用設定、顧客データ、業務データをGit管理すること。
-- GitHub上のテスト成功だけで、Windows実機・共有版・実プリンターまで確認済みと扱うこと。
+- GitHub上のテスト成功だけで、Windows実機・EXE・共有版・実プリンターまで確認済みと扱うこと。
 - ChatGPTとCodexで同じGitHub実装を理由なく二重に行うこと。
+- 単純なEXEビルドのためだけにCodexクレジットを消費すること。
 
 ## 新しいチャットへの標準指示文
 
@@ -75,6 +87,8 @@
 >
 > AI_OPERATING_MANUAL.md、AI_CHECKLIST.md、PROMPT_PRINCIPLES.md、AI_MEMORY.md、PROJECT_STATUS.md、VERSION_MATRIX.md、SYSTEM_OVERVIEW.md、docs/decisions.md、LESSONS_LEARNED.md を順番に読み、必要に応じて対象の projects/*.md と対象リポジトリを確認してください。
 >
-> GitHubへ直接アクセスできる場合は、GitHub上で完結する調査・実装・テスト・ブランチ・PRまでChatGPT側で進めてください。Windows実機、正式ローカル、EXEビルド、実プリンター、共有サーバーなどが必要な作業だけCodexへ引き継いでください。
+> GitHubへ直接アクセスできる場合は、GitHub上で完結する調査・実装・テスト・ブランチ・PRまでChatGPT側で進めてください。Python/Windowsアプリはソース起動を標準とし、EXEは必要時だけユーザーがワンクリックで手動ビルド、配布更新も専用スクリプトで手動実行できる状態にしてください。通常のEXEビルドはCodexへ依頼しないでください。
+>
+> Windows実機、正式ローカル、実プリンター、共有サーバー、手動ビルド失敗時の原因調査などが必要な作業だけCodexへ引き継いでください。
 >
 > 現在の進行状況、正式ソース、未完了作業、未コミット変更を把握してから作業を開始し、重要な判断や作業結果はチャットだけに残さずdevelopment-managementへ記録してください。
