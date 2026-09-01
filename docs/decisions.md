@@ -5,13 +5,25 @@
 
 新しい判断を追加するときは、必要に応じてルートの [DECISION_TEMPLATE.md](../DECISION_TEMPLATE.md) を使用する。
 
+## Python/Windowsアプリはソース起動を標準とし、EXEは手動ビルド、配布更新もワンクリック化する
+
+- 判断: Pythonで作るWindowsアプリは、日常の開発・確認では正式ソースを `.venv` から直接起動する。EXEは必要時だけユーザーがワンクリックで手動ビルドする。Codexには通常のEXEビルドを依頼しない。
+- 標準起動: `RUN_DEV.cmd` または同等のワンクリック起動手段を各Python/Windowsアプリに用意する。
+- 標準ビルド: EXE配布するアプリには `BUILD_EXE_CLICK_ME.cmd` または同等のワンクリックビルドを用意し、可能な範囲でテスト、ビルド、成果物確認まで自動化する。
+- 標準配布更新: 配布対象アプリには `update_shared_folder.ps1` と `UPDATE_SHARED_FOLDER.cmd` を原則必須とし、ユーザーがCodexを使わず配布先更新できるようにする。
+- 理由: CodexによるEXEビルドはクレジット消費が大きく、単純なビルド・配布作業へ継続的に使う費用対効果が低い。開発版をソース起動可能にし、定型処理をワンクリックスクリプト化することで、CodexをWindows固有不具合の調査や実機でしか確認できない作業へ温存できる。
+- 影響: 「実装後はCodexがEXEを作る」を標準フローから外す。通常の開発確認はPythonソース版で行い、EXE固有確認が必要な場面のみユーザーが手動ビルドする。
+- Codex例外: 手動ビルドが失敗した、PyInstaller/Nuitka固有エラーが出た、EXEだけで再現する問題がある等、原因調査が必要な場合のみCodexを使用する。
+- 配布安全性: 配布スクリプトは配布物と業務データを分離し、共有フォルダ全体への単純な `/MIR` を避け、更新前後の業務データ保持を確認する。
+- 適用範囲: 新規アプリだけでなく、今後既存Windowsアプリを改修する際にも可能な範囲で「ソース起動・手動ビルド・手動配布更新」の3経路へ統一する。
+
 ## ChatGPTをGitHub側の第一実装担当とし、Codexを実機作業へ優先配分する
 
-- 判断: ChatGPTが対象GitHubへ直接アクセスできる場合、調査・設計に加えてGitHub上の実装、テスト追加、ブランチ作成、commit、push、PR作成、レビューまでChatGPT側で行う。CodexはWindows実機、正式ローカル、EXEビルド、実プリンター、共有サーバー、ローカル専用ファイルなどChatGPTから直接扱えない作業を第一担当とする。
+- 判断: ChatGPTが対象GitHubへ直接アクセスできる場合、調査・設計に加えてGitHub上の実装、テスト追加、ブランチ作成、commit、push、PR作成、レビューまでChatGPT側で行う。CodexはWindows実機、正式ローカル、実プリンター、共有サーバー、ローカル専用ファイルなどChatGPTから直接扱えない作業を第一担当とする。通常のEXEビルドはCodex担当から除外する。
 - 理由: GitHub上だけで完結する作業をCodexへ重複依頼せず、Codexクレジットを実機・ローカル依存作業へ温存しながら、設計から実装・レビューまでの文脈をChatGPT側で連続して保持するため。
 - 影響: 従来の「ChatGPTが指示書を作り、Codexが原則実装する」運用は標準ではなくなる。ChatGPTからCodexへ渡す時点では、対象branch/commit、実装済み範囲、テスト結果、残作業、本番反映可否を明示する。
-- 安全条件: GitHub上の自動テスト成功とWindows実機確認を分離する。PR merge、安定版タグ、本番共有フォルダ反映、実運用データ更新は、従来どおり明示的な判断と必要な実機確認を経て行う。
-- 初回適用: `beverage-inventory-ordering-system` のPython移行で、ChatGPTが `python-desktop-migration` ブランチとDraft PR #2を作成し、Codexは後工程のWindows実機・EXE・共有サーバー試験へ回す方式を採用した。
+- 安全条件: GitHub上の自動テスト、Pythonソース版のWindows実機確認、EXE確認、共有版確認を分離する。PR merge、安定版タグ、本番共有フォルダ反映、実運用データ更新は、従来どおり明示的な判断と必要な確認を経て行う。
+- 初回適用: `beverage-inventory-ordering-system` のPython移行で、ChatGPTが `python-desktop-migration` ブランチとDraft PR #2を作成。以後、CodexはPythonソース版のWindows実機確認など必要な部分に限定し、EXEビルドは手動ワンクリックへ切り替える。
 
 ## 正式ソースを `Development\repos` に統一
 
