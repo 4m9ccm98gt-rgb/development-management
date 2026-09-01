@@ -2,6 +2,30 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## v1.1.0 - 2026-09-01
+
+### Changed
+
+- ChatGPT / Codexの役割分担を更新。
+- GitHubへ直接アクセスできるChatGPTは、調査・設計だけでなくGitHub上の実装、テスト追加、branch、commit、push、PR、レビューまで第一担当とする。
+- CodexはWindows実機、正式ローカル、EXEビルド、実プリンター、共有サーバー、複数PC試験など、ChatGPTから直接扱えない作業へ優先して使用する。
+- GitHub上のテスト成功とWindows実機確認を別の確認レベルとして扱う。
+- Codexへの引き継ぎ時は、対象branch/commit、実装済み範囲、テスト結果、残作業、本番反映可否を明記する。
+- `AI_OPERATING_MANUAL.md`、`AGENTS.md`、`DEVELOPMENT_RULES.md`、`AI_STARTUP.md`、`docs/decisions.md`、`PROJECT_STATUS.md` を新運用へ更新。
+- `projects/beverage-inventory-ordering-system.md` をPython移行の現在地へ更新。
+
+### Result
+
+GitHub上だけで完結する作業をChatGPTとCodexで重複せず、CodexクレジットをWindows実機・ローカル依存作業へ優先配分する運用を正式化。
+
+### First application
+
+- `beverage-inventory-ordering-system` で `python-desktop-migration` / Draft PR #2をChatGPT側で実装。
+- 現行実運用JSONによる互換確認とローカルpytest 11件成功までChatGPT側で実施。
+- Windows実機、EXEビルド、実プリンター、共有サーバー複数PC試験はCodex側の後工程として分離。
+
+確認状況: GitHub管理文書更新済み。Windows実機を必要としない運用ルール変更。飲料在庫Python版そのもののWindows実機確認は未実施。
+
 ## v1.0.0 - 2026-07-20
 
 Initial stable release.
@@ -29,6 +53,8 @@ Initial stable release.
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-09-01 | development-management | ChatGPTをGitHub側の第一実装担当、CodexをWindows実機・ローカル環境作業の第一担当とする分業へ変更。GitHub上の実装・テスト・branch・commit・push・PR・レビューをChatGPT側で進め、Codexクレジットを実機作業へ優先配分する運用を正式化 | `AGENTS.md`、`AI_OPERATING_MANUAL.md`、`AI_STARTUP.md`、`DEVELOPMENT_RULES.md`、`docs/decisions.md`、`PROJECT_STATUS.md`、飲料在庫プロジェクト文書をGitHub `main`で更新。コード・本番環境変更なし |
+| 2026-09-01 | beverage-inventory-ordering-system | 現行ブラウザ版を仕様正本としてPython/PySide6移行を開始。`python-desktop-migration` / Draft PR #2に候補版を隔離し、旧JSON互換、共有JSON、在庫計算、棚卸、売上CSV、レシピ、定期消費、発注、商品マスタ、PySide6 UI等を実装 | 現行実運用JSONでローカルpytest 11件成功、主要コレクション保存・再読込一致。Windows実機、EXE、実プリンター、共有サーバー試験は未確認。`main`・本番未変更 |
 | 2026-07-23 | menu-sheet-generator | `v1.0.0`初回正式リリース。WPFお品書き印刷、日本語・英語・従業員用、PMS CSV自動集計、宿泊日指定、泊目別・部屋数集計、従業員確認用自動印刷、共有フォルダ配布、実運用データ保持を正式版として登録 | タグ`v1.0.0`とGitHub Releaseをコミット`2376c216`へ公開。ビルド・全自動テスト成功、実機動作確認済み |
 | 2026-07-21 | menu-sheet-generator | GitHub管理開始と正式ソース確定。自己完結型`win-x64`配布、ワンクリック共有フォルダ配布、PMS CSV自動集計印刷、対象日絞り込み、泊目別集計、泊目別従業員確認用自動印刷を登録 | GitHub `main`・正式ローカル`6e97ccea`同期、ビルド・全自動テスト成功、実プリンター確認完了 |
 | 2026-07-21 | call-reception-assistant | 空の正式GitHubリポジトリを `Development\repos` 配下へcloneし、README、`docs/`、AI引き継ぎ、AI作業ガイド、`.gitignore`を作成。初回commit・pushと管理文書への登録を実施 | `main`と`origin/main`が`95bd3ca`で一致、Git状態クリーン、文書リンク・秘密情報を確認。アプリ本体は未実装。`PROJECT_BOOTSTRAP v1.0.0`に基づくプロジェクト化完了 |
