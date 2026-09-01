@@ -8,10 +8,10 @@
 |---|---|
 | next-day-setup | 実運用中。GitHub・正式ローカル・共有版の一致を確認しながら継続開発する。 |
 | inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、運用設定を継続管理する。 |
-| beverage-inventory-ordering-system | 現行ブラウザ版を仕様正本としてPython/PySide6版へ段階移行中。`python-desktop-migration` / Draft PR #2で候補版を隔離。次はPythonソース版のWindows実機確認。EXEは必要時だけユーザーが手動ビルドし、共有配布更新も専用スクリプトで手動実行する。 |
+| beverage-inventory-ordering-system | Pythonソース版のWindows実機確認・共有保存模擬・UPD導線整備まで完了。`python-desktop-migration` HEADは`94f0b5f`。次は現行ブラウザ版から最新実運用JSONを再出力して全件突合し、`development-management` の正式ローカルcloneを復旧する。EXEは必要時だけユーザーが手動ビルドする。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
-| development-management | ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする。Python/Windowsアプリはソース起動・手動EXEビルド・手動配布更新の3経路を共通標準化。 |
+| development-management | ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする。Python/Windowsアプリはソース起動・手動EXEビルド・手動配布更新の3経路を共通標準化。正式ローカルclone不在が判明したため復旧対象。 |
 
 ## 全体の現在地
 
@@ -23,7 +23,7 @@
 - 配布対象のWindowsアプリは、配布先更新用 `update_shared_folder.ps1` と `UPDATE_SHARED_FOLDER.cmd` を原則必須とする。
 - GitHub上の自動テスト、Pythonソース版Windows実機確認、EXE確認、共有版・実プリンター確認を別の確認レベルとして扱う。
 - PR merge、安定版タグ、本番共有版更新は、必要な確認と明示的な判断後に行う。
-- `beverage-inventory-ordering-system` はブラウザ版からPython/PySide6版への移行を開始。現行JSON互換を維持し、共有サーバー上の1つのJSONを全PCで利用する構成を候補として実装中。
+- `beverage-inventory-ordering-system` はブラウザ版からPython/PySide6版への移行を開始し、Windows Pythonソース版確認まで到達。現行JSON互換を維持し、共有サーバー上の1つのJSONを全PCで利用する構成を候補としている。
 
 ## Windowsアプリ共通標準
 
@@ -34,7 +34,8 @@
 
 ## 進行中の作業
 
-- `beverage-inventory-ordering-system`: GitHub `python-desktop-migration` / Draft PR #2でPython候補版を実装。旧JSON互換、在庫計算、売上CSV、棚卸、レシピ、定期消費、発注、商品マスタ、共有JSONロック・backup・atomic replace、PySide6 UI等を実装済み。2026-09-01の実運用JSONでローカルpytest 11件成功、主要コレクションの保存・再読込一致を確認済み。次はWindows実機でPythonソース版を起動し、GUI・実データ・共有保存を確認する。EXEはその後、必要時にユーザーが手動ビルドする。
+- `beverage-inventory-ordering-system`: `python-desktop-migration` / Draft PR #2。Windows正式ローカルでPython 3.13.14 / PySide6 6.8.3、pytest 11 passed / 1 skipped、RUN_DEV起動、主要GUI、ファイルダイアログ、Windows/UNCパス、共有保存のlock/backup/atomic replace、2インスタンス変更検知、2プロセス同時更新を確認済み。`UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` も追加しPowerShell 5.1模擬確認済み。CodexはEXEをビルドしていない。PC内で見つかったJSONは50件版で、ChatGPT側の66件・発注履歴130件版とは別物のため最新実運用全件比較は未完了。
+- `development-management`: GitHub正本は更新済みだが、Codex確認時に `C:\Users\suisy\Documents\Development\repos\development-management` のローカルcloneが存在しなかった。Codexが最新運用ルールを開始時に読めるよう正式ローカルcloneを復旧する。
 - `next-day-setup`: 実運用を維持しながら継続開発。
 - `inventory-reconciliation-system`: 自動実行と運用設定の継続管理。
 - `call-reception-assistant`: アプリ本体の設計・実装待ち。
@@ -47,27 +48,26 @@
 - 2026-09-01にWindowsアプリの標準を追加。日常開発はPythonソース起動、EXEはユーザーの手動ワンクリックビルド、配布先更新も専用ワンクリックスクリプトとし、通常のEXEビルドをCodex担当から外した。
 - `beverage-inventory-ordering-system` の旧GAS共有保存案 Draft PR #1を未mergeでclose。
 - `beverage-inventory-ordering-system` のPython移行 branch `python-desktop-migration` とDraft PR #2を作成。
+- `beverage-inventory-ordering-system` のWindows Pythonソース版・共有保存模擬・UPD導線整備をcommit `94f0b5f`で確認。
 - menu-sheet-generator、next-day-setup、inventory-reconciliation-system等の既存業務システムを継続管理。
 
 ## 未確認項目
 
-- `beverage-inventory-ordering-system` Python版のWindows実機PySide6表示。
-- 現行ブラウザ版とPython版の在庫・要発注・発注履歴の全件突合。
+- 現行ブラウザ版から再出力した最新実運用JSONを使ったPython版全件突合。
+- 66件版相当の実運用データで売上履歴・発注履歴・商品マスタを含む比較。
 - Python版棚卸表の実プリンター確認。
 - 共有サーバー上からの直接起動と2台以上のPCによる同時更新試験。
 - Python版の手動EXEビルド経路のWindows確認。
-- Python版の配布先更新スクリプト整備・安全確認。
+- `development-management` 正式ローカルcloneの復旧。
 - `apps/ordering/` の業者/FAX機能とPython在庫側の統合。
 - GASスマホ棚卸連携。
 
 ## 次にやること
 
-1. `beverage-inventory-ordering-system` の `python-desktop-migration` を正式ローカルへ取得する。
-2. CodexまたはWindows実機でPythonソース版を起動し、テスト・GUI・実運用JSON互換を確認する。Codexには通常のEXEビルドをさせない。
-3. 共有保存をローカル模擬環境で確認する。
-4. 必要な修正をChatGPT側でGitHubへ反映する。
-5. Python版に `UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` を整備する。
-6. EXE固有確認が必要な段階で、ユーザーが `BUILD_EXE_CLICK_ME.cmd` を手動実行する。
-7. 共有サーバーのテスト領域へユーザーが専用更新スクリプトで配布し、複数PC更新を確認する。
-8. 問題がなければPython版の本番切替判断を行う。
-9. その後、GASスマホ棚卸と発注システム統合へ進む。
+1. 現行ブラウザ版で最新 `drink-inventory-data.json` を新規出力する。
+2. そのコピーをWindows Python版へ読み込み、商品・売上・発注履歴・商品マスタ・現在庫・判定在庫を全件突合する。
+3. `development-management` を `C:\Users\suisy\Documents\Development\repos\development-management` へclone / 同期する。
+4. 全件突合に問題がなければ、必要な段階でユーザーが `BUILD_EXE_CLICK_ME.cmd` を手動実行する。
+5. 共有サーバーのテスト領域へユーザーが専用更新スクリプトで配布し、複数PC更新を確認する。
+6. 問題がなければPython版の本番切替判断を行う。
+7. その後、GASスマホ棚卸と発注システム統合へ進む。
