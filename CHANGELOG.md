@@ -2,6 +2,23 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## v1.1.1 - 2026-09-01
+
+### Changed
+
+- Python/Windowsアプリの開発標準を「ソース起動・手動EXEビルド・手動配布更新」の3経路へ統一。
+- 日常の開発・確認では `.venv` のPythonソース版を起動し、EXE化を毎回の工程から外した。
+- EXE配布するアプリには `BUILD_EXE_CLICK_ME.cmd` または同等のワンクリックビルドを必須化。
+- 配布対象アプリには `update_shared_folder.ps1` と `UPDATE_SHARED_FOLDER.cmd` を原則必須化。
+- 通常のEXEビルドをCodex担当から外し、手動ビルド失敗やEXE固有不具合の原因調査時だけCodexを使用する方針へ変更。
+- `AGENTS.md`、`AI_OPERATING_MANUAL.md`、`AI_CHECKLIST.md`、`AI_STARTUP.md`、`DEVELOPMENT_RULES.md`、`PROJECT_BOOTSTRAP.md`、`REUSE_MAP.md`、`docs/decisions.md`、`PROJECT_STATUS.md`、飲料在庫プロジェクト文書を更新。
+
+### Result
+
+定型的なEXEビルド・配布更新でCodexクレジットを消費せず、ユーザーが必要なときだけワンクリックで実行できる構成を全Windowsアプリの標準とした。CodexはWindows実機でしか確認できない問題の調査へ優先配分する。
+
+確認状況: GitHub管理文書更新済み。各既存アプリへの標準スクリプト実装状況はプロジェクトごとに別途確認する。
+
 ## v1.1.0 - 2026-09-01
 
 ### Changed
@@ -24,7 +41,7 @@ GitHub上だけで完結する作業をChatGPTとCodexで重複せず、Codexク
 - 現行実運用JSONによる互換確認とローカルpytest 11件成功までChatGPT側で実施。
 - Windows実機、EXEビルド、実プリンター、共有サーバー複数PC試験はCodex側の後工程として分離。
 
-確認状況: GitHub管理文書更新済み。Windows実機を必要としない運用ルール変更。飲料在庫Python版そのもののWindows実機確認は未実施。
+確認状況: v1.1.1でEXEビルド担当を再整理。通常のEXEビルドはCodex担当から除外した。
 
 ## v1.0.0 - 2026-07-20
 
@@ -53,6 +70,7 @@ Initial stable release.
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-09-01 | development-management | Python/Windowsアプリをソース起動・手動EXEビルド・手動配布更新の3経路へ統一。Codexの通常担当からEXEビルドを外し、`BUILD_EXE_CLICK_ME.cmd` と `UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` を標準化 | 管理文書をGitHub `main`で更新。既存各アプリへのスクリプト適用状況は別途確認 |
 | 2026-09-01 | development-management | ChatGPTをGitHub側の第一実装担当、CodexをWindows実機・ローカル環境作業の第一担当とする分業へ変更。GitHub上の実装・テスト・branch・commit・push・PR・レビューをChatGPT側で進め、Codexクレジットを実機作業へ優先配分する運用を正式化 | `AGENTS.md`、`AI_OPERATING_MANUAL.md`、`AI_STARTUP.md`、`DEVELOPMENT_RULES.md`、`docs/decisions.md`、`PROJECT_STATUS.md`、飲料在庫プロジェクト文書をGitHub `main`で更新。コード・本番環境変更なし |
 | 2026-09-01 | beverage-inventory-ordering-system | 現行ブラウザ版を仕様正本としてPython/PySide6移行を開始。`python-desktop-migration` / Draft PR #2に候補版を隔離し、旧JSON互換、共有JSON、在庫計算、棚卸、売上CSV、レシピ、定期消費、発注、商品マスタ、PySide6 UI等を実装 | 現行実運用JSONでローカルpytest 11件成功、主要コレクション保存・再読込一致。Windows実機、EXE、実プリンター、共有サーバー試験は未確認。`main`・本番未変更 |
 | 2026-07-23 | menu-sheet-generator | `v1.0.0`初回正式リリース。WPFお品書き印刷、日本語・英語・従業員用、PMS CSV自動集計、宿泊日指定、泊目別・部屋数集計、従業員確認用自動印刷、共有フォルダ配布、実運用データ保持を正式版として登録 | タグ`v1.0.0`とGitHub Releaseをコミット`2376c216`へ公開。ビルド・全自動テスト成功、実機動作確認済み |
