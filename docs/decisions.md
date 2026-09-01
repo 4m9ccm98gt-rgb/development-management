@@ -5,6 +5,14 @@
 
 新しい判断を追加するときは、必要に応じてルートの [DECISION_TEMPLATE.md](../DECISION_TEMPLATE.md) を使用する。
 
+## ChatGPTをGitHub側の第一実装担当とし、Codexを実機作業へ優先配分する
+
+- 判断: ChatGPTが対象GitHubへ直接アクセスできる場合、調査・設計に加えてGitHub上の実装、テスト追加、ブランチ作成、commit、push、PR作成、レビューまでChatGPT側で行う。CodexはWindows実機、正式ローカル、EXEビルド、実プリンター、共有サーバー、ローカル専用ファイルなどChatGPTから直接扱えない作業を第一担当とする。
+- 理由: GitHub上だけで完結する作業をCodexへ重複依頼せず、Codexクレジットを実機・ローカル依存作業へ温存しながら、設計から実装・レビューまでの文脈をChatGPT側で連続して保持するため。
+- 影響: 従来の「ChatGPTが指示書を作り、Codexが原則実装する」運用は標準ではなくなる。ChatGPTからCodexへ渡す時点では、対象branch/commit、実装済み範囲、テスト結果、残作業、本番反映可否を明示する。
+- 安全条件: GitHub上の自動テスト成功とWindows実機確認を分離する。PR merge、安定版タグ、本番共有フォルダ反映、実運用データ更新は、従来どおり明示的な判断と必要な実機確認を経て行う。
+- 初回適用: `beverage-inventory-ordering-system` のPython移行で、ChatGPTが `python-desktop-migration` ブランチとDraft PR #2を作成し、Codexは後工程のWindows実機・EXE・共有サーバー試験へ回す方式を採用した。
+
 ## 正式ソースを `Development\repos` に統一
 
 - 判断: 新規開発、修正、ビルド、コミットは正式パスだけで行う。
