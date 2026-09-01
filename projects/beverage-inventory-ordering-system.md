@@ -39,7 +39,7 @@ GitHub: `4m9ccm98gt-rgb/beverage-inventory-ordering-system`
 - Python/PySide6移行を継続する。
 - 現行ブラウザ版を削除・上書きせず、移行完了まで仕様正本・比較対象として残す。
 - データ構造・業務計算だけでなく、UIも現行 `index.html` / `styles.css` / `app.js` の最終表示状態を正本としてPySide6へ移行する。
-- UI移行は「似たデスクトップUI」ではなく、現行の色、余白、寸法、配置、情報密度、操作順、カレンダー、折りたたみ、商品調整、個別発注、棚卸し画面を可能な限り差分なく再現する。
+- UI移行は「似たデスクトップUI」ではなく、現行の色、余白、寸法、配置、情報密度、操作順、カレンダー、折りたたみ、商品調整、個別発注、棚卸し画面を差分ゼロへ向けて再現する。
 - WebView化やブラウザUI埋め込みには切り替えない。PySide6ネイティブUIとして再構築する。
 - 共有サーバー上の `BeverageInventory.exe` を各PCから直接起動する。
 - 正本データは共有配布フォルダ内の `data/inventory-data.json` とする。
@@ -65,6 +65,7 @@ python_app\update_shared_folder.ps1
 ## GitHub候補版
 
 - branch: `python-desktop-migration`
+- UI全面再構築第一弾HEAD: `d5d3e65ce8fd90f823e0e591f46fad8e13a7432b`
 - Draft PR: #2 `Start Python desktop migration`
 - `main` には未マージ。本番運用版は変更していない。
 - 旧GAS共有保存案Draft PR #1はclose済み、未merge。
@@ -112,7 +113,7 @@ python_app\update_shared_folder.ps1
 
 ## UI全面再構築
 
-現行ブラウザ版の最終UIを正本として `python-desktop-migration` でPySide6 UIを再構築中。
+現行ブラウザ版の最終UIを正本として `python-desktop-migration` でPySide6 UIを再構築。
 
 旧構成:
 
@@ -142,7 +143,7 @@ python_app\update_shared_folder.ps1
 - レシピ編集
 - 個別発注ダイアログ
 
-ブラウザCSSの主要値もPySide6側へ反映する。
+ブラウザCSSの主要値もPySide6側へ反映。
 
 - bg `#f6f7f4`
 - ink `#1c2522`
@@ -154,12 +155,14 @@ python_app\update_shared_folder.ps1
 - header `#20352f`
 - eyebrow `#9fd6cd`
 - main max width 1180px相当
-- header padding 28px / 最大48px相当
-- title 42px相当（通常デスクトップ幅）
-- button min-height 42px / radius 6px
+- header padding 28px / 48px相当
+- title 42px相当
+- button min-height 42px / radius 6px / padding 0 16px
+- input min-height 38px
 - metric min-height 92px / padding 18px
 - panel radius 8px
 - calendar day min-height 38px
+- 配送休み・画面棚卸しのpill形状
 
 UIコードは保守性のため以下へ分割。
 
@@ -172,7 +175,7 @@ UIコードは保守性のため以下へ分割。
 
 `test_ui_parity_source.py` で旧 `QTabWidget` 非使用、主要UIラベル、ブラウザ配色値をソースレベル検査する。
 
-GitHub ActionsではUI再構築後のPython compile / migration tests成功を確認済み。最新微調整HEADについてもActions結果を確認してからWindowsへ渡す。
+UI全面再構築第一弾HEAD `d5d3e65c` のGitHub Actions `Python migration tests` はWindows-latestで成功。Python compileとmigration testsを通過済み。
 
 ## 本番切替前の未確認事項
 
