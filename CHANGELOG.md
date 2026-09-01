@@ -11,7 +11,7 @@
 - WebView等へ切り替えず、PySide6ネイティブUIとして現行の色、余白、寸法、配置、情報密度、操作順を再現する。
 - 共有サーバー試験はUI一致確認まで停止する。
 - ユーザー手動EXEビルドは成功済みだが、EXE起動成功とUI同等性確認を別ゲートとして管理する。
-- PySide6 UI全面再構築第一弾を `python-desktop-migration` に実装。旧 `QTabWidget` を撤去し、業務順1画面ダッシュボード、商品調整・個別発注・棚卸し管理画面を再構成。
+- PySide6 UI全面再構築第一弾を `python-desktop-migration` HEAD `d5d3e65c` まで実装。旧 `QTabWidget` を撤去し、業務順1画面ダッシュボード、商品調整・個別発注・棚卸し管理画面を再構成。
 - ブラウザCSSの主要色・寸法をPySide6側へ反映し、UIソース検査を追加。
 
 ### Result
