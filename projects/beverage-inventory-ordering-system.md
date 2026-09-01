@@ -46,6 +46,9 @@ GitHub: `4m9ccm98gt-rgb/beverage-inventory-ordering-system`
 - 正本データは共有配布フォルダ内の `data/inventory-data.json` とする。
 - 更新時はロック → 最新JSON再読込 → 変更 → backup → atomic replace とし、複数PC更新による破損・単純上書きを防ぐ。
 - 共有JSONの変更を定期検知し、別PCの更新へ追従する。
+- 日常開発はPythonソース版で行い、EXEは必要時だけユーザーが手動ビルドする。
+- Codexには通常のEXEビルドを依頼しない。
+- 配布先更新は専用ワンクリックスクリプトを整備し、ユーザーが手動実行できるようにする。
 
 想定配置:
 
@@ -57,6 +60,23 @@ GitHub: `4m9ccm98gt-rgb/beverage-inventory-ordering-system`
     inventory-data.json
     inventory-data.backup.json
 ```
+
+### 標準操作経路
+
+```text
+開発起動
+python_app\RUN_DEV.cmd
+
+必要時だけEXE化
+python_app\BUILD_EXE_CLICK_ME.cmd
+
+配布先更新
+UPDATE_SHARED_FOLDER.cmd
+  ↓
+update_shared_folder.ps1
+```
+
+`RUN_DEV.cmd` と `BUILD_EXE_CLICK_ME.cmd` はPython候補版に存在。配布先更新スクリプトは本番切替前に追加する。
 
 ### GitHub上の候補版
 
@@ -85,7 +105,8 @@ GitHub: `4m9ccm98gt-rgb/beverage-inventory-ordering-system`
 - 共有JSONのロック、backup、atomic replace
 - 共有データ変更検知
 - PySide6 UI
-- PyInstaller onedirビルド手順
+- `RUN_DEV.cmd`
+- `BUILD_EXE_CLICK_ME.cmd`
 - GitHub Actions用Pythonテスト定義
 
 ## 実データ互換確認
@@ -104,15 +125,17 @@ GitHub: `4m9ccm98gt-rgb/beverage-inventory-ordering-system`
   - deletedItemKeys: 4
 - 2026-09-01時点のPython計算確認: 66商品 / 販売16 / 要発注0 / 未記入0
 
-この検証はデータ互換とPythonロジックの確認であり、Windows実機・共有サーバー・実プリンター確認済みを意味しません。
+この検証はデータ互換とPythonロジックの確認であり、Windows実機・EXE・共有サーバー・実プリンター確認済みを意味しません。
 
 ## 本番切替前の未確認事項
 
-- Windows実機でPySide6画面を確認
-- WindowsでPyInstaller onedirビルド
+- Windows実機でPythonソース版のPySide6画面を確認
 - 現行ブラウザ版と在庫・要発注・発注履歴を全件突合
 - 棚卸表を実プリンターで確認
-- 共有サーバー上から直接起動
+- 共有保存をローカル模擬環境で確認
+- `update_shared_folder.ps1` / `UPDATE_SHARED_FOLDER.cmd` を追加して安全性確認
+- 必要時にユーザーが `BUILD_EXE_CLICK_ME.cmd` を手動実行し、EXE固有動作を確認
+- 共有サーバーのテスト領域へ手動配布し、直接起動
 - 2台以上のPCで共有JSONの同時更新を確認
 - 配送カレンダー表示そのものの移植・確認
 - ブラウザ通知のデスクトップ向け置換
@@ -140,19 +163,23 @@ PC側の正本データをGoogleへ全面移行するのではなく、PC本体�
 
 2026-09-01以降、このプロジェクトを含むGitHub開発は次の分業を基本とします。
 
-- ChatGPT: GitHub調査、設計、実装、テスト、branch、commit、push、PR、レビュー
-- Codex: Windows実機、正式ローカル、EXEビルド、実プリンター、共有サーバー、複数PC試験
+- ChatGPT: GitHub調査、設計、実装、テスト、branch、commit、push、PR、レビュー、標準スクリプト整備
+- Codex: Windows実機でのPythonソース版確認、実プリンター、共有サーバー、複数PC試験、手動ビルド失敗時の原因調査
+- ユーザー: 必要時だけ `BUILD_EXE_CLICK_ME.cmd` で手動ビルド、専用更新スクリプトで手動配布
 
-GitHub上だけで完結する作業をCodexへ重複依頼せず、Codexクレジットを実機作業へ優先配分します。
+GitHub上だけで完結する作業や単純EXEビルドをCodexへ重複依頼せず、Codexクレジットを実機問題調査へ優先配分します。
 
 ## 次にやること
 
-1. Codex / Windows実機で `python-desktop-migration` を取得する。
-2. `python_app/BUILD_EXE_CLICK_ME.cmd` でテストとPyInstallerビルドを確認する。
-3. 現行実運用JSONをPython版へ初回移行し、現行ブラウザ版と全件突合する。
-4. 共有サーバーのテスト領域で直接起動し、複数PC更新を試験する。
-5. 問題がなければPython版の本番切替手順を確定する。
-6. 本体移行後にGASスマホ棚卸、発注システム統合へ進む。
+1. Codex / Windows実機で `python-desktop-migration` を正式ローカルへ取得する。
+2. `python_app/RUN_DEV.cmd` または `.venv` のPythonから候補版を起動し、テスト・GUI・実運用JSON互換を確認する。
+3. 共有保存をローカル模擬環境で確認する。
+4. 問題があればChatGPT側でGitHub修正を進める。
+5. Python版へ `update_shared_folder.ps1` / `UPDATE_SHARED_FOLDER.cmd` を追加する。
+6. EXE固有確認が必要な段階で、ユーザーが `python_app/BUILD_EXE_CLICK_ME.cmd` を手動実行する。
+7. 共有サーバーのテスト領域へ専用更新スクリプトで手動配布し、複数PC更新を試験する。
+8. 問題がなければPython版の本番切替手順を確定する。
+9. 本体移行後にGASスマホ棚卸、発注システム統合へ進む。
 
 ## 注意
 
@@ -160,5 +187,6 @@ GitHub上だけで完結する作業をCodexへ重複依頼せず、Codexクレ�
 - 実運用JSONをGit管理しない。
 - 認証情報、実運用設定、顧客データ、出力物をGit管理しない。
 - 現行ブラウザ版を移行確認前に削除・上書きしない。
-- GitHub上のテスト成功とWindows実機・共有版確認を分けて記録する。
-- 本番共有フォルダへの反映は、実機確認完了後に行う。
+- GitHub上のテスト、Pythonソース版実機、EXE、共有版を分けて記録する。
+- 通常のEXEビルドをCodexへ依頼しない。
+- 本番共有フォルダへの反映は、実機確認完了後に専用更新スクリプトで行う。
