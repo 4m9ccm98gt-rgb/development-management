@@ -11,7 +11,7 @@
 | beverage-inventory-ordering-system | Pythonソース版のWindows実機確認と最新66商品版JSONの全件互換確認まで完了。`python-desktop-migration` HEADは`94f0b5f`。66/66商品一致、pytest 12 passed。次の本番ゲートはユーザー手動EXE、共有サーバー実機、実プリンター。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
-| development-management | ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする。Python/Windowsアプリはソース起動・手動EXEビルド・手動配布更新の3経路を共通標準化。正式ローカルclone不在のため復旧対象。 |
+| development-management | 正式ローカルcloneを `C:\Users\suisy\Documents\Development\repos\development-management` に復旧済み。ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする現行ルールを次回以降ローカルから参照可能。 |
 
 ## 全体の現在地
 
@@ -24,6 +24,7 @@
 - GitHub上の自動テスト、Pythonソース版Windows実機確認、EXE確認、共有版・実プリンター確認を別の確認レベルとして扱う。
 - PR merge、安定版タグ、本番共有版更新は、必要な確認と明示的な判断後に行う。
 - `beverage-inventory-ordering-system` は最新実運用JSONについて、現行ブラウザ版からWindows Pythonソース版へのデータ移行互換性を全件確認済み。EXE・共有サーバー・実プリンターは未確認。
+- `development-management` の正式ローカルcloneはGitHub正本から復旧済みで、`main` / `origin/main` 一致・git status cleanを確認済み。旧 `C:\Users\suisy\Documents\開発環境整備プロジェクト` cloneは未コミット変更があるため別物として保護し、変更・削除していない。
 
 ## Windowsアプリ共通標準
 
@@ -35,7 +36,6 @@
 ## 進行中の作業
 
 - `beverage-inventory-ordering-system`: `python-desktop-migration` / Draft PR #2。Windows正式ローカルでPython 3.13.14 / PySide6 6.8.3、`RUN_DEV.cmd` 起動、主要GUI、ファイルダイアログ、Windows/UNCパス、共有保存のlock/backup/atomic replace、2インスタンス変更検知、2プロセス同時更新を確認済み。`UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` もPowerShell 5.1模擬確認済み。2026-09-01 11:59:52にブラウザ版から新規書き出しした最新JSONでpytest 12 passed / 0 failed / 0 skipped。items 66、salesDates 90、recipes 34、orderHistory 130等を移行し、現行`app.js`と66商品を全件比較して66/66一致・不一致0件。データ移行互換性は確認済み。
-- `development-management`: GitHub正本は更新済みだが、Codex確認時に `C:\Users\suisy\Documents\Development\repos\development-management` のローカルcloneが存在しなかった。Codexが最新運用ルールを開始時に読めるよう正式ローカルcloneを復旧する。
 - `next-day-setup`: 実運用を維持しながら継続開発。
 - `inventory-reconciliation-system`: 自動実行と運用設定の継続管理。
 - `call-reception-assistant`: アプリ本体の設計・実装待ち。
@@ -46,6 +46,7 @@
 - 正式ソースを `Development\repos` 配下へ統一。
 - ChatGPT / Codexの役割分担を2026-09-01に更新。ChatGPTがGitHub側実装まで担当し、Codexを実機作業へ優先配分する運用を正式化。
 - 2026-09-01にWindowsアプリの標準を追加。日常開発はPythonソース起動、EXEはユーザーの手動ワンクリックビルド、配布先更新も専用ワンクリックスクリプトとし、通常のEXEビルドをCodex担当から外した。
+- `development-management` の正式ローカルcloneを `C:\Users\suisy\Documents\Development\repos\development-management` にGitHub正本から復旧。`main` / `origin/main` 一致、git status clean、必須文書と現行8ルールを確認済み。
 - `beverage-inventory-ordering-system` の旧GAS共有保存案 Draft PR #1を未mergeでclose。
 - `beverage-inventory-ordering-system` のPython移行 branch `python-desktop-migration` とDraft PR #2を作成。
 - `beverage-inventory-ordering-system` のWindows Pythonソース版・共有保存模擬・UPD導線整備をcommit `94f0b5f`で確認。
@@ -62,14 +63,13 @@
 - ブラウザ通知のデスクトップ向け置換。
 - `apps/ordering/` の業者/FAX機能とPython在庫側の統合。
 - GASスマホ棚卸連携。
-- `development-management` 正式ローカルcloneの復旧。
+- 旧 `C:\Users\suisy\Documents\開発環境整備プロジェクト` cloneの未コミット変更の扱い判断。
 
 ## 次にやること
 
-1. `development-management` の正式ローカルcloneを復旧し、Codexが開始時に最新ルールを読める状態にする。
-2. EXE固有確認が必要な時点で、ユーザーが `beverage-inventory-ordering-system\python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行する。
-3. EXEが正常なら、共有サーバーのテスト領域へ `UPDATE_SHARED_FOLDER.cmd` で手動配布する。
-4. 共有サーバー上から直接起動し、2台以上のPCで共有JSON同時更新を確認する。
-5. 棚卸表を実プリンターで確認する。
-6. 問題がなければDraft PR #2の本番切替・merge可否を判断する。
-7. 本体移行後にGASスマホ棚卸と発注システム統合へ進む。
+1. EXE固有確認が必要な時点で、ユーザーが `beverage-inventory-ordering-system\python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行する。
+2. EXEが正常なら、共有サーバーのテスト領域へ `UPDATE_SHARED_FOLDER.cmd` で手動配布する。
+3. 共有サーバー上から直接起動し、2台以上のPCで共有JSON同時更新を確認する。
+4. 棚卸表を実プリンターで確認する。
+5. 問題がなければDraft PR #2の本番切替・merge可否を判断する。
+6. 本体移行後にGASスマホ棚卸と発注システム統合へ進む。
