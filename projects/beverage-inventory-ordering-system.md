@@ -65,7 +65,7 @@ python_app\update_shared_folder.ps1
 ## GitHub候補版
 
 - branch: `python-desktop-migration`
-- UI全面再構築第一弾HEAD: `d5d3e65ce8fd90f823e0e591f46fad8e13a7432b`
+- 最新UI調整HEAD: `6bdee339e3432de11389f97b633dd053377f3660`
 - Draft PR: #2 `Start Python desktop migration`
 - `main` には未マージ。本番運用版は変更していない。
 - 旧GAS共有保存案Draft PR #1はclose済み、未merge。
@@ -115,13 +115,8 @@ python_app\update_shared_folder.ps1
 
 現行ブラウザ版の最終UIを正本として `python-desktop-migration` でPySide6 UIを再構築。
 
-旧構成:
+旧 `QTabWidget` 構成を撤去し、以下をブラウザ版と同じ業務順1画面へ再配置した。
 
-- `QTabWidget` による「在庫 / 棚卸 / 売上CSV / 発注 / 商品設定 / 定期消費 / 配送休み」分割
-
-新構成:
-
-- `QTabWidget` を撤去
 - 濃緑ヘッダー `#20352f`
 - `Inventory Control` / `飲料在庫チェック`
 - 個別発注 / 在庫データ読込 / 在庫データ保存 / 飲料発注システム / 通知 / 商品調整 / アラート出力
@@ -141,28 +136,7 @@ python_app\update_shared_folder.ps1
 - 商品調整の専用管理画面
 - 商品一覧 / 商品マスタ出力 / 定期消費
 - レシピ編集
-- 個別発注ダイアログ
-
-ブラウザCSSの主要値もPySide6側へ反映。
-
-- bg `#f6f7f4`
-- ink `#1c2522`
-- muted `#64716d`
-- line `#d9dfd9`
-- accent `#0f766e`
-- accent-dark `#0d5f58`
-- danger `#b91c1c`
-- header `#20352f`
-- eyebrow `#9fd6cd`
-- main max width 1180px相当
-- header padding 28px / 48px相当
-- title 42px相当
-- button min-height 42px / radius 6px / padding 0 16px
-- input min-height 38px
-- metric min-height 92px / padding 18px
-- panel radius 8px
-- calendar day min-height 38px
-- 配送休み・画面棚卸しのpill形状
+- 個別発注
 
 UIコードは保守性のため以下へ分割。
 
@@ -173,22 +147,76 @@ UIコードは保守性のため以下へ分割。
 - `ui_actions.py`
 - `ui_dialogs.py`
 
-`test_ui_parity_source.py` で旧 `QTabWidget` 非使用、主要UIラベル、ブラウザ配色値をソースレベル検査する。
+## 第1回 Windows UI比較
 
-UI全面再構築第一弾HEAD `d5d3e65c` のGitHub Actions `Python migration tests` はWindows-latestで成功。Python compileとmigration testsを通過済み。
+2026-09-01、Codexで現行ブラウザ版とPySide6版をWindows 100% DPI / 96 DPIで実機比較した。
+
+比較サイズ:
+
+- 1380 × 940
+- 1100 × 720
+
+テスト:
+
+- 正式 `python_app` からpytest: 14 passed / 1 skipped
+- `RUN_DEV.cmd` 起動成功
+- EXE再ビルドは未実施
+
+第1回比較結果:
+
+- 全体: 明確な差。Python本文幅が約180px狭く、フォントが概ね2〜3px小さい。
+- ヘッダー: 明確な差。Python約152px / ブラウザ約124px。Pythonのみ1380pxでボタン2段。
+- 共有状態: 明確な差。Python約70px / ブラウザ約42px。Pythonだけパス・状態・再読込を表示。
+- 売上CSV: 軽微差。
+- カレンダー: 明確な差。Pythonは月曜始まり、ブラウザは日曜始まり。
+- 4メトリクス: 軽微差。本文幅の影響でカードが狭い。
+- 折りたたみ一覧: 軽微差。Python tableが過密。
+- 要注文飲料: 軽微差。
+- 現在庫: 3列構成は一致。
+- 月次棚卸し: 軽微差。入力欄の見え方が異なる。
+- 商品調整: 明確な差。Pythonが黒背景の独立ダイアログで、行高約30px。ブラウザは14px insetの白い全画面パネル、行高約62px。
+- 個別発注: 軽微差。ブラウザは右上オーバーレイ、Pythonは独立ダイアログ。
+- 棚卸し大画面: 明確な差。Pythonが黒背景1100×720ダイアログで日付欄なし。ブラウザは14px insetの白い全画面パネル。
+
+総合判定は「微調整必要」。共有サーバー試験は継続停止。
+
+## 第1回比較後の修正
+
+ChatGPT側で第1回比較結果を基にPySide6 UIを修正。最新HEAD `6bdee339...`。
+
+主な修正:
+
+- 本文レイアウトをsizeHint縮小から、最大1180pxまで実幅を使う中央レイアウトへ変更。
+- ブラウザの基本本文サイズに合わせ、通常UIを16px、helper/field labelを13pxへ整理。
+- 通常テーブル行高を44pxへ拡大。
+- ヘッダーのアクション領域を残り幅へ伸ばし、1380px時の1段配置を狙う構造へ変更。
+- タイトルをword-wrap可能にし、1100px時の折返しに対応。
+- 共有状態バーからPython独自のパス・状態・再読込表示を除き、ブラウザ版文言へ統一。
+- カレンダーを日曜始まりへ変更。
+- 通常棚卸し表の棚卸本数・メモを常時見える `QLineEdit` へ変更。
+- 棚卸し大画面を独立黒ダイアログから、14px insetの白い全画面作業パネルへ変更。
+- 棚卸し大画面内へ棚卸し日を追加。
+- 商品調整を固定1500pxダイアログから、親画面内14px insetの全画面作業パネルへ変更。
+- 商品調整テーブルをブラウザ同様に横スクロール前提へ変更。
+- 商品調整行高を62pxへ変更。
+- 商品調整の編集項目を常時見える入力欄・選択欄へ変更。
+- 個別発注を親画面右上配置のオーバーレイ構造へ変更。
+- 発注先ボタン文言を発注先名に追従させる。
+
+GitHub Actions `Python migration tests` は最新修正系列で成功。Python compile / migration testsを通過している。
 
 ## 本番切替前の未確認事項
 
-- 再構築PySide6 UIをWindows `RUN_DEV.cmd` で起動し、現行ブラウザ版と横並びで実機見比べ
-- UI差分の追加調整
-- UI確定後の手動EXE再ビルドとEXE UI確認
-- 棚卸表の実プリンター確認
-- 共有サーバーのテスト領域への手動配布
-- 共有サーバー上から直接起動
-- 2台以上のPCで共有JSONの同時更新を実機確認
-- ブラウザ通知のデスクトップ向け置換
-- `apps/ordering/` の業者マスタ / FAX発注機能統合
-- GASスマホ棚卸連携
+- 修正版PySide6 UIをWindows `RUN_DEV.cmd` で再起動し、第2回ブラウザ横並び比較を行う。
+- 第2回比較で残ったpx差・操作差を追加修正し、UI差分ゼロを目指す。
+- UI確定後の手動EXE再ビルドとEXE UI確認。
+- 棚卸表の実プリンター確認。
+- 共有サーバーのテスト領域への手動配布。
+- 共有サーバー上から直接起動。
+- 2台以上のPCで共有JSONの同時更新を実機確認。
+- ブラウザ通知のデスクトップ向け置換。
+- `apps/ordering/` の業者マスタ / FAX発注機能統合。
+- GASスマホ棚卸連携。
 
 UI一致確認が終わるまでは共有サーバー試験・Draft PR #2のmergeへ進みません。
 
