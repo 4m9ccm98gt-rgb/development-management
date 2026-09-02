@@ -7,8 +7,8 @@
      - web     : 起動 / デプロイ
      - service : 起動 / 常駐登録
      - lib     : なし
-     種別は pyproject.toml の [tool.devstandards] type、無ければ
-     scripts/repo_types.toml、無ければ依存関係から自動判定、それでも不明なら警告。
+     種別は scripts/repo_types.toml（唯一の正）で管理する。未登録は警告。
+     アプリ側のリポジトリには種別マーカーを置かない。
   2. 秘密情報らしきパターン（秘密鍵、各種トークン、実 *_settings.json）
   3. PROJECT_STATUS.md の鮮度（development-management のみ）
   4. README / AI_STARTUP の projects/*.md 参照漏れ（development-management のみ）
@@ -137,49 +137,20 @@ def _load_repo_types() -> dict:
 REPO_TYPES = _load_repo_types()
 
 
-def _read_type_marker(d: Path) -> str | None:
-    pp = d / "pyproject.toml"
-    if pp.exists():
-        try:
-            with pp.open("rb") as f:
-                t = tomllib.load(f).get("tool", {}).get("devstandards", {}).get("type")
-            if t:
-                return t
-        except tomllib.TOMLDecodeError:
-            pass
-    ds = d / ".devstandards.toml"
-    if ds.exists():
-        try:
-            with ds.open("rb") as f:
-                t = tomllib.load(f).get("type")
-            if t:
-                return t
-        except tomllib.TOMLDecodeError:
-            pass
-    return None
-
-
-def resolve_type(repo: Path, app: Path) -> str:
-    for d in (app, repo):                       # 1. リポジトリ内のマーカー
-        t = _read_type_marker(d)
-        if t:
-            return t
-    if repo.name in REPO_TYPES:                 # 2. development-management の暫定マップ
-        return REPO_TYPES[repo.name]
-    reqs = ""                                   # 3. 自動判定（強いシグナルのみ）
-    for rf in ("requirements.txt", "requirements-dev.txt", "pyproject.toml"):
-        fp = app / rf
-        if not fp.exists():
-            fp = repo / rf
-        if fp.exists():
+def _autodetect_hint(repo: Path) -> str | None:
+    """種別の当たりをつける。未登録警告のヒント専用。正式判定には使わない。"""
+    reqs = ""
+    for fp in [*repo.glob("requirements*.txt"), *repo.glob("*/requirements*.txt"),
+               repo / "pyproject.toml", *repo.glob("*/pyproject.toml")]:
+        if fp.exists() and not any(_skip_part(x) for x in fp.parts):
             reqs += fp.read_text(encoding="utf-8", errors="ignore").lower()
     if any(k in reqs for k in ("flask", "django", "fastapi", "uvicorn", "gunicorn", "starlette")):
         return "web"
     if any(k in reqs for k in ("pyside6", "pyside2", "pyqt5", "pyqt6", "wxpython")):
         return "desktop"
-    if any(app.glob("*.spec")) or any(repo.glob("*.spec")):
+    if any(repo.glob("*.spec")) or any(repo.glob("*/*.spec")):
         return "desktop"
-    return "unknown"
+    return None
 
 
 def _path_satisfied(kind: str, names: set[str], app: Path, repo: Path) -> bool:
@@ -205,17 +176,24 @@ def _path_satisfied(kind: str, names: set[str], app: Path, repo: Path) -> bool:
 def check_paths(repo: Path) -> None:
     if repo.resolve() == DM.resolve():
         return  # 管理リポジトリ自身はアプリではない
+    t = REPO_TYPES.get(repo.name)
+    if t == "archived":
+        return  # 開発対象外
+    if t is None:
+        hint = _autodetect_hint(repo)
+        tail = f"（{hint} らしい）" if hint else ""
+        add("WARN", repo.name,
+            f'種類が repo_types.toml に未登録{tail} — '
+            'development-management/scripts/repo_types.toml へ "desktop|web|service|lib|archived" を追記')
+        return
+    if t not in REQUIRED_BY_TYPE:
+        add("WARN", repo.name, f"repo_types.toml の種類が不正: {t!r}")
+        return
+    if not REQUIRED_BY_TYPE[t]:
+        return  # lib 等: ワンクリック経路は不要
     for app in find_app_roots(repo):
         rel = app.relative_to(repo).as_posix()
         loc = "" if rel == "." else f"{rel}/: "
-        t = resolve_type(repo, app)
-        if t == "unknown":
-            add("WARN", repo.name,
-                f'{loc}アプリ種別が未設定（pyproject.toml に [tool.devstandards] type = "desktop|web|service|lib"）')
-            continue
-        if t not in REQUIRED_BY_TYPE:
-            add("WARN", repo.name, f"{loc}未知のアプリ種別 type={t!r}")
-            continue
         names: set[str] = set()
         for d in {app, repo}:
             names |= {p.name.lower() for p in d.iterdir() if p.is_file()}

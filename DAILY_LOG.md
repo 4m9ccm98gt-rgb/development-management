@@ -47,12 +47,22 @@
   - `development-management`: `menu-sheet-generator.md` が README 未参照
   - `next-day-setup`: 実 `master_settings.json`
 
+### 追記（種別情報の一元化）
+
+- ユーザー確認で設計を統一：**種別情報は `development-management/scripts/repo_types.toml` を唯一の正**とし、アプリ側にはマーカーを置かない。`check_standards.py` は登録値だけを正式判定に使う（自動判定は未登録警告のヒント専用に降格）。`archived` 種別を追加し点検対象外にできるようにした。
+- `repo_types.toml` に全8アプリを登録。`menu-sheet-generator = desktop`（対話型の帳票生成アプリ、ユーザー確認済み）、`kitchen-calendar = archived`（NDSへ取り込み済み・今後開発しない）。
+- テンプレートの `pyproject.toml` から種別マーカーを削除。
+- 再点検: WARN 8 → 7。的外れ・未確定がすべて消え、残りは実バックログのみ。
+  - `RUN_DEV.cmd` 未整備: `food-cost-calculation-system` / `inventory-reconciliation-system` / `next-day-setup`
+  - `qr-supply-ordering-system`: `RUN_DEV.cmd` とデプロイ手順
+  - `development-management`: `menu-sheet-generator.md` が README 未参照
+  - `next-day-setup`: 実 `master_settings.json`
+
 ### 次にやること
 
-1. WARN 一覧から本物のパイロットを選ぶ（俺伝は作業中、飲料在庫は完了済みのため除外。手つかず＝在庫突合・調理場カレンダー・QR物品発注・献立表・翌日準備）。
-2. 選んだアプリに種別マーカー＋必要経路を整備し、実機で起動確認する。
-3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加する。
-4. 各リポジトリの `pyproject.toml` に `[tool.devstandards] type` を入れ、`repo_types.toml` を不要にする。
+1. NDS パイロットをブランチで実施：`RUN_DEV.cmd` のみ追加（種別マーカーは置かない）、実機で `RUN_DEV.cmd` 起動確認、点検再実行。本番EXE・共有フォルダ・実運用には触れない。
+2. パイロット結果を受けて `food-cost` / `inventory-reconciliation` / `qr-supply` へ展開する。
+3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加する（CI から `development-management` を参照）。
 
 ### Git状態
 

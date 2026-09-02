@@ -19,8 +19,9 @@ Python/Windows アプリに「起動」「ビルド」「配布更新」の3経�
 
 ## アプリ種別
 
-`pyproject.toml` の `[tool.devstandards] type` に応じて、必要な経路が変わる。
-`check_standards.py` はこの値で点検内容を切り替える。
+種別（`desktop` / `web` / `service` / `lib` / `archived`）は**アプリ側に置かない**。
+[../../scripts/repo_types.toml](../../scripts/repo_types.toml) で一元管理する。
+`check_standards.py` はそこの登録値で点検内容を切り替える。
 
 | type | 必要な経路 |
 |---|---|
@@ -28,6 +29,7 @@ Python/Windows アプリに「起動」「ビルド」「配布更新」の3経�
 | `web` | 開発起動 ＋ デプロイ（Dockerfile / compose / Procfile / DEPLOY スクリプト） |
 | `service` | 開発起動 ＋ 常駐登録（タスクスケジューラ XML / INSTALL スクリプト） |
 | `lib` | ワンクリック経路は不要 |
+| `archived` | 点検対象外 |
 
 このテンプレートは `desktop` 用。`web` / `service` は下表のうち「開発起動」だけ流用する。
 

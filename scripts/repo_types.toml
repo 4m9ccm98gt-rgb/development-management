@@ -1,22 +1,22 @@
-# アプリ種別の暫定マップ。
+# アプリ種別の唯一の正。
 #
-# 本来は各リポジトリの pyproject.toml に
-#   [tool.devstandards]
-#   type = "desktop"   # desktop | web | service | lib
-# を置く。それが入るまでの間、check_standards.py はこの表を使う。
-# ここに無いリポジトリは依存関係から自動判定し、判定できなければ
-# 「種別未設定」の警告を出す。
+# 種別（横断管理の情報）は development-management に一元管理する。
+# アプリ側のリポジトリには種別マーカーを置かない。
+# check_standards.py はこの表の登録値だけを正式判定に使う。
+# 未登録のリポジトリは「repo_types.toml に未登録」と警告する。
 #
-# 確度の高いものだけ記載する。不確かなものは自動判定に委ねる。
+#   desktop  … 対話型GUIアプリ。起動 + EXEビルド + 配布更新
+#   web      … ブラウザ/サーバーアプリ。起動 + デプロイ
+#   service  … 常駐・自動実行。起動 + 常駐登録
+#   lib      … 部品。ワンクリック経路は不要
+#   archived … 開発対象外。点検しない
 
 [types]
-beverage-inventory-ordering-system = "desktop"  # PySide6。3経路の実績元
-food-cost-calculation-system       = "desktop"  # 俺伝。EXEビルド + HDD配布
-next-day-setup                     = "desktop"  # BUILD_EXE_CLICK_ME + UPDATE_SHARED_FOLDER
-inventory-reconciliation-system    = "service"  # 自動実行の実運用中
-qr-supply-ordering-system          = "web"      # Flask系の独立Webアプリ
-call-reception-assistant           = "desktop"  # PCのマイク・スピーカーで完結する試作
-
-# 要確認（自動判定に委ねる）:
-#   menu-sheet-generator  … 帳票生成 + 共有フォルダ配布。desktop か service か未確認
-#   kitchen-calendar      … Python + 起動バッチあり。種別未確認
+beverage-inventory-ordering-system = "desktop"   # PySide6。3経路の実績元
+call-reception-assistant           = "desktop"   # PCのマイク・スピーカーで完結する対話受付試作
+food-cost-calculation-system       = "desktop"   # 俺伝。EXEビルド + HDD配布
+inventory-reconciliation-system    = "service"   # PMS照合の自動実行、実運用中
+menu-sheet-generator               = "desktop"   # PMS CSV取込 → 帳票生成・印刷の対話型アプリ
+next-day-setup                     = "desktop"   # 翌日準備。BUILD_EXE_CLICK_ME + UPDATE_SHARED_FOLDER
+qr-supply-ordering-system          = "web"       # Flask系の独立Webアプリ
+kitchen-calendar                   = "archived"  # next-day-setup へ取り込み済み。今後開発しない

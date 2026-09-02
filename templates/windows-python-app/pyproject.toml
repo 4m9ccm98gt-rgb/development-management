@@ -9,13 +9,8 @@ dependencies = [
   # 例: "PySide6>=6.8,<7"
 ]
 
-[tool.devstandards]
-# アプリ種別。check_standards.py がこの値で必要経路を切り替える。
-#   desktop … 起動 + EXEビルド + 配布更新
-#   web     … 起動 + デプロイ
-#   service … 起動 + 常駐登録
-#   lib     … 部品。ワンクリック経路は不要
-type = "desktop"
+# アプリ種別（desktop / web / service / lib / archived）はアプリ側に置かない。
+# development-management/scripts/repo_types.toml で一元管理する。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
