@@ -83,6 +83,9 @@ Windowsデスクトップアプリを新たにEXE化するときは、対象プ�
 - 配布物へのDB・runtime・認証情報・実データ混入監査
 - 旧DBコピーを使ったマイグレーション互換確認
 - ビルド元commit SHA、EXEサイズ、更新日時、SHA-256の記録
+- dirty working tree拒否付きワンクリックNuitkaビルド
+- ボリュームラベルによる外付けHDD検出、既存リリース非上書き、全ファイルSHA-256照合
+- 更新ランチャー本体を更新しながら `updater_settings.json` を保持する配布方式
 
 今後PySide6アプリをEXE化する場合は、NDSの既存Windows配布運用と、このNuitka実績の両方を比較する。日常確認はPythonソース版で行い、EXE化が必要な場面だけ手動ビルドする。
 
