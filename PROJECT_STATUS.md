@@ -8,7 +8,7 @@
 |---|---|
 | next-day-setup | 実運用中。GitHub・正式ローカル・共有版の一致を確認しながら継続開発する。 |
 | inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、運用設定を継続管理する。 |
-| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示まで実機確認完了。操作を思い出しやすくするため、全クリックボタンへ手カーソル・hover・押下反応を統一し、主要操作へ即時説明tooltipを追加。要発注/未記入のクリック可能メトリクスにも反応を追加。最新HEAD `04c3797d`、GitHub Actions 29 passed / 1 skipped。次はRUN_DEVで操作フィードバックのWindows実機確認。 |
+| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示・操作フィードバックまでWindows実機確認完了。全クリックボタンの手カーソル・hover・pressed、主要操作の説明tooltip、要発注/未記入メトリクスの反応も合格。最新HEAD `04c3797d`、GitHub Actions 29 passed / 1 skipped。次はユーザー手動で最新EXEを再ビルドし、スポット確認する。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
 | development-management | 正式ローカルcloneを `C:\Users\suisy\Documents\Development\repos\development-management` に復旧済み。ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする現行ルールをローカルから参照可能。 |
@@ -23,7 +23,7 @@
 - 配布対象のWindowsアプリは、配布先更新用 `update_shared_folder.ps1` と `UPDATE_SHARED_FOLDER.cmd` を原則必須とする。
 - GitHub上の自動テスト、Pythonソース版Windows実機確認、EXE確認、UI同等性確認、共有版・実プリンター確認を別の確認レベルとして扱う。
 - PR merge、安定版タグ、本番共有版更新は、必要な確認と明示的な判断後に行う。
-- `beverage-inventory-ordering-system` は最新実運用JSONのデータ・業務計算互換性、現行UI再現、主要業務機能、Windowsライト/ダークテーマ、カレンダー履歴データ表示までPythonソース版Windows実機確認済み。現在はクリック可能箇所の操作フィードバック/説明tooltipをRUN_DEVで確認後、最新EXE、実プリンター、共有サーバー、2PC同時更新へ進む。
+- `beverage-inventory-ordering-system` は最新実運用JSONのデータ・業務計算互換性、現行UI再現、主要業務機能、Windowsライト/ダークテーマ、カレンダー履歴データ表示、クリック可能箇所の操作フィードバックまでPythonソース版Windows実機確認済み。現在は最新EXE再ビルド、実プリンター、共有サーバー、2PC同時更新へ進む。
 - `development-management` の正式ローカルcloneはGitHub正本から復旧済み。旧 `C:\Users\suisy\Documents\開発環境整備プロジェクト` cloneは未コミット変更があるため別物として保護している。
 
 ## Windowsアプリ共通標準
@@ -52,17 +52,19 @@
 - Windowsダーク→ライト→ダークをアプリ起動中に切替し、`ColorScheme.Dark` → `ColorScheme.Light` → `ColorScheme.Dark` のライブ追従成功。ライト側も従来UIから大きな崩れなし。
 - カレンダー履歴表示はブラウザ版と同じ優先順位へ修正済み。データ存在日は `imported`、データなし配送休みは `holiday`、対象期間内データなしは `missing`、それ以外は `outside`。2026-09-02 Windows再確認で8/1〜8/31の実データ日が緑、9/1のデータ有無による imported/missing、棚卸日前データなしのoutsideを確認済み。元JSON SHA-256不変。
 - クリック可能コントロール用 `ui_interactions.py` を追加。全QPushButton/QToolButtonへ手カーソル、hover枠、押下時の沈み/色変化を共通適用。商品タブ・開閉ボタン等も対象。
-- `個別発注`、`在庫データ読込`、`在庫データ保存`、`飲料発注システム`、`通知`、`商品調整`、`アラート出力`、売上CSV、棚卸、発注/納品、商品マスタ、定期消費など主要操作へ即時説明tooltipを追加。
+- `個別発注`、`在庫データ読込`、`在庫データ保存`、`飲料発注システム`、`通知`、`商品調整`、`アラート出力`、売上CSV、棚卸、発注/納品、商品マスタ、定期消費など主要操作へ説明tooltipを追加。
 - `要発注` と `未記入` のクリック可能メトリクスカードにもhover/押下反応と説明tooltipを追加。
+- 2026-09-02 Windows実機操作フィードバック確認: 総合判定「操作フィードバックOK」。ヘッダー7ボタン、メイン主要操作、表示/閉じる、要発注/未記入、商品調整、個別発注、発注中、カレンダーを確認。hover・pressed・手カーソルは明確で、レイアウトのガタつきなし。tooltipは約250〜350msで表示し、内容は実機能と整合、表示位置や頻度も邪魔になりすぎない。動的に `クロスオーダーを開く` へ変わった後も反応維持。ライト/ダーク双方で可読性・識別性OK。元実運用JSON SHA-256不変。
+- Windows実機pytest: 29 passed / 1 skipped / 0 failed。
 - 回帰テスト追加。GitHub Actions: 29 passed / 1 skipped。
 
 ## 次にやること
 
-1. 正式ローカル `beverage-inventory-ordering-system` を `python-desktop-migration` 最新HEAD `04c3797d` へfast-forwardする。
-2. `RUN_DEV.cmd` で、ヘッダー、売上CSV、配送休み、要発注/未記入カード、棚卸、商品調整、個別発注、発注中/納品などのクリック可能箇所に手カーソル・hover・押下反応が出ることをWindows実機確認する。
-3. 主要操作へカーソルを置くと、用途を思い出せる短い説明tooltipが即時表示され、邪魔になりすぎないことを確認する。
-4. 通過後、ユーザーが `python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行して最新EXEを再ビルドする。
-5. 最新EXEへ実運用JSON複製を読み込み、66商品、カレンダー履歴表示、飲料発注システム起動、ダーク/ライト、操作フィードバックをスポット確認する。
+1. ユーザーが正式ローカル `python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行してHEAD `04c3797d` の最新EXEを再ビルドする。
+2. 最新EXEへ実運用JSON複製を読み込み、66商品表示を確認する。
+3. 8月カレンダーで過去の取込済み日がすべて緑になることを確認する。
+4. `dist\BeverageInventory\apps\ordering\index.html` が存在し、「飲料発注システム」が正常に開くことを確認する。
+5. 最新EXEでライト/ダーク、主要ボタンのhover / pressed / tooltipをスポット確認する。
 6. ここまで通れば最新EXE機能ゲートを通過とし、棚卸表の実プリンター確認へ進む。
 7. その後、共有サーバーのテスト領域へ `UPDATE_SHARED_FOLDER.cmd` でユーザー手動配布し、共有サーバー上から直接起動、2台以上のPCで共有JSON同時更新を確認する。
 8. 問題がなければDraft PR #2のmerge可否を判断する。
