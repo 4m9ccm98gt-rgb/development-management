@@ -8,7 +8,7 @@
 |---|---|
 | next-day-setup | 実運用中。GitHub・正式ローカル・共有版の一致を確認しながら継続開発する。 |
 | inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、運用設定を継続管理する。 |
-| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示まで実機確認完了。操作を思い出しやすくするため、全クリックボタンへ手カーソル・hover・押下反応を統一し、主要操作へ即時説明tooltipを追加。要発注/未記入のクリック可能メトリクスにも反応を追加。最新HEAD `0987f5ed`、GitHub Actions 29 passed / 1 skipped。次はRUN_DEVで操作フィードバックのWindows実機確認。 |
+| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示まで実機確認完了。操作を思い出しやすくするため、全クリックボタンへ手カーソル・hover・押下反応を統一し、主要操作へ即時説明tooltipを追加。要発注/未記入のクリック可能メトリクスにも反応を追加。最新HEAD `04c3797d`、GitHub Actions 29 passed / 1 skipped。次はRUN_DEVで操作フィードバックのWindows実機確認。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
 | development-management | 正式ローカルcloneを `C:\Users\suisy\Documents\Development\repos\development-management` に復旧済み。ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする現行ルールをローカルから参照可能。 |
@@ -36,7 +36,7 @@
 ## beverage-inventory-ordering-system 最新状態
 
 - branch: `python-desktop-migration`
-- latest HEAD: `0987f5ed56439e25d37cbe0075f19e97e0562ffb`
+- latest HEAD: `04c3797d65b1f4df1c60e89643ea37a5179dc43d`
 - Draft PR: #2
 - Pythonソース版: UI、主要機能、実運用JSON互換まで確認完了。
 - 実運用JSON: 66商品、売上90日、レシピ34、定期消費3、発注履歴130件。ブラウザ/Python計算66/66一致。
@@ -58,7 +58,7 @@
 
 ## 次にやること
 
-1. 正式ローカル `beverage-inventory-ordering-system` を `python-desktop-migration` 最新HEAD `0987f5ed` へfast-forwardする。
+1. 正式ローカル `beverage-inventory-ordering-system` を `python-desktop-migration` 最新HEAD `04c3797d` へfast-forwardする。
 2. `RUN_DEV.cmd` で、ヘッダー、売上CSV、配送休み、要発注/未記入カード、棚卸、商品調整、個別発注、発注中/納品などのクリック可能箇所に手カーソル・hover・押下反応が出ることをWindows実機確認する。
 3. 主要操作へカーソルを置くと、用途を思い出せる短い説明tooltipが即時表示され、邪魔になりすぎないことを確認する。
 4. 通過後、ユーザーが `python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行して最新EXEを再ビルドする。
