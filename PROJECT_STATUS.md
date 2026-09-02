@@ -8,7 +8,7 @@
 |---|---|
 | next-day-setup | 実運用中。GitHub・正式ローカル・共有版の一致を確認しながら継続開発する。 |
 | inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、運用設定を継続管理する。 |
-| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示・操作フィードバックまでWindows実機確認完了。全クリックボタンの手カーソル・hover・pressed、主要操作の説明tooltip、要発注/未記入メトリクスの反応も合格。最新HEAD `04c3797d`、GitHub Actions 29 passed / 1 skipped。次はユーザー手動で最新EXEを再ビルドし、スポット確認する。 |
+| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示・操作フィードバックまでWindows実機確認完了。最新EXE確認で、発注中一覧だけ過去の`ordered`履歴を全件表示する不整合と、QDateEditがマウスホイールで意図せず大きく日付変更される問題を確認。デスクトップ版は棚卸日以降の未納品だけ発注中表示へ絞り、全QDateEditのホイール変更を禁止。最新HEAD `4f09fd9f`、GitHub Actions 32 passed / 1 skipped。次はRUN_DEVで2点をWindows実機確認。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
 | development-management | 開発環境整備 Phase 0 実施。担当判定を能力ベースへ切り替え（[CAPABILITIES.md](CAPABILITIES.md)、正式ローカルリポジトリの pull前・push後を必須化）。`templates/windows-python-app/` と `scripts/check_standards.py` を追加。次は WARN 一覧からパイロット選定と CI 化。 |
@@ -23,7 +23,9 @@
 - 配布対象のWindowsアプリは、配布先更新用 `update_shared_folder.ps1` と `UPDATE_SHARED_FOLDER.cmd` を原則必須とする。
 - GitHub上の自動テスト、Pythonソース版Windows実機確認、EXE確認、UI同等性確認、共有版・実プリンター確認を別の確認レベルとして扱う。
 - PR merge、安定版タグ、本番共有版更新は、必要な確認と明示的な判断後に行う。
-- `beverage-inventory-ordering-system` は最新実運用JSONのデータ・業務計算互換性、現行UI再現、主要業務機能、Windowsライト/ダークテーマ、カレンダー履歴データ表示、クリック可能箇所の操作フィードバックまでPythonソース版Windows実機確認済み。現在は最新EXE再ビルド、実プリンター、共有サーバー、2PC同時更新へ進む。
+- `beverage-inventory-ordering-system` は最新実運用JSONのデータ・業務計算互換性、現行UI再現、主要業務機能、Windowsライト/ダークテーマ、カレンダー履歴データ表示、クリック可能箇所の操作フィードバックまでPythonソース版Windows実機確認済み。
+- 2026-09-02最新EXE確認で、在庫計算は棚卸日以降の発注だけを発注中数量として扱う一方、発注中一覧は`status == ordered`の全履歴を表示していたため、古い未完了履歴が大量表示され得る不整合を確認。データ自体は削除せず、デスクトップUIの発注中表示のみ現在棚卸サイクルへ絞る修正を追加。
+- QDateEditはQt標準挙動でマウスホイールに反応し、カーソルが乗った状態のスクロールで日付が大きく変わるため、デスクトップ版では全QDateEditのWheelイベントを無効化。日付変更はクリック・カレンダー・キーボードに限定する。
 - `development-management` の正式ローカルcloneはGitHub正本から復旧済み。旧 `C:\Users\suisy\Documents\開発環境整備プロジェクト` cloneは未コミット変更があるため別物として保護している。
 
 ## Windowsアプリ共通標準
@@ -36,7 +38,7 @@
 ## beverage-inventory-ordering-system 最新状態
 
 - branch: `python-desktop-migration`
-- latest HEAD: `04c3797d65b1f4df1c60e89643ea37a5179dc43d`
+- latest HEAD: `4f09fd9fdc4b63dd95f29a06453d2156b5a3c2ca`
 - Draft PR: #2
 - Pythonソース版: UI、主要機能、実運用JSON互換まで確認完了。
 - 実運用JSON: 66商品、売上90日、レシピ34、定期消費3、発注履歴130件。ブラウザ/Python計算66/66一致。
@@ -55,17 +57,19 @@
 - `個別発注`、`在庫データ読込`、`在庫データ保存`、`飲料発注システム`、`通知`、`商品調整`、`アラート出力`、売上CSV、棚卸、発注/納品、商品マスタ、定期消費など主要操作へ説明tooltipを追加。
 - `要発注` と `未記入` のクリック可能メトリクスカードにもhover/押下反応と説明tooltipを追加。
 - 2026-09-02 Windows実機操作フィードバック確認: 総合判定「操作フィードバックOK」。ヘッダー7ボタン、メイン主要操作、表示/閉じる、要発注/未記入、商品調整、個別発注、発注中、カレンダーを確認。hover・pressed・手カーソルは明確で、レイアウトのガタつきなし。tooltipは約250〜350msで表示し、内容は実機能と整合、表示位置や頻度も邪魔になりすぎない。動的に `クロスオーダーを開く` へ変わった後も反応維持。ライト/ダーク双方で可読性・識別性OK。元実運用JSON SHA-256不変。
-- Windows実機pytest: 29 passed / 1 skipped / 0 failed。
-- 回帰テスト追加。GitHub Actions: 29 passed / 1 skipped。
+- 最新EXE確認で発注中一覧が多すぎる問題を確認。`InventoryEngine.get_pending_from_order_history()`は棚卸日以降だけを在庫計算へ加える一方、旧UI側`pending_orders()`は全期間の`ordered`を返していた。デスクトップ専用 `DesktopInventoryService` を追加し、発注中一覧も棚卸日以降の有効日付・未納品に限定。過去履歴は`order_history()`へ残す。
+- QDateEditのマウスホイール変更を`ButtonInteractionFilter`で全件無効化。カーソルを合わせたままページスクロールしても日付値を変更しない。
+- 回帰テスト `test_desktop_safety.py` を追加。GitHub Actions: 32 passed / 1 skipped。
 
 ## 次にやること
 
-1. ユーザーが正式ローカル `python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行してHEAD `04c3797d` の最新EXEを再ビルドする。
-2. 最新EXEへ実運用JSON複製を読み込み、66商品表示を確認する。
-3. 8月カレンダーで過去の取込済み日がすべて緑になることを確認する。
-4. `dist\BeverageInventory\apps\ordering\index.html` が存在し、「飲料発注システム」が正常に開くことを確認する。
-5. 最新EXEでライト/ダーク、主要ボタンのhover / pressed / tooltipをスポット確認する。
-6. ここまで通れば最新EXE機能ゲートを通過とし、棚卸表の実プリンター確認へ進む。
-7. その後、共有サーバーのテスト領域へ `UPDATE_SHARED_FOLDER.cmd` でユーザー手動配布し、共有サーバー上から直接起動、2台以上のPCで共有JSON同時更新を確認する。
-8. 問題がなければDraft PR #2のmerge可否を判断する。
-9. 本体移行後にGASスマホ棚卸と発注システム統合へ進む。
+1. 正式ローカル `beverage-inventory-ordering-system` を `python-desktop-migration` 最新HEAD `4f09fd9f` へfast-forwardする。
+2. `RUN_DEV.cmd` で実運用JSON複製を読み込み、発注中一覧が棚卸日 `2026-08-30` 以降の未納品だけになることを確認する。
+3. 発注履歴一覧には古い履歴も残っていること、在庫計算値が修正前と変わらないことを確認する。
+4. カレンダー表示月、棚卸し日、配送休み開始/終了など各QDateEditへカーソルを置いた状態でホイールを回し、日付が変化しないことを確認する。ページ自体のスクロールは継続できることも確認する。
+5. 通過後、ユーザーが `python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行して最新EXEを再ビルドする。
+6. 最新EXEへ実運用JSON複製を読み込み、66商品、カレンダー履歴表示、飲料発注システム起動、ダーク/ライト、操作フィードバック、発注中一覧、日付ホイール防止をスポット確認する。
+7. ここまで通れば最新EXE機能ゲートを通過とし、棚卸表の実プリンター確認へ進む。
+8. その後、共有サーバーのテスト領域へ `UPDATE_SHARED_FOLDER.cmd` でユーザー手動配布し、共有サーバー上から直接起動、2台以上のPCで共有JSON同時更新を確認する。
+9. 問題がなければDraft PR #2のmerge可否を判断する。
+10. 本体移行後にGASスマホ棚卸と発注システム統合へ進む。
