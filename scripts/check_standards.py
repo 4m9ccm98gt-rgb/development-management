@@ -2,7 +2,13 @@
 """管理対象リポジトリが development-management の標準を満たすか点検する。
 
 チェック内容:
-  1. Python/Windows アプリの3経路（RUN_DEV / ビルド / 配布更新）の有無
+  1. アプリ種別ごとに必要なワンクリック経路の有無
+     - desktop : 起動 / EXEビルド / 配布更新
+     - web     : 起動 / デプロイ
+     - service : 起動 / 常駐登録
+     - lib     : なし
+     種別は pyproject.toml の [tool.devstandards] type、無ければ
+     scripts/repo_types.toml、無ければ依存関係から自動判定、それでも不明なら警告。
   2. 秘密情報らしきパターン（秘密鍵、各種トークン、実 *_settings.json）
   3. PROJECT_STATUS.md の鮮度（development-management のみ）
   4. README / AI_STARTUP の projects/*.md 参照漏れ（development-management のみ）
@@ -21,6 +27,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -100,28 +107,121 @@ def find_app_roots(repo: Path) -> list[Path]:
     return sorted(roots)
 
 
-def check_three_paths(repo: Path) -> None:
+# アプリ種別ごとに要求するワンクリック経路
+REQUIRED_BY_TYPE = {
+    "desktop": ["run", "build", "dist"],
+    "web":     ["run", "deploy"],
+    "service": ["run", "install"],
+    "lib":     [],
+}
+PATH_LABEL = {
+    "run":     "RUN_DEV.cmd 相当（開発版ワンクリック起動）",
+    "build":   "EXEビルドのワンクリック（BUILD_*_CLICK_ME.cmd 相当）",
+    "dist":    "配布更新のワンクリック（UPDATE_SHARED_FOLDER.cmd 相当）",
+    "deploy":  "デプロイ手順（DEPLOY 相当 / Dockerfile / compose / Procfile）",
+    "install": "常駐登録手順（INSTALL 相当 / タスクスケジューラ XML / register_task）",
+}
+
+
+def _load_repo_types() -> dict:
+    p = Path(__file__).resolve().parent / "repo_types.toml"
+    if not p.exists():
+        return {}
+    try:
+        with p.open("rb") as f:
+            return tomllib.load(f).get("types", {})
+    except tomllib.TOMLDecodeError:
+        return {}
+
+
+REPO_TYPES = _load_repo_types()
+
+
+def _read_type_marker(d: Path) -> str | None:
+    pp = d / "pyproject.toml"
+    if pp.exists():
+        try:
+            with pp.open("rb") as f:
+                t = tomllib.load(f).get("tool", {}).get("devstandards", {}).get("type")
+            if t:
+                return t
+        except tomllib.TOMLDecodeError:
+            pass
+    ds = d / ".devstandards.toml"
+    if ds.exists():
+        try:
+            with ds.open("rb") as f:
+                t = tomllib.load(f).get("type")
+            if t:
+                return t
+        except tomllib.TOMLDecodeError:
+            pass
+    return None
+
+
+def resolve_type(repo: Path, app: Path) -> str:
+    for d in (app, repo):                       # 1. リポジトリ内のマーカー
+        t = _read_type_marker(d)
+        if t:
+            return t
+    if repo.name in REPO_TYPES:                 # 2. development-management の暫定マップ
+        return REPO_TYPES[repo.name]
+    reqs = ""                                   # 3. 自動判定（強いシグナルのみ）
+    for rf in ("requirements.txt", "requirements-dev.txt", "pyproject.toml"):
+        fp = app / rf
+        if not fp.exists():
+            fp = repo / rf
+        if fp.exists():
+            reqs += fp.read_text(encoding="utf-8", errors="ignore").lower()
+    if any(k in reqs for k in ("flask", "django", "fastapi", "uvicorn", "gunicorn", "starlette")):
+        return "web"
+    if any(k in reqs for k in ("pyside6", "pyside2", "pyqt5", "pyqt6", "wxpython")):
+        return "desktop"
+    if any(app.glob("*.spec")) or any(repo.glob("*.spec")):
+        return "desktop"
+    return "unknown"
+
+
+def _path_satisfied(kind: str, names: set[str], app: Path, repo: Path) -> bool:
+    if kind == "run":
+        return any("run_dev" in n for n in names)
+    if kind == "build":
+        return any("build" in n and n.endswith((".cmd", ".bat", ".ps1")) for n in names)
+    if kind == "dist":
+        return any("update" in n and n.endswith((".cmd", ".bat", ".ps1")) for n in names)
+    if kind == "deploy":
+        if any("deploy" in n for n in names):
+            return True
+        return any((d / f).exists()
+                   for d in (app, repo)
+                   for f in ("Dockerfile", "docker-compose.yml", "compose.yml", "Procfile"))
+    if kind == "install":
+        if any(("install" in n or "register_task" in n) for n in names):
+            return True
+        return any(app.glob("*.xml")) or any((repo / "deploy").glob("*.xml"))
+    return True
+
+
+def check_paths(repo: Path) -> None:
     if repo.resolve() == DM.resolve():
         return  # 管理リポジトリ自身はアプリではない
-    name = repo.name
     for app in find_app_roots(repo):
-        # ワンクリックはアプリ直下 or リポジトリ直下のどちらにあってもよい
+        rel = app.relative_to(repo).as_posix()
+        loc = "" if rel == "." else f"{rel}/: "
+        t = resolve_type(repo, app)
+        if t == "unknown":
+            add("WARN", repo.name,
+                f'{loc}アプリ種別が未設定（pyproject.toml に [tool.devstandards] type = "desktop|web|service|lib"）')
+            continue
+        if t not in REQUIRED_BY_TYPE:
+            add("WARN", repo.name, f"{loc}未知のアプリ種別 type={t!r}")
+            continue
         names: set[str] = set()
         for d in {app, repo}:
             names |= {p.name.lower() for p in d.iterdir() if p.is_file()}
-        rel = app.relative_to(repo).as_posix()
-        loc = "" if rel == "." else f"{rel}/: "
-
-        run_ok = any("run_dev" in n for n in names)
-        build_ok = any((("build" in n) and n.endswith((".cmd", ".bat", ".ps1"))) for n in names)
-        dist_ok = any((("update" in n) and n.endswith((".cmd", ".bat", ".ps1"))) for n in names)
-
-        if not run_ok:
-            add("WARN", name, f"{loc}RUN_DEV.cmd 相当（開発版ワンクリック起動）が無い")
-        if not build_ok:
-            add("WARN", name, f"{loc}ビルドのワンクリック（BUILD_*_CLICK_ME.cmd 相当）が無い")
-        if not dist_ok:
-            add("WARN", name, f"{loc}配布更新のワンクリック（UPDATE_SHARED_FOLDER.cmd 相当）が無い")
+        for kind in REQUIRED_BY_TYPE[t]:
+            if not _path_satisfied(kind, names, app, repo):
+                add("WARN", repo.name, f"{loc}[{t}] {PATH_LABEL[kind]} が無い")
 
 
 def check_secrets(repo: Path) -> None:
@@ -198,7 +298,7 @@ def main(argv: list[str]) -> int:
         if not repo.exists():
             add("ERROR", repo.name, "パスが存在しない")
             continue
-        check_three_paths(repo)
+        check_paths(repo)
         check_secrets(repo)
         if repo.resolve() == DM.resolve():
             check_status_freshness()

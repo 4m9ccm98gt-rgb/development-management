@@ -35,15 +35,29 @@
 - テンプレートを実アプリへ適用した動作確認は未実施（次フェーズ）。
 - `check_standards.py` を GitHub Actions の PR チェックに載せる作業は未着手。
 
+### 追記（Phase 1 立て直し）
+
+- Phase 1 パイロット候補だった `beverage` は `python_app/` に3経路完備と判明。適用先ではなく手本側なので、テンプレートを `beverage/python_app/` の実績スクリプトへ寄せて作り直し（自己完結バッチ、`pyproject.toml`、`update_shared_folder.ps1` の業務データ SHA-256 検証）。
+- `check_standards.py` をサブディレクトリ対応に修正。さらに **アプリ種別**（desktop / web / service / lib）を導入し、種別ごとに必要経路を切り替え。種別は `pyproject.toml` の `[tool.devstandards] type` → `scripts/repo_types.toml`（暫定）→ 依存関係の自動判定、の順で解決。
+- 再点検: **WARN 13 → 8**。Webアプリ（`qr-supply-ordering-system`）への「EXEビルドが無い」等の的外れ警告が消えた。
+- 正確化後の実バックログ:
+  - `RUN_DEV.cmd` 未整備: `food-cost-calculation-system`(desktop) / `inventory-reconciliation-system`(service) / `next-day-setup`(desktop) / `qr-supply-ordering-system`(web)
+  - `qr-supply-ordering-system`: デプロイ手順なし
+  - `kitchen-calendar`: 種別未設定（自動判定不可、要確認）
+  - `development-management`: `menu-sheet-generator.md` が README 未参照
+  - `next-day-setup`: 実 `master_settings.json`
+
 ### 次にやること
 
-1. WARN 一覧から本物のパイロット（`kitchen-calendar` か `qr-supply-ordering-system`）を選び、`RUN_DEV.cmd` から順に整備する。
-2. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加する。
+1. WARN 一覧から本物のパイロットを選ぶ（俺伝は作業中、飲料在庫は完了済みのため除外。手つかず＝在庫突合・調理場カレンダー・QR物品発注・献立表・翌日準備）。
+2. 選んだアプリに種別マーカー＋必要経路を整備し、実機で起動確認する。
+3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加する。
+4. 各リポジトリの `pyproject.toml` に `[tool.devstandards] type` を入れ、`repo_types.toml` を不要にする。
 
 ### Git状態
 
 - ブランチ: `main`
-- コミット: `4293c5e`（ローカル同期分）、`95ac83d`（Phase 0 第1弾）、本日の Phase 0 第2弾を追加予定
+- コミット: `4293c5e`（ローカル同期）、`95ac83d`（Phase 0 契約レイヤー）、`d1805d7`（テンプレート再作成・checker サブディレクトリ対応）、本日さらに種別導入分を追加予定
 - push: 実施
 - タグ: なし
 

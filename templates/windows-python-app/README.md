@@ -17,7 +17,21 @@ Python/Windows アプリに「起動」「ビルド」「配布更新」の3経�
 3. `requirements.txt`（実行依存）と `requirements-dev.txt`（+ pytest, ビルドツール）を用意する。
 4. 配布先の実パスは貼り付け入力。Git にもコード内定数にも書かない。
 
-## 3経路
+## アプリ種別
+
+`pyproject.toml` の `[tool.devstandards] type` に応じて、必要な経路が変わる。
+`check_standards.py` はこの値で点検内容を切り替える。
+
+| type | 必要な経路 |
+|---|---|
+| `desktop` | 開発起動 ＋ EXEビルド ＋ 配布更新（このテンプレートが対象） |
+| `web` | 開発起動 ＋ デプロイ（Dockerfile / compose / Procfile / DEPLOY スクリプト） |
+| `service` | 開発起動 ＋ 常駐登録（タスクスケジューラ XML / INSTALL スクリプト） |
+| `lib` | ワンクリック経路は不要 |
+
+このテンプレートは `desktop` 用。`web` / `service` は下表のうち「開発起動」だけ流用する。
+
+## 3経路（desktop）
 
 | 経路 | ワンクリック | 中身 | 必要能力 |
 |---|---|---|---|

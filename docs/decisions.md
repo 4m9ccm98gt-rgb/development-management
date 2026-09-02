@@ -21,14 +21,16 @@
 - 関連リポジトリ: development-management（本件）、food-cost-calculation-system / beverage-inventory-ordering-system（同期規約の適用先）
 - 確認状況: 未確認（文書のみ。実運用での効果は次のハンドオフで確認する）
 - 関連資料・Issue・コミット: 2026-09-02 の development-management 同期ずれ（`DEVELOPMENT_RULES.md` / `REUSE_MAP.md` がローカル未コミットのまま、`main` が origin より遅延）
-- 備考: `templates/windows-python-app/` と `scripts/check_standards.py` は本判断の実装として追加済み（2026-09-02）。テンプレートは `beverage-inventory-ordering-system/python_app/` の実績3スクリプトを汎用化した。`check_standards.py` はアプリがサブディレクトリにある場合も検出する。
+- 備考: `templates/windows-python-app/` と `scripts/check_standards.py` は本判断の実装として追加済み（2026-09-02）。テンプレートは `beverage-inventory-ordering-system/python_app/` の実績3スクリプトを汎用化した。`check_standards.py` はアプリがサブディレクトリにある場合も検出し、アプリ種別（desktop / web / service / lib）ごとに必要経路を切り替える。種別は各リポジトリの `pyproject.toml` の `[tool.devstandards] type`、無ければ `scripts/repo_types.toml`（暫定）、無ければ依存関係から自動判定する。
 
 ### 次の対応
 
 - [x] AGENTS.md / AI_STARTUP.md に CAPABILITIES.md へのポインタを追記する
-- [x] `templates/windows-python-app/` と `scripts/check_standards.py` を追加する（初回 `check_standards.py`: ERROR 0 / WARN 13）
+- [x] `templates/windows-python-app/` と `scripts/check_standards.py` を追加する
+- [x] `check_standards.py` にアプリ種別を導入し、Webアプリへの的外れ警告を除去（WARN 13 → 8）
+- [ ] 各リポジトリの `pyproject.toml` に `[tool.devstandards] type` を入れ、`repo_types.toml` を不要にする
 - [ ] `check_standards.py` を各リポジトリの GitHub Actions（warning-only）へ追加する
-- [ ] WARN 一覧からパイロットを1つ選び、テンプレートで3経路を整備して実機確認する
+- [ ] WARN 一覧からパイロットを1つ選び、テンプレートで経路を整備して実機確認する
 - [ ] 次のハンドオフで同期規約が機能するか確認する
 
 ## Python/Windowsアプリはソース起動を標準とし、EXEは手動ビルド、配布更新もワンクリック化する
