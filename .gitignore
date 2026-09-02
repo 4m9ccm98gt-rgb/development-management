@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# ローカル上書き設定（実値・秘密情報。Git 管理しない）
+project.local.toml
+*.local.toml

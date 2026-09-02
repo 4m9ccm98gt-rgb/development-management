@@ -2,6 +2,8 @@
 
 このリポジトリは、設計判断、開発ルール、進行状況、AI共同開発知識を管理する司令塔である。作業を始めるAIは、最初に [AI_STARTUP.md](AI_STARTUP.md) を読み、そこに定めた順序で関連文書を確認する。詳細な運用基準は [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) を正本とし、このファイルには重複して記載しない。
 
+作業の担当は、エージェント名（ChatGPT / Codex / Claude Code）ではなく、そのセッションが実際に持つ能力で判定する。判定基準と、正式ローカルリポジトリの同期規約（作業前 `git pull`・作業後 `git push`）は [CAPABILITIES.md](CAPABILITIES.md) を正本とする。以下のエージェント名ベースの記述は、能力判定の目安として残す。
+
 ## 基本方針
 
 - ChatGPTは、GitHubへ直接アクセスできる場合、設計・仕様整理・既存コード調査だけでなく、GitHub上の実装、テスト追加、ブランチ作成、commit、push、PR作成、レビューまでを第一担当とする。

@@ -1,0 +1,30 @@
+# Python/Windows アプリの宣言的設定（テンプレート）
+#
+# このファイルを対象リポジトリ直下へコピーし、実値へ書き換える。
+# 秘密情報・実運用パス・配布先の実値は書かない。実値は project.local.toml
+# （Git 管理外）へ置き、scripts/dev.py があれば読み込む。
+
+[project]
+name    = "example-windows-app"
+python  = "3.13"                    # 期待する Python の メジャー.マイナー
+entry   = "example_app.__main__"    # `python -m <entry>` で開発版を起動する
+venv    = ".venv"                   # リポジトリ直下からの相対パス
+
+[dev]
+requirements = "requirements.txt"   # 無ければ "" にする
+install      = "editable"           # "editable" | "requirements" | "none"
+
+[build]
+# 既に実績のあるビルドスクリプトがあるなら "existing" にして呼び出す。
+# 新規に用意する場合のみ "nuitka" / "pyinstaller" を選ぶ。
+tool           = "existing"
+existing_cmd   = "BUILD_EXE_CLICK_ME_REAL.cmd"
+artifact       = "dist/ExampleApp/ExampleApp.exe"
+refuse_dirty_tree = true            # dirty working tree では正式ビルドしない
+
+[dist]
+# 配布更新も、実績のある既存スクリプトがあればそれを呼ぶ。
+existing_cmd  = "update_shared_folder.ps1"
+runtime_dirs  = ["_internal"]       # 完全同期してよいランタイム領域
+protect_globs = ["data/**", "*.db", "config/*.local.*"]  # 消さない・上書きしない
+# 配布先の実値は project.local.toml の [dist] target に置く（Git 管理外）

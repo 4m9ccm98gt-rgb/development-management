@@ -5,6 +5,30 @@
 
 新しい判断を追加するときは、必要に応じてルートの [DECISION_TEMPLATE.md](../DECISION_TEMPLATE.md) を使用する。
 
+## 作業割り当てをエージェント名から「能力ベース」に切り替える
+
+- 日時: 2026-09-02（JST）
+- 決定内容: ChatGPT / Codex というエージェント名で作業を割り当てるのではなく、セッションが実際に持つ能力（`github-rw` / `sandbox-exec` / `windows-real` / `real-peripherals` / `shared-server`）で判定する。判定基準は [CAPABILITIES.md](../CAPABILITIES.md) を正本とする。
+- 理由:
+  - 1セッションが複数能力を同時に持つ場合（実機上のClaude Code等）、エージェント名ベースでは担当が決まらない。
+  - 「ChatGPTがGitHub更新 → Codexが実機実装」の運用には、実機側の作業前 pull・作業後 push が必要だが、誰の責任か未明文化で、ローカルとGitHubがずれてハンドオフが切れた（本件、2026-09-02）。
+  - ツール構成が変わっても判定ルールが陳腐化しないようにする。
+- 採用案: 能力の定義表 ＋ 「作業種別→必要能力」表 ＋ 正式ローカルリポジトリの同期規約（pull前・push後を必須化）を [CAPABILITIES.md](../CAPABILITIES.md) に置く。
+- 却下案:
+  - 案: エージェント名ベースの現行記述を維持し、Claude Code を第3の担当として追記するだけにする。
+  - 却下理由: 能力が重なるケースと新ツール追加のたびに記述が増え、同じ陳腐化を繰り返す。
+- 影響範囲: [AI_OPERATING_MANUAL.md](../AI_OPERATING_MANUAL.md) / [AGENTS.md](../AGENTS.md) / [AI_STARTUP.md](../AI_STARTUP.md) のエージェント名ベースの担当記述は、将来 [CAPABILITIES.md](../CAPABILITIES.md) へのポインタに整理する（今回はポインタ追記のみ、本文は維持）。既存2判断（GitHub側実装の第一担当／ソース起動・手動ビルド・ワンクリック配布）の意図は変更しない。
+- 関連リポジトリ: development-management（本件）、food-cost-calculation-system / beverage-inventory-ordering-system（同期規約の適用先）
+- 確認状況: 未確認（文書のみ。実運用での効果は次のハンドオフで確認する）
+- 関連資料・Issue・コミット: 2026-09-02 の development-management 同期ずれ（`DEVELOPMENT_RULES.md` / `REUSE_MAP.md` がローカル未コミットのまま、`main` が origin より遅延）
+- 備考: `templates/windows-python-app/` と `scripts/check_standards.py` は本判断の実装として別途追加する。
+
+### 次の対応
+
+- [ ] AGENTS.md / AI_STARTUP.md に CAPABILITIES.md へのポインタを追記する
+- [ ] `templates/windows-python-app/` と `scripts/check_standards.py` を追加する
+- [ ] 次のハンドオフで同期規約が機能するか確認する
+
 ## Python/Windowsアプリはソース起動を標準とし、EXEは手動ビルド、配布更新もワンクリック化する
 
 - 判断: Pythonで作るWindowsアプリは、日常の開発・確認では正式ソースを `.venv` から直接起動する。EXEは必要時だけユーザーがワンクリックで手動ビルドする。Codexには通常のEXEビルドを依頼しない。

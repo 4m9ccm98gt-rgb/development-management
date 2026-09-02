@@ -20,6 +20,8 @@
 8. [docs/decisions.md](docs/decisions.md) — 重要な設計判断
 9. [LESSONS_LEARNED.md](LESSONS_LEARNED.md) — 再発防止に使う知見
 
+担当判定と正式ローカルリポジトリの同期規約は [CAPABILITIES.md](CAPABILITIES.md) を参照します（エージェント名ではなく、そのセッションが持つ能力で判定する）。
+
 対象プロジェクトがある場合は、上記に続けて対象の `projects/*.md`、README、Git状態、関連コードを確認します。
 
 ## 管理対象と正式ソース
@@ -53,8 +55,10 @@ Python等のWindowsアプリでは、次を標準確認する。
 
 ## 作業前チェック
 
+- 自分のセッションが持つ能力（`github-rw` / `sandbox-exec` / `windows-real` 等）を [CAPABILITIES.md](CAPABILITIES.md) で確認し、タスクの必要能力と照合する。
 - 対象が `Development\repos` 配下の正式ソースであることを確認する。
 - 対象リポジトリのブランチ、最新タグ、未コミット変更を確認する。
+- `windows-real` を持つ場合、正式ソースに触れる前に `git fetch`（必要なら `git pull --ff-only`）、作業後に `git commit` + `git push` する。「編集したが push していない」は未完了工程として扱う。
 - [VERSION_MATRIX.md](VERSION_MATRIX.md)でGitHub、実運用版、デモ機版の一致状況を確認する。
 - 旧フォルダ、共有版、業務データ、実運用設定を無断で変更対象にしない。
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) と関連する設計判断を読む。
