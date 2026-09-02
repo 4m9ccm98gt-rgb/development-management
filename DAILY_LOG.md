@@ -2,6 +2,51 @@
 
 日々の作業事実を簡潔に記録します。新しい日付を上に追加し、重要な判断は `docs/decisions.md`、再発防止の知見は `LESSONS_LEARNED.md` にも反映します。
 
+## 2026-09-02
+
+### 今日の目的
+
+- 開発環境整備を、ChatGPT / Codex / Claude Code のどれでも効く形に立て直す（Phase 0）。
+
+### 実施したこと
+
+- 対象: `development-management`
+- ローカル同期のズレを解消：ローカル未コミットだった `DEVELOPMENT_RULES.md`（俺伝リリース標準）/ `REUSE_MAP.md`（Nuitka・HDD再利用）を commit + push（`4293c5e`）。原因は「ChatGPTはGitHubへ直接、実機作業はローカルへ、を同期する担当が未定義」。
+- `CAPABILITIES.md` 追加：担当をエージェント名でなくセッションの能力で判定。正式ローカルリポジトリの同期規約（作業前 pull・作業後 push）を必須化。軽量レーンも記載。
+- `docs/decisions.md` に「能力ベースへの切り替え」を記録。`AGENTS.md` / `AI_STARTUP.md` にポインタと同期規約を追記。
+- `templates/windows-python-app/` 追加：`RUN_DEV.cmd` / `BUILD_EXE_CLICK_ME.cmd` / `UPDATE_SHARED_FOLDER.cmd` + `update_shared_folder.ps1` + `pyproject.toml` + `scripts/dev.py`。`beverage-inventory-ordering-system/python_app/` の実績3スクリプトを汎用化したもの。
+- `scripts/check_standards.py` 追加：3経路の有無（サブディレクトリ対応）・秘密パターン・`PROJECT_STATUS.md` 鮮度・`projects/*.md` 参照漏れを点検。stdlib、Windows/Linux/CI 共通。
+
+### 確認結果
+
+- `py_compile`: `check_standards.py` / `dev.py` 成功
+- PowerShell parse: `update_shared_folder.ps1` 成功
+- `python scripts/check_standards.py`: ERROR 0 / WARN 13
+  - 主な WARN: `inventory-reconciliation-system` / `kitchen-calendar` / `qr-supply-ordering-system` は3経路なし、`food-cost-calculation-system` / `next-day-setup` は `RUN_DEV.cmd` なし、`next-day-setup` に実 `master_settings.json`、`menu-sheet-generator.md` が README 未参照。
+  - `beverage-inventory-ordering-system` は `python_app/` に3経路完備のため対象外（当初 Phase 1 パイロット候補だったが、既に整備済みのため中止）。
+- 実機 EXE ビルド / 配布更新 / 実プリンター: 未実施
+
+### 決定事項
+
+- [作業割り当てをエージェント名から「能力ベース」に切り替える](docs/decisions.md#作業割り当てをエージェント名から能力ベースに切り替える)
+
+### 未確認・問題
+
+- テンプレートを実アプリへ適用した動作確認は未実施（次フェーズ）。
+- `check_standards.py` を GitHub Actions の PR チェックに載せる作業は未着手。
+
+### 次にやること
+
+1. WARN 一覧から本物のパイロット（`kitchen-calendar` か `qr-supply-ordering-system`）を選び、`RUN_DEV.cmd` から順に整備する。
+2. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加する。
+
+### Git状態
+
+- ブランチ: `main`
+- コミット: `4293c5e`（ローカル同期分）、`95ac83d`（Phase 0 第1弾）、本日の Phase 0 第2弾を追加予定
+- push: 実施
+- タグ: なし
+
 ## 2026-07-20
 
 ### 今日の目的

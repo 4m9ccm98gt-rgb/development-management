@@ -1,36 +1,39 @@
 # windows-python-app テンプレート
 
 Python/Windows アプリに「起動」「ビルド」「配布更新」の3経路を一意に用意するための雛形。
-[../../CAPABILITIES.md](../../CAPABILITIES.md) と [../../docs/decisions.md](../../docs/decisions.md)
+[../../CAPABILITIES.md](../../CAPABILITIES.md) と、[../../docs/decisions.md](../../docs/decisions.md)
 の「ソース起動を標準とし、EXE は手動ビルド、配布更新もワンクリック化する」を実装する。
+
+**実績パターンは `beverage-inventory-ordering-system/python_app/` の3スクリプト。**
+このテンプレートはそれを汎用化したもの。既にそれらがあるリポジトリでは作り直さない。
 
 ## 使い方
 
-1. このフォルダの内容を対象リポジトリ直下へコピーする。
-2. `project.toml` を実値へ書き換える（`name` / `python` / `entry` / `venv`、ビルド・配布の既存スクリプト名）。
-3. 配布先の実パスなど秘密・環境依存値は `project.local.toml` に置く（`.gitignore` へ追加、Git 管理しない）。
-4. 既に実績のあるビルド／配布スクリプトがある場合は、作り直さず `build.existing_cmd` /
-   `dist.existing_cmd` で呼ぶ。名前が標準と違っていても互換性を優先してよい。
+1. このフォルダの内容を、対象アプリの置き場所（リポジトリ直下、または `python_app/` 等）へコピーする。
+2. `pyproject.toml` と各 `.cmd` / `.ps1` の `<...>` プレースホルダを実値へ置き換える：
+   - `<app-name>` / `<AppName>` — 表示名 / EXE 名
+   - `<import-check>` — `RUN_DEV.cmd` の依存チェック用 import 文（例: `import PySide6`）
+   - `update_shared_folder.ps1` 冒頭の `$AppExeName` / `$BuildDirName` / `$RuntimeDir` / `$DataDirName`
+3. `requirements.txt`（実行依存）と `requirements-dev.txt`（+ pytest, ビルドツール）を用意する。
+4. 配布先の実パスは貼り付け入力。Git にもコード内定数にも書かない。
 
 ## 3経路
 
 | 経路 | ワンクリック | 中身 | 必要能力 |
 |---|---|---|---|
-| 開発起動 | `RUN_DEV.cmd` | `.venv` から `python -m <entry>` | `windows-real` |
-| EXE ビルド | `BUILD_EXE_CLICK_ME.cmd` | dirty tree 拒否 → 既存ビルド or nuitka/pyinstaller → 成果物の size/mtime/SHA-256/commit を表示 | `windows-real`（ユーザー手動） |
-| 配布更新 | `UPDATE_SHARED_FOLDER.cmd` | 配布物と業務データを分離して更新（`/MIR` 禁止） | `windows-real` ＋ `shared-server` / `real-peripherals` |
+| 開発起動 | `RUN_DEV.cmd` | `.venv` 自動作成 → 依存チェック → `python app.py` | `windows-real` |
+| EXE ビルド | `BUILD_EXE_CLICK_ME.cmd` | dirty tree 拒否 → venv → `pytest -q` → build/dist 掃除 → PyInstaller onedir → EXE の size / SHA-256 / source commit 表示 | `windows-real`（ユーザー手動） |
+| 配布更新 | `UPDATE_SHARED_FOLDER.cmd` → `update_shared_folder.ps1` | 配布先パスは貼り付け → ランタイムのみ `/MIR` → EXE を atomic 差し替え → 業務データの SHA-256 と件数を更新前後で検証 | `windows-real` ＋ `shared-server` / `real-peripherals` |
 
-いずれも `python scripts/dev.py <run|build|dist|doctor|check>` を呼ぶ薄いラッパー。
-`scripts/dev.py` は標準ライブラリのみ（Python 3.11+）。Linux sandbox / CI でも
-`doctor` と `check` は動く。
+いずれも自己完結の Windows バッチ / PowerShell 5.1。Python 起動前に Python を要求しない。
 
-## 点検
+## 補助（Linux sandbox / CI でも動く）
 
-`python scripts/dev.py check` で development-management の `scripts/check_standards.py`
-をこのリポジトリへ適用する（3経路の有無・秘密パターン等）。
+`python scripts/dev.py doctor` — Python / `.venv` / Git 状態
+`python scripts/dev.py check`  — development-management の `check_standards.py` をこのリポジトリへ適用
 
 ## 既存アプリへの後付け
 
 稼働中アプリでは、まず `RUN_DEV.cmd` だけ追加する（最も安く、思想が一番依存する経路）。
-既存の `BUILD_*` / `update_shared_folder.ps1` はそのまま活かし、ラッパーから呼ぶ。
-ビルド・配布の挙動そのものは変えない。
+既存の `BUILD_*` / `update_shared_folder.ps1` はそのまま活かし、挙動は変えない。
+標準と違う名前でも互換性を優先してよい（`BUILD_俺伝_CLICK_ME.cmd` / `UPDATE_HDD_CLICK_ME.cmd` 等）。

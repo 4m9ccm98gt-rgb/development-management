@@ -11,7 +11,7 @@
 | beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示・操作フィードバックまでWindows実機確認完了。全クリックボタンの手カーソル・hover・pressed、主要操作の説明tooltip、要発注/未記入メトリクスの反応も合格。最新HEAD `04c3797d`、GitHub Actions 29 passed / 1 skipped。次はユーザー手動で最新EXEを再ビルドし、スポット確認する。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
-| development-management | 正式ローカルcloneを `C:\Users\suisy\Documents\Development\repos\development-management` に復旧済み。ChatGPTをGitHub側の第一実装担当、Codexを実機問題確認の第一担当とする現行ルールをローカルから参照可能。 |
+| development-management | 開発環境整備 Phase 0 実施。担当判定を能力ベースへ切り替え（[CAPABILITIES.md](CAPABILITIES.md)、正式ローカルリポジトリの pull前・push後を必須化）。`templates/windows-python-app/` と `scripts/check_standards.py` を追加。次は WARN 一覧からパイロット選定と CI 化。 |
 
 ## 全体の現在地
 

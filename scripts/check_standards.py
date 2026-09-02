@@ -75,29 +75,53 @@ def iter_files(root: Path):
             yield p
 
 
+APP_MARKERS = ("pyproject.toml", "requirements.txt", "setup.py", "setup.cfg")
+
+
+def _has_py(d: Path) -> bool:
+    for p in d.rglob("*.py"):
+        if not any(_skip_part(x) for x in p.parts):
+            return True
+    return False
+
+
+def find_app_roots(repo: Path) -> list[Path]:
+    """アプリの置き場所（パッケージ設定 or *.spec がある場所、2階層まで）を返す。"""
+    roots: set[Path] = set()
+    for marker in (*APP_MARKERS, "*.spec"):
+        for hit in repo.rglob(marker):
+            if any(_skip_part(x) for x in hit.parts):
+                continue
+            if len(hit.relative_to(repo).parts) - 1 <= 2:
+                roots.add(hit.parent)
+    roots = {r for r in roots if _has_py(r)}
+    if not roots and _has_py(repo):
+        roots = {repo}
+    return sorted(roots)
+
+
 def check_three_paths(repo: Path) -> None:
+    if repo.resolve() == DM.resolve():
+        return  # 管理リポジトリ自身はアプリではない
     name = repo.name
-    has_py = any(repo.glob("*.py")) or any(repo.glob("**/*.py"))
-    looks_app = has_py and (
-        (repo / "pyproject.toml").exists()
-        or (repo / "requirements.txt").exists()
-        or any(repo.glob("**/python_app"))
-        or any(repo.glob("**/*.spec"))
-    )
-    if not looks_app:
-        return
-    names = {p.name.lower() for p in repo.iterdir() if p.is_file()}
+    for app in find_app_roots(repo):
+        # ワンクリックはアプリ直下 or リポジトリ直下のどちらにあってもよい
+        names: set[str] = set()
+        for d in {app, repo}:
+            names |= {p.name.lower() for p in d.iterdir() if p.is_file()}
+        rel = app.relative_to(repo).as_posix()
+        loc = "" if rel == "." else f"{rel}/: "
 
-    run_ok = any(("run_dev" in n) for n in names)
-    build_ok = any(("build" in n and n.endswith((".cmd", ".bat", ".ps1"))) or "build_exe" in n for n in names)
-    dist_ok = any(("update" in n and n.endswith((".cmd", ".bat", ".ps1"))) or "update_shared_folder" in n for n in names)
+        run_ok = any("run_dev" in n for n in names)
+        build_ok = any((("build" in n) and n.endswith((".cmd", ".bat", ".ps1"))) for n in names)
+        dist_ok = any((("update" in n) and n.endswith((".cmd", ".bat", ".ps1"))) for n in names)
 
-    if not run_ok:
-        add("WARN", name, "RUN_DEV.cmd 相当（開発版ワンクリック起動）が無い")
-    if not build_ok:
-        add("WARN", name, "ビルドのワンクリック（BUILD_*_CLICK_ME.cmd 相当）が無い")
-    if not dist_ok:
-        add("WARN", name, "配布更新のワンクリック（UPDATE_SHARED_FOLDER.cmd 相当）が無い")
+        if not run_ok:
+            add("WARN", name, f"{loc}RUN_DEV.cmd 相当（開発版ワンクリック起動）が無い")
+        if not build_ok:
+            add("WARN", name, f"{loc}ビルドのワンクリック（BUILD_*_CLICK_ME.cmd 相当）が無い")
+        if not dist_ok:
+            add("WARN", name, f"{loc}配布更新のワンクリック（UPDATE_SHARED_FOLDER.cmd 相当）が無い")
 
 
 def check_secrets(repo: Path) -> None:

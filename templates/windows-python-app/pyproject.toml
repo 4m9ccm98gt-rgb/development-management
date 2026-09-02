@@ -1,0 +1,14 @@
+# Python/Windows アプリの標準設定（テンプレート）。
+# <...> を対象アプリの実値へ置き換える。秘密情報・配布先の実パスは書かない。
+
+[project]
+name = "<app-name>"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  # 例: "PySide6>=6.8,<7"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
