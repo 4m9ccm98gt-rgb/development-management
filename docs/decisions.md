@@ -30,9 +30,10 @@
 - [x] `templates/windows-python-app/` と `scripts/check_standards.py` を追加する
 - [x] `check_standards.py` にアプリ種別を導入し、Webアプリへの的外れ警告を除去（WARN 13 → 7）
 - [x] 種別情報を `repo_types.toml` に一元化し、アプリ側マーカーを廃止（全8アプリ登録、kitchen-calendar は archived）
+- [x] NDS パイロット: ブランチ `claude/standardize-run-dev` で `RUN_DEV.cmd` のみ追加。Draft PR `next-day-setup#2`。venv 準備・依存導入・`hotel_app` import 解決まで Windows 実機確認済み。GUI mainloop の実起動はユーザー確認（実運用データ・ネットワークに触れうるため）。`check_standards.py` の NDS 警告が解消（WARN 7 → 6）
+- [ ] NDS の GUI 起動をユーザーが `RUN_DEV.cmd` ダブルクリックで確認 → PR を通常PRへ昇格・merge判断
+- [ ] パイロット確定後、残り（food-cost / inventory-reconciliation / qr-supply）へ展開する
 - [ ] `check_standards.py` を各リポジトリの GitHub Actions（warning-only）へ追加する（`development-management` 参照が必要）
-- [ ] NDS パイロット: ブランチで `RUN_DEV.cmd` のみ追加し、実機で起動確認する
-- [ ] パイロット結果を受けて残り（food-cost / inventory-reconciliation / qr-supply）へ展開する
 - [ ] 次のハンドオフで同期規約が機能するか確認する
 
 ## Python/Windowsアプリはソース起動を標準とし、EXEは手動ビルド、配布更新もワンクリック化する

@@ -58,11 +58,22 @@
   - `development-management`: `menu-sheet-generator.md` が README 未参照
   - `next-day-setup`: 実 `master_settings.json`
 
+### 追記（NDS パイロット実施）
+
+- `next-day-setup` にブランチ `claude/standardize-run-dev` を作成、`RUN_DEV.cmd` のみ追加（種別マーカーは置かない）。Draft PR `next-day-setup#2`。
+- テンプレート（`templates/windows-python-app/RUN_DEV.cmd`）をそのまま適用：`.venv` 自動作成 → 依存チェック（`openpyxl, reportlab, PIL`）→ `pip install -r requirements.txt` → `dinner_system\hotel_app.py` 起動。
+- Windows 実機検証：`.venv` Python 3.13.14 / `pip install` OK / 依存 import OK / `hotel_app` import 解決 OK（v1.3.0）。GUI mainloop の実起動は実運用データ・ネットワークに触れうるため未実施（ユーザーがダブルクリックで確認）。
+- `check_standards.py` 再実行：NDS の RUN_DEV 警告が解消（WARN 7 → 6）。
+- 既存の「夕食料飲システムを起動.bat」は変更せず併存。アプリ本体・EXEビルド・配布・本番/共有には触れず。
+- 結論：テンプレートは実アプリへ無改変で適用でき、標準化が機能した。
+
 ### 次にやること
 
-1. NDS パイロットをブランチで実施：`RUN_DEV.cmd` のみ追加（種別マーカーは置かない）、実機で `RUN_DEV.cmd` 起動確認、点検再実行。本番EXE・共有フォルダ・実運用には触れない。
-2. パイロット結果を受けて `food-cost` / `inventory-reconciliation` / `qr-supply` へ展開する。
-3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加する（CI から `development-management` を参照）。
+1. ユーザーが正式ローカル `next-day-setup` で `RUN_DEV.cmd` をダブルクリックし、GUI 起動を確認 → Draft PR #2 を通常PRへ昇格・merge判断。
+2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
+3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
+4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
+5. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加（CI から `development-management` を参照）。
 
 ### Git状態
 
