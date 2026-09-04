@@ -30,8 +30,9 @@
 - [x] `templates/windows-python-app/` と `scripts/check_standards.py` を追加する
 - [x] `check_standards.py` にアプリ種別を導入し、Webアプリへの的外れ警告を除去（WARN 13 → 7）
 - [x] 種別情報を `repo_types.toml` に一元化し、アプリ側マーカーを廃止（全8アプリ登録、kitchen-calendar は archived）
-- [x] NDS パイロット: ブランチ `claude/standardize-run-dev` で `RUN_DEV.cmd` のみ追加。Draft PR `next-day-setup#2`。venv 準備・依存導入・`hotel_app` import 解決まで Windows 実機確認済み。GUI mainloop の実起動はユーザー確認（実運用データ・ネットワークに触れうるため）。`check_standards.py` の NDS 警告が解消（WARN 7 → 6）
-- [ ] NDS の GUI 起動をユーザーが `RUN_DEV.cmd` ダブルクリックで確認 → PR を通常PRへ昇格・merge判断
+- [x] NDS パイロット成功: ブランチ `claude/standardize-run-dev`、PR `next-day-setup#2`（Draft 解除済み）。`cmd.exe /c RUN_DEV.cmd`（実ダブルクリック相当）で venv 作成 → `pip install`（12パッケージ）→ `hotel_app.py` 起動 → Tk ウィンドウ生成（1180x720）→ ネットワーク試行 NONE → 正常終了（exit 0）を一時 clone で実機確認。副作用は gitignore 対象の監査ログ1行のみ、正式ソース未変更。`check_standards.py` の NDS 警告解消（WARN 7 → 6）。
+- [x] 途中で `.cmd` の落とし穴を修正（非 ASCII コメント / `if(...)` 内の括弧 / `-c` のカンマ / CRLF）。テンプレートと `LESSONS_LEARNED.md` へ反映、両リポジトリに `.gitattributes` 追加。
+- [ ] ユーザーが PR `next-day-setup#2` を merge 判断
 - [ ] パイロット確定後、残り（food-cost / inventory-reconciliation / qr-supply）へ展開する
 - [ ] `check_standards.py` を各リポジトリの GitHub Actions（warning-only）へ追加する（`development-management` 参照が必要）
 - [ ] 次のハンドオフで同期規約が機能するか確認する
