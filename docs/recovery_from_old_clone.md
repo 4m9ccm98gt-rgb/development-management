@@ -29,6 +29,11 @@
 1. このブランチをレビューし、正本へ merge するか判断する（`BUSINESS_MODEL.md`・現状化した `projects/*.md`・調整済みフェーズ規律・5設計判断）。
 2. merge する場合、`AI_STARTUP.md` の読む順に `BUSINESS_MODEL.md` を入れるか判断する（旧 clone は入れていたが未適用）。
 2b. `DEVELOPMENT_RULES.md` / `AI_MEMORY.md` との整合は確認済み（フェーズ規律は L251/L308 と同じ考え方）。
-3. `VERSION_MATRIX.md` / `REPOSITORIES.md` に food-cost / qr-supply を**現在の実態で**追記する（旧 clone のテキストは使わない）。
-4. `projects/next-day-setup.md` は canonical 版と突き合わせ、未反映の機能記述だけ足す。
+3. ~~`VERSION_MATRIX.md` / `REPOSITORIES.md` に food-cost / qr-supply を現在の実態で追記~~
+   → **H5（commit `74cf547`）で main 側に実施済み**（10リポジトリ表へ書き起こし）。このブランチには含めない。
+4. `projects/next-day-setup.md` は canonical 版と突き合わせ、未反映の機能記述だけ足す（未対応）。
 5. 判断が済むまで `Documents\開発環境整備プロジェクト` は削除しない。
+
+このブランチは 2026-09-04 に最新 `main`（M1〜M3 反映後）へ rebase 済み。`docs/decisions.md` の
+conflict（末尾に両者の追記）は両方を残す形で解消。`projects/food-cost-calculation-system.md` は
+M3 の判断 A を反映済み。
