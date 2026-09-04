@@ -128,11 +128,23 @@
 - **最終 `check_standards.py`：ERROR 0 / WARN 2**（どちらも qr-supply の RUN_DEV / DEPLOY。PR #1 merge ＋ ローカル pull で解消）。
   - 解消済み：NDS / food-cost / inventory-reconciliation の RUN_DEV、next-day-setup の master_settings（誤検知修正）、menu-sheet-generator 参照漏れ。
 
+### 追記（qr-supply の GitHub/ローカルズレ解消）
+
+- **原因**：`origin/main` はスケルトン `3e800f8` のみ。実アプリ（Phase 1 / 1.5 / 発注表取込）は正式ローカルの未コミット31エントリだった。
+- **混入監査**（commit 前）：秘密情報・`config/settings.py`（実ファイル無し）・DB・認証情報・キャッシュ・実運用データ・自動生成物 いずれも**なし**。`config/settings.example.py` はダミー値のみ。`.venv` / `__pycache__` / `*.sqlite3` / `backups/` は `.gitignore` 済みで staging 対象外。
+- **保存**：ブランチ `feature/phase1-implementation`（`a07ff49`）へ commit + push。GitHub から実アプリを再現可能に。
+- **combined 検証**：`feature/phase1-implementation` を clone → `claude/standardize-run-dev` を merge（衝突なし、3ファイル追加）→ `cmd.exe /c RUN_DEV.cmd`：venv → `pip install`（Flask + pytest + qrcode + openpyxl）→ `python run.py` で **Flask 開発サーバ起動** → **GET / 200（3,989B）／GET /health 200（16B）** → DB は `ensure_database()` が clone 内へ自動作成 → サーバ停止・残プロセス0。
+- **DEPLOY.md 修正**（`9f663c5`）：実装と不一致だった点を反映（`config/settings.py` 読込機構は未実装、設定はコード既定値＋`QR_BASE_URL` 環境変数、`settings.example.py` は将来想定、DB 初回自動作成、WSGI 未導入）。
+- PR #1（`claude/standardize-run-dev`、base `main`）にコメントで全結果を記録。
+
 ### 未確認・次にやること
 
-1. PR merge 判断：`inventory-reconciliation-system#1`（済）、`food-cost#1`（済）、`qr-supply-ordering-system#1`（未）。
-2. qr-supply：正式ローカルの WIP を commit / push することを推奨（GitHub 未反映）。PR #1 merge 後に `git switch main && git pull`、ローカル branch `claude/standardize-run-dev` 削除。
-3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加（CI から development-management 参照）。
+1. **qr-supply の merge 順を判断**（PR #1 の base は現在スケルトンの `main`）：
+   - 案A：`feature/phase1-implementation` → `main` を先に merge（実アプリを main に）→ その後 PR #1 → `main`（衝突なし確認済み）。
+   - 案B：PR #1 の base を `feature/phase1-implementation` へ変更して merge → まとめて `feature/phase1-implementation` → `main`。
+   - どちらも「実装＋RUN_DEV/DEPLOY」の状態は検証済み。
+2. qr-supply 正式ローカルは現在 `feature/phase1-implementation` を checkout 中。ローカル `claude/standardize-run-dev` ブランチは merge 後に削除。
+3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
 4. `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
