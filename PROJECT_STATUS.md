@@ -1,6 +1,6 @@
 # プロジェクト状況
 
-最終更新: 2026-09-02（JST）
+最終更新: 2026-09-04（JST）
 
 ## Current Focus
 
@@ -11,7 +11,7 @@
 | beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示・操作フィードバックまでWindows実機確認完了。最新EXE確認で、発注中一覧だけ過去の`ordered`履歴を全件表示する不整合と、QDateEditがマウスホイールで意図せず大きく日付変更される問題を確認。デスクトップ版は棚卸日以降の未納品だけ発注中表示へ絞り、全QDateEditのホイール変更を禁止。最新HEAD `4f09fd9f`、GitHub Actions 32 passed / 1 skipped。次はRUN_DEVで2点をWindows実機確認。 |
 | call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
 | menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
-| development-management | 開発環境整備 Phase 0 実施。担当判定を能力ベースへ切り替え（[CAPABILITIES.md](CAPABILITIES.md)、正式ローカルリポジトリの pull前・push後を必須化）。`templates/windows-python-app/` と `scripts/check_standards.py` を追加。次は WARN 一覧からパイロット選定と CI 化。 |
+| development-management | 開発環境整備 一巡完了（2026-09-04）。能力ベース担当判定（[CAPABILITIES.md](CAPABILITIES.md)、pull前・push後を必須化）、`templates/windows-python-app/`、`scripts/check_standards.py`（種別対応、`repo_types.toml` が種別の唯一の正）。RUN_DEV.cmd を NDS / food-cost / inventory-reconciliation（desktop）、qr-supply（web、DEPLOY.md も）へ展開し各々一時 clone で end-to-end 実機確認。qr-supply の GitHub/ローカルズレも解消。`check_standards.py` は ERROR 0 / WARN 0。次は CI 化。 |
 
 ## 全体の現在地
 

@@ -137,15 +137,27 @@
 - **DEPLOY.md 修正**（`9f663c5`）：実装と不一致だった点を反映（`config/settings.py` 読込機構は未実装、設定はコード既定値＋`QR_BASE_URL` 環境変数、`settings.example.py` は将来想定、DB 初回自動作成、WSGI 未導入）。
 - PR #1（`claude/standardize-run-dev`、base `main`）にコメントで全結果を記録。
 
-### 未確認・次にやること
+### 追記（qr-supply merge 完了・開発環境整備 一巡完了）
 
-1. **qr-supply の merge 順を判断**（PR #1 の base は現在スケルトンの `main`）：
-   - 案A：`feature/phase1-implementation` → `main` を先に merge（実アプリを main に）→ その後 PR #1 → `main`（衝突なし確認済み）。
-   - 案B：PR #1 の base を `feature/phase1-implementation` へ変更して merge → まとめて `feature/phase1-implementation` → `main`。
-   - どちらも「実装＋RUN_DEV/DEPLOY」の状態は検証済み。
-2. qr-supply 正式ローカルは現在 `feature/phase1-implementation` を checkout 中。ローカル `claude/standardize-run-dev` ブランチは merge 後に削除。
-3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
-4. `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
+- 案Aで実施。履歴上、アプリ実装と標準化を別変更として分離：
+  - `qr-supply-ordering-system#2`：`feature/phase1-implementation` → `main`（squash `1b3879e`）。マージ前に clone で `compileall` OK ／ `pytest 18 passed` を確認。実アプリが正式 `main` に。
+  - `qr-supply-ordering-system#1`：`claude/standardize-run-dev` → `main`（squash `eb2068a`）。マージ前に「差分は `RUN_DEV.cmd` / `DEPLOY.md` / `.gitattributes` の3ファイルのみ」「新 `main`（実アプリ入り）へローカル test-merge が衝突なし」を確認。
+  - qr-supply `main` 履歴：`3e800f8`（skeleton）→ `1b3879e`（Phase 1/1.5 実装 #2）→ `eb2068a`（開発環境標準化 #1）。
+- 正式ローカルを `main` に戻して pull。作業ブランチ（remote / local とも）削除。
+- **最終 `check_standards.py`：`OK: 指摘なし`（ERROR 0 / WARN 0）**。9リポジトリすべて標準充足。
+
+### 開発環境整備 一巡完了（2026-09-04）
+
+- 同期規約・能力ベース担当判定（`CAPABILITIES.md`）
+- `templates/windows-python-app/`（ASCII+CRLF+括弧なし+`;`区切りの `.cmd` 標準、`beverage/python_app/` 由来）
+- `scripts/check_standards.py`（種別対応・サブディレクトリ対応・gitignore スキップ、`repo_types.toml` を種別の唯一の正）
+- `RUN_DEV.cmd` 展開：NDS / food-cost / inventory-reconciliation（desktop）、qr-supply（web、`DEPLOY.md` も）。各リポジトリで一時 clone の `cmd.exe /c RUN_DEV.cmd` end-to-end 実機確認（venv→依存→起動→GUI/HTTP→正常終了、実データ不変）を実施。beverage は既存で充足、kitchen-calendar は archived。
+- GitHub/正式ローカルのズレ解消：development-management（`4293c5e`）、qr-supply（`feature/phase1-implementation` 経由で実装を GitHub へ）。
+
+### 次にやること
+
+1. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加（CI から `development-management` 参照）。
+2. `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。

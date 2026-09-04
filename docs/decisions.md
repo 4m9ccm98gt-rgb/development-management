@@ -33,7 +33,9 @@
 - [x] NDS パイロット成功: ブランチ `claude/standardize-run-dev`、PR `next-day-setup#2`（Draft 解除済み）。`cmd.exe /c RUN_DEV.cmd`（実ダブルクリック相当）で venv 作成 → `pip install`（12パッケージ）→ `hotel_app.py` 起動 → Tk ウィンドウ生成（1180x720）→ ネットワーク試行 NONE → 正常終了（exit 0）を一時 clone で実機確認。副作用は gitignore 対象の監査ログ1行のみ、正式ソース未変更。`check_standards.py` の NDS 警告解消（WARN 7 → 6）。
 - [x] 途中で `.cmd` の落とし穴を修正（非 ASCII コメント / `if(...)` 内の括弧 / `-c` のカンマ / CRLF）。テンプレートと `LESSONS_LEARNED.md` へ反映、両リポジトリに `.gitattributes` 追加。
 - [x] PR `next-day-setup#2` を squash merge（`277aa69`）。ブランチ削除。正式ローカルを `main` へ戻して pull 済み。`RUN_DEV.cmd` + `.gitattributes` が main に入った。
-- [ ] 残り（food-cost / inventory-reconciliation / qr-supply）へ展開する。パイロットで確立した形（ASCII + CRLF + 括弧なし + `;`区切り、テンプレート準拠）を使う。
+- [x] 残り展開完了：food-cost（PR #1 `8008fb7`）、inventory-reconciliation（PR #1 `1ca3793`）、qr-supply（PR #1 `eb2068a`、`DEPLOY.md` 含む Web パターン）。各々一時 clone で `cmd.exe /c RUN_DEV.cmd` end-to-end 実機確認、実運用データ（DB / 資格情報）は SHA-256 不変。
+- [x] qr-supply の GitHub/正式ローカルのズレ解消：実アプリ（Phase 1/1.5/発注表取込）を `feature/phase1-implementation` として GitHub へ保存（混入監査済み）→ `qr-supply#2`（`1b3879e`）で `main` へ。標準化 `qr-supply#1` は別履歴（`eb2068a`）。
+- [x] 最終 `check_standards.py`：ERROR 0 / WARN 0（9リポジトリ）。**開発環境整備 一巡完了（2026-09-04）**。
 - [ ] `check_standards.py` を各リポジトリの GitHub Actions（warning-only）へ追加する（`development-management` 参照が必要）
 - [ ] 次のハンドオフで同期規約が機能するか確認する
 
