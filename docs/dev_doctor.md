@@ -49,6 +49,8 @@ Summary 行は ERROR → ACTION の順で見る。INTENTIONAL / INFO は件数�
 
 ## 意図的な作業ブランチを追加するには
 
-`DEV_DOCTOR.ps1` の `$ActiveBranch` に `"<repo>" = "<branch>"` を足す。以後その repo が
-そのブランチにあるときは [ACTION] ではなく [INTENTIONAL] になる。archived repo は
-`$Archived` 配列に足す。
+`DEV_DOCTOR.ps1` の `$ActiveBranch` に `"<repo>" = "<branch>"` を足す。値は 1 個の名前、
+名前の配列、末尾 `*` のプレフィックスのいずれでもよい（例: beverage は
+`@("python-desktop-migration", "feature/*")` ＝ 移行ブランチと短命の `feature/*` を許容）。
+以後その repo が該当ブランチにあるときは [ACTION] ではなく [INTENTIONAL] になる。
+archived repo は `$Archived` 配列に足す。

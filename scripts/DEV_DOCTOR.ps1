@@ -38,9 +38,11 @@ $Canon = @(
     @{ name = "food-cost-calculation-system";        branch = "codex/bootstrap-invoice-reading" },
     @{ name = "hospitality-review-reply";            branch = "main" }
 )
-# repo -> a branch that is EXPECTED to be checked out right now (intentional work-in-progress)
+# repo -> branch(es) that are EXPECTED to be checked out right now (intentional work-in-progress).
+# A value may be one name, an array of names, or a name ending in '*' used as a prefix.
 $ActiveBranch = @{
-    "beverage-inventory-ordering-system" = "python-desktop-migration"   # Draft PR #2, active migration
+    # Python desktop migration (Draft PR #2) plus its short-lived feature branches.
+    "beverage-inventory-ordering-system" = @("python-desktop-migration", "feature/*")
 }
 # repos that are archived / not actively developed (odd branch or dirtiness is not an issue)
 $Archived = @("kitchen-calendar")
@@ -128,7 +130,14 @@ foreach ($r in $Canon) {
         # branch classification
         $branchNote = ""
         if ($br -eq $r.branch) { }
-        elseif ($ActiveBranch[$r.name] -and $br -eq $ActiveBranch[$r.name]) { $branchNote = "active-wip" }
+        elseif ($ActiveBranch[$r.name]) {
+            $matched = $false
+            foreach ($pat in @($ActiveBranch[$r.name])) {
+                if ($pat.EndsWith("*")) { if ($br.StartsWith($pat.Substring(0, $pat.Length - 1))) { $matched = $true; break } }
+                elseif ($br -eq $pat) { $matched = $true; break }
+            }
+            $branchNote = if ($matched) { "active-wip" } else { "unexpected" }
+        }
         elseif ($isArchived) { $branchNote = "archived" }
         else { $branchNote = "unexpected" }
 
