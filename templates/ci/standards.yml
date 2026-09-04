@@ -6,6 +6,7 @@
 # - development-management は public なので、private リポジトリからも PAT 等の
 #   長期秘密情報なしで uses: 参照できる。
 # - strict を渡さない = warning-only。WARN があってもジョブは成功し、開発をブロックしない。
+# - 参照は @ci-v1（安定版タグ）。@main にはしない。運用は docs/ci_action_versioning.md。
 name: Dev standards (warning-only)
 
 on:
@@ -23,6 +24,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: 4m9ccm98gt-rgb/development-management/.github/actions/check-standards@main
+      - uses: 4m9ccm98gt-rgb/development-management/.github/actions/check-standards@ci-v1
         with:
           strict: "false"
