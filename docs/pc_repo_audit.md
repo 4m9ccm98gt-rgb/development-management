@@ -78,10 +78,40 @@ Windows PC 上の全 git リポジトリを探索し「正規 / 旧 / 不明」�
 - **判断待ち**：(a) 管理対象へ昇格（正規パスへ clone、`repo_types.toml` 登録、CI 追加）か、
   (b) 明示的に管理対象外とするか。
 
-## 次の対応（ユーザー判断が必要な項目）
+## 比較・救出の結果（2026-09-04）
 
-1. `hospitality-review-reply` を管理対象にするか、対象外と明記するか。
-2. `開発環境整備プロジェクト` の未 push 文書編集（`BUSINESS_MODEL.md`、`projects/food-cost-*.md`、`projects/qr-supply-*.md`、コア文書の加筆）を、1件ずつ確認して正規リポジトリへ取り込むか。
-3. `kichen-calendar` 旧 clone に NDS 側へ未反映の固有変更が無いか最終確認（無ければ保管扱い）。
-4. `ChatGPT/food-cost-calculation-system` を公式 `src/` と比較し、固有のものが無ければ保管扱い。
-5. 上記の確認が済むまで、旧 clone・不明ファイルは削除しない。
+### #1 `開発環境整備プロジェクト`（dev-mgmt 旧 clone）— 救出済み（レビュー用ブランチ）
+
+15件の未 push 编集を canonical の現状と1件ずつ比較・分類。canonical は上書きせず、
+取り込み候補のみ `recovery/from-old-clone-docs` ブランチ（Draft PR）に追記。分類詳細は
+[recovery_from_old_clone.md](recovery_from_old_clone.md)。救出候補：`BUSINESS_MODEL.md`、
+`projects/food-cost-*.md` / `projects/qr-supply-*.md`、フェーズ規律フレームワーク、
+未反映だった5設計判断。旧・不要（ログ churn）と旧・要最新化（VERSION_MATRIX / REPOSITORIES）は未適用。
+秘密情報・認証情報・顧客情報・実 FAX / 業者名は含まれない。→ **旧 clone は削除せず保管。**
+
+### #2 `kichen-calendar`（綴り違い、kitchen-calendar 旧 clone）— superseded、固有差分なし
+
+- ローカル専用コミットなし。24件の未コミットは標準スタンドアロン版の作業。
+- 全モジュールが `next-day-setup/dinner_system/kitchen_calendar/` に存在し、NDS 側の方が新しく大きい（`ui.py` 666 vs 472 行など）。テストは NDS 10本 vs 旧 6本で NDS が上位集合。
+- 旧 clone 固有のモジュール（`master.py` の JSON ローダ、`pms_csv.py` の直接パーサ、`nds_holidays.py` の跨 repo import、`__main__.py`）は、統合時に NDS 共有版（`nds_adapter.py` + NDS の `pms_import` + サブウィンドウ起動）へ**置き換えられたスタンドアロン用の配線**であり、失われた機能ではない。
+- `config/rice_settings.json` は NDS の `kitchen_calendar_rice_settings.json` に相当。
+- **結論：NDS へ統合済み・旧 clone は superseded。固有の機能／ロジック／テスト／設定／文書は見つからなかった**（全モジュールの完全な意味的 diff は未実施だが、NDS 版は一貫して上位）。→ **削除せず保管扱い。**
+
+### #3 `ChatGPT\food-cost-calculation-system`（git init のみ・commit なし）— obsolete、固有差分なし
+
+- git 履歴なし。`src/` の全ファイルが公式 `food-cost-calculation-system` に存在（欠落ゼロ）。
+- 差分のある全ファイルが公式版より小さい（`database.py` 310 vs 1022 行、`ui.py` 567 vs 1838 行など）。一部は完全一致。
+- **結論：初期作業コピー・obsolete。公式側に無い固有作業は見つからなかった。**→ **削除せず保管扱い。**
+
+### #4 `hospitality-review-reply` — 管理対象へ追加（knowledge repository）
+
+- private、`main`、GitHub と同期（`Documents\hospitality-review-reply` の旧 clone は behind 5 だったため、正規パスへ新規 clone）。
+- `README.md` / `AI_HANDOFF.md` あり（`AGENTS.md` は無し＝任意フォローアップ）。tracked ファイルに秘密パターンなし。
+- **アプリではなくテンプレート/知識 repo** のため、`repo_types.toml` に `knowledge` 種別を新設して登録。`check_standards.py` は `knowledge` に実行・ビルド標準を課さず、秘密情報チェックのみ行う。CI（warning-only）も追加。
+- README の管理対象一覧に「knowledge repository / runtime 標準対象外」と明記。
+
+## 未対応（ユーザー判断）
+
+- `recovery/from-old-clone-docs`（Draft PR）のレビューと、正本への取り込み範囲の決定。
+- `VERSION_MATRIX.md` / `REPOSITORIES.md` へ food-cost / qr-supply / hospitality-review-reply を**現在の実態で**追記。
+- いずれの旧 clone も、上記判断が済むまで削除しない。

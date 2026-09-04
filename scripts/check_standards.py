@@ -110,10 +110,11 @@ def find_app_roots(repo: Path) -> list[Path]:
 
 # アプリ種別ごとに要求するワンクリック経路
 REQUIRED_BY_TYPE = {
-    "desktop": ["run", "build", "dist"],
-    "web":     ["run", "deploy"],
-    "service": ["run", "install"],
-    "lib":     [],
+    "desktop":   ["run", "build", "dist"],
+    "web":       ["run", "deploy"],
+    "service":   ["run", "install"],
+    "lib":       [],
+    "knowledge": [],  # 知識ベース/テンプレート repo。実行・ビルド標準は課さない（秘密チェックのみ）
 }
 PATH_LABEL = {
     "run":     "RUN_DEV.cmd 相当（開発版ワンクリック起動）",

@@ -27,7 +27,8 @@ $Canon = @(
     @{ name = "menu-sheet-generator";                branch = "main" },
     @{ name = "call-reception-assistant";            branch = "main" },
     @{ name = "kitchen-calendar";                    branch = "main" },
-    @{ name = "food-cost-calculation-system";        branch = "codex/bootstrap-invoice-reading" }
+    @{ name = "food-cost-calculation-system";        branch = "codex/bootstrap-invoice-reading" },
+    @{ name = "hospitality-review-reply";            branch = "main" }
 )
 
 $script:ok = 0; $script:warn = 0; $script:err = 0

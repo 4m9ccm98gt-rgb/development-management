@@ -8,8 +8,9 @@
 #   desktop  … 対話型GUIアプリ。起動 + EXEビルド + 配布更新
 #   web      … ブラウザ/サーバーアプリ。起動 + デプロイ
 #   service  … 常駐・自動実行。起動 + 常駐登録
-#   lib      … 部品。ワンクリック経路は不要
-#   archived … 開発対象外。点検しない
+#   lib       … 部品。ワンクリック経路は不要
+#   knowledge … 知識ベース/テンプレート repo。実行・ビルド標準は課さない（秘密チェックのみ）
+#   archived  … 開発対象外。点検しない
 
 [types]
 beverage-inventory-ordering-system = "desktop"   # PySide6。3経路の実績元
@@ -20,3 +21,4 @@ menu-sheet-generator               = "desktop"   # PMS CSV取込 → 帳票生�
 next-day-setup                     = "desktop"   # 翌日準備。BUILD_EXE_CLICK_ME + UPDATE_SHARED_FOLDER
 qr-supply-ordering-system          = "web"       # Flask系の独立Webアプリ
 kitchen-calendar                   = "archived"  # next-day-setup へ取り込み済み。今後開発しない
+hospitality-review-reply           = "knowledge" # 旅館口コミ返信のテンプレート/知識 repo。アプリではない

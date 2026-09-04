@@ -70,6 +70,7 @@ Current stable version: **v1.0.0**
 | beverage-inventory-ordering-system | 飲料在庫管理＋飲料発注システム | [projects/beverage-inventory-ordering-system.md](projects/beverage-inventory-ordering-system.md) |
 | call-reception-assistant | 旅館の電話受付支援・将来自動化 | [projects/call-reception-assistant.md](projects/call-reception-assistant.md) |
 | menu-sheet-generator | PMS CSV から料理説明書（帳票）を生成・印刷する対話型アプリ | [projects/menu-sheet-generator.md](projects/menu-sheet-generator.md) |
+| hospitality-review-reply | 旅館口コミ返信のテンプレート／知識リポジトリ。**アプリではない（knowledge repository / runtime 標準対象外）**。CI は秘密情報チェックのみ | — |
 
 正式なローカルパスは [REPOSITORIES.md](REPOSITORIES.md) を参照してください。
 
