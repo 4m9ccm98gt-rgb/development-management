@@ -10,3 +10,6 @@ project.local.toml
 # Git 管理外データのバックアップ出力（値を含む。絶対にコミットしない）
 DevDataBackups/
 devdata-*/
+
+# DEV DOCTOR / other local report outputs
+DEV_DOCTOR_report.txt
