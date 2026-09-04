@@ -67,9 +67,17 @@
 - 既存の「夕食料飲システムを起動.bat」は変更せず併存。アプリ本体・EXEビルド・配布・本番/共有には触れず。
 - 結論：テンプレートは実アプリへ無改変で適用でき、標準化が機能した。
 
+### 追記（NDS 起動時副作用の確認）
+
+- ユーザー要請で、GUI 起動を手動ダブルクリックに移す前に `hotel_app.py` の起動時副作用を確認。
+- 静的解析：実運用設定の書き換え・保存データ更新・ネットワーク/Google Sheets・印刷・共有フォルダ書き込みは **いずれも起動時には発生しない**（すべてアクション handler 経由）。唯一 `__init__` L552 の `audit_event("app_start")` がローカルの `dinner_system/保存データ/operation_audit_*.jsonl`（gitignore 対象・追記専用）へ1行書く。
+- サンドボックス実起動（`dinner_system/` を一時コピー、socket 全ブロック、3.5秒自動クローズ）：ウィンドウ生成 True（`next-day-setup v1.3.0` / 1180x720）、mainloop 正常終了、ネットワーク接続試行 NONE、生成物は `*.pyc` と監査ログ1行のみ、正式ソース未変更。
+- 検証スクリプトはスクラッチパッドの `verify_nds_gui_boot.py`。汎用化してテンプレートへ入れる価値あり（保留）。
+- 結論：GUI 実起動確認は完了。PR #2 に全結果をコメント済み。merge 判断はユーザー。
+
 ### 次にやること
 
-1. ユーザーが正式ローカル `next-day-setup` で `RUN_DEV.cmd` をダブルクリックし、GUI 起動を確認 → Draft PR #2 を通常PRへ昇格・merge判断。
+1. ユーザーが Draft PR #2 の merge を判断（GUI 実起動はサンドボックスで確認済み。実ダブルクリックは任意、痕跡は gitignore 対象の監査ログ1行のみ）。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
