@@ -430,3 +430,28 @@
 ### 次にやること
 
 - M3 俺伝の既定ブランチ依存監査。
+
+## 2026-09-04（続き5）M3 俺伝の既定ブランチ依存監査
+
+### 監査結果 → 判断 A（`main` へ移行）
+
+- `docs/food_cost_default_branch.md` に全数監査（16 項目）+ 判断 + 非破壊・可逆の移行手順を記録。
+- **機能依存は 1 件だけ**: `development-management/scripts/DEV_DOCTOR.ps1` の `$Canon`
+  （`food-cost` → `branch = "codex/bootstrap-invoice-reading"`）。不一致なら誤 ACTION を出す。
+- 影響なしを確認: food-cost の `standards.yml`（ブランチフィルタ無し）、`build_release.ps1`
+  （`git branch --show-current` で動的取得、BUILD_INFO へ情報記録のみ）、`update_hdd.ps1`
+  （BUILD_INFO の「Git branch」キーの存在のみ確認、値は不問）、他リポジトリの workflow（参照なし）、
+  ブランチ保護（private + Pro 無しで機能自体が無効）、Open PR（0 件）。
+- 文書参照: food-cost `AI_HANDOFF.md`、development-management の AI_STARTUP / PROJECT_STATUS /
+  REPOSITORIES / VERSION_MATRIX / docs/ai_handoff / docs/build_deploy_paths。DAILY_LOG の過去分は据え置き。
+- 外部参照は旧 clone（`ChatGPT\food-cost...`、`開発環境整備プロジェクト\...`）の文言のみ。機能依存なし。
+- 判断 A の根拠: GitHub のブランチ改名はネイティブ・非破壊（履歴/SHA 保持、force push なし、
+  リダイレクト自動、Open PR 自動張替え）で**可逆**。依存面積が小さく全把握済み。退役直前に
+  「この repo だけ既定ブランチが違う」恒久リスクを消せる。
+
+### 状態
+
+- 監査・手順設計・検証は完了。GitHub 改名 API の自動実行はブロックされたため**ユーザー実行/承認待ち**。
+  実行コマンドと後続手順は `docs/food_cost_default_branch.md`。実行後に DEV_DOCTOR `$Canon` と
+  各文書を `main` へ更新し、DEV_DOCTOR / check_standards / `gh repo view` で検証する。
+- その後 M1（新 PC ブートストラップ）へ。
