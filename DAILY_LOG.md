@@ -336,8 +336,8 @@
 
 ### 退役前整備の残り
 
-- ~~H7 BUILD / DEPLOY の非本番実地検証~~ → 下記で完了
-- H5 引き継ぎドライラン（development-management だけから作業再開できるか）
+- ~~H7 BUILD / DEPLOY の非本番実地検証~~ → 続き3で完了
+- ~~H5 引き継ぎドライラン~~ → 続き3で完了
 - M1 新 PC ブートストラップ script / M2 gh 認証寿命 / M3 food-cost の既定ブランチ依存監査
 
 ## 2026-09-04（続き3）退役前整備 H7 / beverage ACTION 解消
@@ -371,6 +371,31 @@
 - 現在 upstream と 0/0。ブランチは `python-desktop-migration` のまま（`$ActiveBranch` 変更不要）。
 - H7 のビルド検証は `04c3797` 時点。FF 後の再ビルドで EXE SHA は変わるが経路の妥当性は不変。
 
-### 次にやること
+### H5 引き継ぎドライラン → 完了
 
-- H5 引き継ぎドライラン。
+- development-management の入口（AI_STARTUP → PROJECT_STATUS → VERSION_MATRIX → REPOSITORIES →
+  SYSTEM_OVERVIEW → docs/ai_handoff）をコールドスタート視点で読み直し、残ギャップを修正。
+- 判明していた問題: 状態系文書が「2プロジェクト時代（2026-07）」のまま。新規セッションが
+  (a) 俺伝・menu-sheet・qr-supply・kitchen-calendar・hospitality の存在を認識できない、
+  (b) development-management が GitHub 未反映と誤認（VERSION_MATRIX の dev-mgmt 行が「初回コミット前」・
+  作業場所が旧 clone パス）、(c) beverage の完了済み next-steps（HEAD 4f09fd9f / PR #2）を追いかける、
+  (d) 退役前整備 H1〜H7 と DEV_DOCTOR / バックアップ / ランブックの存在に気づけない。
+- 修正:
+  - `PROJECT_STATUS.md`: 全面更新。管理対象10リポジトリ表（種別・既定ブランチ・現在地）、
+    Current Focus、退役前整備 H1〜H7 の成果表、Claude Code 退役の背景、次タスク（H5/M1/M2/M3）。
+  - `AI_STARTUP.md`: 確認順序に CAPABILITIES を第5へ、退役前整備の運用文書リンク集を追加。
+    管理対象表を10行（種別・既定ブランチ・タグ）へ。俺伝の既定ブランチが `codex/bootstrap-invoice-reading`
+    である旨を明記。`projects/` に文書が無いリポジトリの参照先を明記。
+  - `VERSION_MATRIX.md`: 最終調査日 2026-09-04。dev-mgmt 行を実態（main `d45c0c9`・GitHub 同期済み）へ。
+    next-day-setup / inventory-reconciliation / beverage / menu-sheet / call-reception の main コミットを現在値へ。
+    food-cost（俺伝）/ qr-supply / kitchen-calendar / hospitality の行を新設。実運用版は全リポジトリ「未確認」で統一。
+  - `REPOSITORIES.md`: 全面更新。10リポジトリ表（種別・既定ブランチ・HEAD・タグ）+ 旧 clone の扱い。
+  - `SYSTEM_OVERVIEW.md`: 構成図と役割分担表を全アクティブリポジトリへ拡張。
+  - `docs/ai_handoff.md`: 「管理対象は2つ」を10リポジトリへ。安定版・進行中作業を現在値へ。
+  - `CHANGELOG.md`: v1.3.0（退役前整備 H1〜H7、beverage FF）を追加。
+- 内部リンクの解決を確認。`docs/recovery_from_old_clone.md` は recovery ブランチのみに存在するため
+  main 上の文書からは pc_repo_audit.md 経由で参照。
+
+### 退役前整備の到達点
+
+- H1〜H7 完了。残り M1（新PCブートストラップ）/ M2（gh 認証寿命）/ M3（俺伝の既定ブランチ依存監査）。

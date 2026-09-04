@@ -2,74 +2,79 @@
 
 最終更新: 2026-09-04（JST）
 
+## この時期の背景
+
+- 開発補助ツール **Claude Code の提供終了が近い**。終了後も、ChatGPT（GitHub 側）と
+  Codex／その他セッション（Windows 実機側）だけで各アプリの開発・ビルド・配布・復旧が
+  回るように、退役前整備（H1〜H7）を実施した。→ 下記「退役前整備（H1〜H7、2026-09-04 完了）」節を参照。
+- 担当判定は「ChatGPT / Codex / Claude Code」というエージェント名ではなく、そのセッションが
+  実際に持つ**能力**で判定する（[CAPABILITIES.md](CAPABILITIES.md) が正本）。
+- 非コーダーのユーザーが単独で日常運用できるよう、[docs/operator_runbook.md](docs/operator_runbook.md) を用意した。
+
+## 管理対象リポジトリ（10）
+
+種別の唯一の正は [scripts/repo_types.toml](scripts/repo_types.toml)。正式ソースは
+すべて `C:\Users\suisy\Documents\Development\repos\<name>` 配下。
+
+| リポジトリ | 種別 | 既定ブランチ | 現在地 |
+|---|---|---|---|
+| next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `1b048f4`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。 |
+| inventory-reconciliation-system（在庫突合） | service | `main` | 実運用中。tag `v2.0.0`、main `fd2de21`。夜間自動実行（`install_daily_inventory_task.bat` でタスク登録）。 |
+| beverage-inventory-ordering-system（飲料在庫） | desktop | `main`（移行作業は `python-desktop-migration`） | Python/PySide6 版へ移行中。作業ブランチ `python-desktop-migration` は upstream と同期（`e458476`）。能力ベース運用の起点・3経路の実績元。 |
+| food-cost-calculation-system（俺伝） | desktop | **`codex/bootstrap-invoice-reading`**（`main` は無い） | 実運用中。HEAD `1940db0`。Nuitka ビルド + 外付け HDD 配布（`BUILD_俺伝_CLICK_ME.cmd` → `UPDATE_HDD_CLICK_ME.cmd`）。既定ブランチの `main` 化は M3 で依存監査後に判断。 |
+| menu-sheet-generator（料理説明書、.NET） | desktop | `main` | 実運用中。tag `v1.0.0`、main `fa4fdf7`。`BUILD_RELEASE.cmd`（dotnet publish）→ `UPDATE.cmd`。 |
+| qr-supply-ordering-system（QR 物品発注） | web | `main` | 社内 LAN の 1 ホストで Flask 常駐。main `790fff5`。`RUN_DEV.cmd` + 対象リポジトリの `DEPLOY.md`。 |
+| call-reception-assistant（電話受付） | desktop | `main` | 初期管理文書のみ。**アプリ本体は未実装**。main `ae78cf5`。 |
+| kitchen-calendar（調理場カレンダー） | archived | `main` | next-day-setup へ統合済み。**今後開発しない**（[docs/pc_repo_audit.md](docs/pc_repo_audit.md) #2）。 |
+| hospitality-review-reply（口コミ返信） | knowledge | `main` | 旅館口コミ返信のテンプレート／知識 repo。アプリではない。main `f6e1e74`。CI は warning-only、実行・ビルド標準は課さない。 |
+| development-management | （管理repo自身） | `main` | 本知識ベース。main `d45c0c9`、moving tag `ci-v1`。 |
+
 ## Current Focus
 
-| プロジェクト | 現在の作業 |
+| リポジトリ | 現在の作業 |
 |---|---|
-| next-day-setup | 実運用中。GitHub・正式ローカル・共有版の一致を確認しながら継続開発する。 |
-| inventory-reconciliation-system | 実運用中。自動実行は概ね安定しており、運用設定を継続管理する。 |
-| beverage-inventory-ordering-system | Python/PySide6ソース版は主要業務機能・実運用データ互換・Windowsライト/ダーク・カレンダー履歴表示・操作フィードバックまでWindows実機確認完了。最新EXE確認で、発注中一覧だけ過去の`ordered`履歴を全件表示する不整合と、QDateEditがマウスホイールで意図せず大きく日付変更される問題を確認。デスクトップ版は棚卸日以降の未納品だけ発注中表示へ絞り、全QDateEditのホイール変更を禁止。最新HEAD `4f09fd9f`、GitHub Actions 32 passed / 1 skipped。次はRUN_DEVで2点をWindows実機確認。 |
-| call-reception-assistant | 初期管理文書を整備済み。アプリ本体は未実装。 |
-| menu-sheet-generator | 実運用中。PMS CSVからの帳票生成と共有フォルダ配布を継続運用。 |
-| development-management | 開発環境整備 一巡完了（2026-09-04）。能力ベース担当判定（[CAPABILITIES.md](CAPABILITIES.md)、pull前・push後を必須化）、`templates/windows-python-app/`、`scripts/check_standards.py`（種別対応、`repo_types.toml` が種別の唯一の正）。RUN_DEV.cmd を NDS / food-cost / inventory-reconciliation（desktop）、qr-supply（web、DEPLOY.md も）へ展開し各々一時 clone で end-to-end 実機確認。qr-supply の GitHub/ローカルズレも解消。`check_standards.py` は ERROR 0 / WARN 0。次は CI 化。 |
+| （全体） | 退役前整備 H1〜H7 完了。残り: **H5 引き継ぎドライラン**（この文書群の最新化そのもの）、M1 新PCブートストラップ、M2 gh 認証寿命、M3 俺伝の既定ブランチ依存監査。 |
+| beverage-inventory-ordering-system | `python-desktop-migration` を upstream `e458476` へ FF 済み（DEV_DOCTOR の behind 5 解消）。Python ソース版の Windows 実機確認を継続。EXE は必要時のみユーザーが手動ビルド、本番共有版は確認完了まで更新しない。Draft PR #2 の merge 可否は未判断。 |
+| next-day-setup / inventory-reconciliation / menu-sheet-generator / 俺伝 / qr-supply | 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。個別の機能追加は各 `projects/*.md` と対象リポジトリの状態で判断。 |
+| call-reception-assistant | 設計前。無課金・ローカル完結・外部非接続の初期試作方針（[docs/decisions.md](docs/decisions.md)）。 |
+
+## 退役前整備（H1〜H7、2026-09-04 完了）
+
+| 記号 | 内容 | 主な成果物 |
+|---|---|---|
+| H1 | Git 管理外データのバックアップ・復元 | `scripts/BACKUP_DEV_DATA.ps1` + `_CLICK_ME.cmd`、[docs/git_external_data_inventory.md](docs/git_external_data_inventory.md)、[docs/backup_restore.md](docs/backup_restore.md)。実バックアップ初回作成・全項目検証済み（`%USERPROFILE%\DevDataBackups\` と `E:\DevDataBackups\`）。 |
+| H2 | PC 全体の repo／clone 監査、旧 clone 比較 | [docs/pc_repo_audit.md](docs/pc_repo_audit.md)。旧 clone #1〜#4 の分類。hospitality-review-reply を knowledge 種別で管理対象へ追加。 |
+| H3 | 共通 CI アクションの安定タグ運用 | `ci-v1`（moving）/ `ci-v1.0.x`（固定）。[docs/ci_action_versioning.md](docs/ci_action_versioning.md)。各 repo の CI は `@ci-v1` を参照。 |
+| H4 | 実機ヘルスチェック | `scripts/DEV_DOCTOR.ps1` + `_CLICK_ME.cmd`、[docs/dev_doctor.md](docs/dev_doctor.md)。4段階（ERROR / ACTION / INTENTIONAL / INFO）。 |
+| H5 | 引き継ぎドライラン | development-management だけから作業再開できるかの検証。本文書・[AI_STARTUP.md](AI_STARTUP.md)・[VERSION_MATRIX.md](VERSION_MATRIX.md)・[REPOSITORIES.md](REPOSITORIES.md)・[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)・[docs/ai_handoff.md](docs/ai_handoff.md) を現状へ更新。 |
+| H6 | 非コーダー向けランブック | [docs/operator_runbook.md](docs/operator_runbook.md)。毎週やること／各システムのダブルクリック操作／困ったときの相談のしかた／禁止事項／用語辞典。 |
+| H7 | BUILD / DEPLOY / UPDATE 経路の非本番実地検証 | [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。一時ターゲットで各アプリの経路を実走破。fail-safe 一覧。 |
+
+## Windows アプリ共通標準
+
+- 開発起動: `RUN_DEV.cmd`（`.venv` の Python ソースを起動。無ければ自動作成）。
+- EXE ビルド: `BUILD_EXE_CLICK_ME.cmd` 等をユーザーが必要時だけ手動実行。未コミットだと止まる設計（俺伝・beverage）。
+- 配布先更新: `UPDATE_SHARED_FOLDER.cmd` → `update_shared_folder.ps1`（俺伝は `UPDATE_HDD_CLICK_ME.cmd`、menu-sheet は `UPDATE.cmd`）。業務データを消さない設計。
+- 通常の EXE ビルドだけのために実機セッション（Codex 等）のクレジットを消費しない。
+- 種別・経路・fail-safe の一覧は [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。
 
 ## 全体の現在地
 
-- `development-management` を業務システム全体の司令塔として運用中。
-- 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下に統一する。
-- GitHub上で完結する調査・設計・実装・テスト・branch・commit・push・PR・レビューはChatGPTが原則担当する。
-- CodexはWindows実機、正式ローカル、実プリンター、共有サーバー、ローカル専用ファイル、手動ビルド失敗時の原因調査などへ優先して使用する。
-- 通常のEXEビルドはCodex担当から外す。Python/Windowsアプリは正式ソースから直接起動できる状態を維持し、EXEは必要時だけユーザーがワンクリックで手動ビルドする。
-- 配布対象のWindowsアプリは、配布先更新用 `update_shared_folder.ps1` と `UPDATE_SHARED_FOLDER.cmd` を原則必須とする。
-- GitHub上の自動テスト、Pythonソース版Windows実機確認、EXE確認、UI同等性確認、共有版・実プリンター確認を別の確認レベルとして扱う。
-- PR merge、安定版タグ、本番共有版更新は、必要な確認と明示的な判断後に行う。
-- `beverage-inventory-ordering-system` は最新実運用JSONのデータ・業務計算互換性、現行UI再現、主要業務機能、Windowsライト/ダークテーマ、カレンダー履歴データ表示、クリック可能箇所の操作フィードバックまでPythonソース版Windows実機確認済み。
-- 2026-09-02最新EXE確認で、在庫計算は棚卸日以降の発注だけを発注中数量として扱う一方、発注中一覧は`status == ordered`の全履歴を表示していたため、古い未完了履歴が大量表示され得る不整合を確認。データ自体は削除せず、デスクトップUIの発注中表示のみ現在棚卸サイクルへ絞る修正を追加。
-- QDateEditはQt標準挙動でマウスホイールに反応し、カーソルが乗った状態のスクロールで日付が大きく変わるため、デスクトップ版では全QDateEditのWheelイベントを無効化。日付変更はクリック・カレンダー・キーボードに限定する。
-- `development-management` の正式ローカルcloneはGitHub正本から復旧済み。旧 `C:\Users\suisy\Documents\開発環境整備プロジェクト` cloneは未コミット変更があるため別物として保護している。
-
-## Windowsアプリ共通標準
-
-- 開発起動: `RUN_DEV.cmd` または同等手段から `.venv` のPythonソースを起動。
-- EXEビルド: `BUILD_EXE_CLICK_ME.cmd` または同等手段をユーザーが必要時だけ手動実行。
-- 配布先更新: `UPDATE_SHARED_FOLDER.cmd` → `update_shared_folder.ps1` をユーザーが必要時だけ手動実行。
-- Codex: 通常のビルド作業ではなく、実機でしか確認できない問題や手動処理失敗時の原因調査に使う。
-
-## beverage-inventory-ordering-system 最新状態
-
-- branch: `python-desktop-migration`
-- latest HEAD: `4f09fd9fdc4b63dd95f29a06453d2156b5a3c2ca`
-- Draft PR: #2
-- Pythonソース版: UI、主要機能、実運用JSON互換まで確認完了。
-- 実運用JSON: 66商品、売上90日、レシピ34、定期消費3、発注履歴130件。ブラウザ/Python計算66/66一致。
-- Windows Pythonソース版: 売上CSV、発注、納品、配送休み、通知、商品調整、レシピ、定期消費、dailyRoundUp、商品マスタ、棚卸、アラートCSV、外部URL、Excel実オープンまで確認済み。
-- アラートCSV空行問題は修正・Windows再確認済み。
-- 2026-09-02 EXE A/B診断: 同一JSONを `BEVERAGE_DATA_DIR` で与えると飲料商品66、販売数16、要発注0、未記入0、棚卸日2026-08-30、売上90日、発注履歴130、recipes34、periodicConsumptions3、productMaster66が全一致。メイン・商品調整・個別発注はピクセル差分0。
-- PyInstallerの必要Pythonモジュール欠落はなし。
-- fresh build直後の `dist\BeverageInventory\data` が空なのは仕様。実運用データをビルド成果物へ自動混入させず、共有更新時は配布先 `data` をSHA-256で保護する。
-- EXE固有差として `apps\ordering\index.html` と関連静的資産が旧ビルド成果物に含まれず、「飲料発注システム」だけ開けない問題を確認済み。`BUILD_EXE_CLICK_ME.cmd` と `update_shared_folder.ps1` の両方に `apps\ordering` コピー/同期を追加済み。
-- Windowsダークモード対応を追加。Qt/Windowsのシステム配色へ起動時・実行中とも追従し、メイン、パネル、入力欄、テーブル、商品調整、個別発注、棚卸オーバーレイ、警告/発注中カード、QDateEditカレンダー、tooltip、scrollbarをライト/ダーク双方でテーマ化。
-- 売上取込カレンダーは imported / missing / outside / holiday の4状態をライト/ダーク双方で明示色にし、対象外日をdisabled文字色へ依存させないよう修正。hover時の枠/背景反応と即時詳細tooltip表示を追加。
-- 2026-09-02 Windows実機テーマ確認: 総合判定「テーマ対応OK」。ダーク時に全対象画面の可読性を確認。カレンダー4状態は明確に判別でき、日付数字欠落なし。tooltipはマウス侵入後約39msで出現。QDateEdit、商品調整、個別発注、棚卸大画面、レシピ、材料消費容量、発注中、配送休みもOK。
-- Windowsダーク→ライト→ダークをアプリ起動中に切替し、`ColorScheme.Dark` → `ColorScheme.Light` → `ColorScheme.Dark` のライブ追従成功。ライト側も従来UIから大きな崩れなし。
-- カレンダー履歴表示はブラウザ版と同じ優先順位へ修正済み。データ存在日は `imported`、データなし配送休みは `holiday`、対象期間内データなしは `missing`、それ以外は `outside`。2026-09-02 Windows再確認で8/1〜8/31の実データ日が緑、9/1のデータ有無による imported/missing、棚卸日前データなしのoutsideを確認済み。元JSON SHA-256不変。
-- クリック可能コントロール用 `ui_interactions.py` を追加。全QPushButton/QToolButtonへ手カーソル、hover枠、押下時の沈み/色変化を共通適用。商品タブ・開閉ボタン等も対象。
-- `個別発注`、`在庫データ読込`、`在庫データ保存`、`飲料発注システム`、`通知`、`商品調整`、`アラート出力`、売上CSV、棚卸、発注/納品、商品マスタ、定期消費など主要操作へ説明tooltipを追加。
-- `要発注` と `未記入` のクリック可能メトリクスカードにもhover/押下反応と説明tooltipを追加。
-- 2026-09-02 Windows実機操作フィードバック確認: 総合判定「操作フィードバックOK」。ヘッダー7ボタン、メイン主要操作、表示/閉じる、要発注/未記入、商品調整、個別発注、発注中、カレンダーを確認。hover・pressed・手カーソルは明確で、レイアウトのガタつきなし。tooltipは約250〜350msで表示し、内容は実機能と整合、表示位置や頻度も邪魔になりすぎない。動的に `クロスオーダーを開く` へ変わった後も反応維持。ライト/ダーク双方で可読性・識別性OK。元実運用JSON SHA-256不変。
-- 最新EXE確認で発注中一覧が多すぎる問題を確認。`InventoryEngine.get_pending_from_order_history()`は棚卸日以降だけを在庫計算へ加える一方、旧UI側`pending_orders()`は全期間の`ordered`を返していた。デスクトップ専用 `DesktopInventoryService` を追加し、発注中一覧も棚卸日以降の有効日付・未納品に限定。過去履歴は`order_history()`へ残す。
-- QDateEditのマウスホイール変更を`ButtonInteractionFilter`で全件無効化。カーソルを合わせたままページスクロールしても日付値を変更しない。
-- 回帰テスト `test_desktop_safety.py` を追加。GitHub Actions: 32 passed / 1 skipped。
+- `development-management` を業務システム全体の司令塔として運用中。GitHub 反映済み（`main` = `d45c0c9`）。
+- `github-rw` を持つセッション（ChatGPT 等）は GitHub 上で完結する調査・実装・テスト・PR まで担当。
+- `windows-real` を持つセッション（Codex 等）は Windows 実機・正式ローカル・実プリンター・共有サーバー・
+  手動ビルド失敗時の原因調査へ優先配分。正式ソースに触れる前に `git fetch`（必要なら `pull --ff-only`）、
+  作業後に `commit` + `push`。「編集したが push していない」は未完了工程。
+- PR merge、安定版タグ、本番共有版・実 HDD 更新は、必要な確認と明示的な判断後にのみ行う。
 
 ## 次にやること
 
-1. 正式ローカル `beverage-inventory-ordering-system` を `python-desktop-migration` 最新HEAD `4f09fd9f` へfast-forwardする。
-2. `RUN_DEV.cmd` で実運用JSON複製を読み込み、発注中一覧が棚卸日 `2026-08-30` 以降の未納品だけになることを確認する。
-3. 発注履歴一覧には古い履歴も残っていること、在庫計算値が修正前と変わらないことを確認する。
-4. カレンダー表示月、棚卸し日、配送休み開始/終了など各QDateEditへカーソルを置いた状態でホイールを回し、日付が変化しないことを確認する。ページ自体のスクロールは継続できることも確認する。
-5. 通過後、ユーザーが `python_app\BUILD_EXE_CLICK_ME.cmd` を手動実行して最新EXEを再ビルドする。
-6. 最新EXEへ実運用JSON複製を読み込み、66商品、カレンダー履歴表示、飲料発注システム起動、ダーク/ライト、操作フィードバック、発注中一覧、日付ホイール防止をスポット確認する。
-7. ここまで通れば最新EXE機能ゲートを通過とし、棚卸表の実プリンター確認へ進む。
-8. その後、共有サーバーのテスト領域へ `UPDATE_SHARED_FOLDER.cmd` でユーザー手動配布し、共有サーバー上から直接起動、2台以上のPCで共有JSON同時更新を確認する。
-9. 問題がなければDraft PR #2のmerge可否を判断する。
-10. 本体移行後にGASスマホ棚卸と発注システム統合へ進む。
+1. **H5**: この更新で本文書群を現状化した。新規セッションが development-management だけで
+   現在地・正式ソース・未完了作業を把握できるか、実際に読み直して残ギャップを潰す。
+2. **M1**: 新 PC ブートストラップ手順／script（`git` / `py` / `gh` 導入、10 repo clone、`gh auth login`）。
+3. **M2**: `gh` 認証トークンの寿命確認と再認証手順の明文化（[docs/backup_restore.md](docs/backup_restore.md) に追記済みの内容を検証）。
+4. **M3**: 俺伝の既定ブランチ `codex/bootstrap-invoice-reading` を `main` にできるか、依存（CI・
+   ビルドスクリプト・ドキュメントの branch 参照）を監査してから判断。
+5. **beverage**: Draft PR #2 の merge 可否判断、GAS スマホ棚卸・発注システム統合。
+6. `recovery/from-old-clone-docs`（Draft PR）の取り込み範囲決定。分類表はそのブランチの
+   `docs/recovery_from_old_clone.md`、概要は [docs/pc_repo_audit.md](docs/pc_repo_audit.md) の「比較・救出の結果」#1。

@@ -3,22 +3,32 @@
 ## 最重要事項
 
 - 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下のみ。
-- 管理対象は `next-day-setup` と `inventory-reconciliation-system`。
-- 旧フォルダは参照専用。変更禁止。
+- 管理対象は10リポジトリ（[REPOSITORIES.md](../REPOSITORIES.md) / [PROJECT_STATUS.md](../PROJECT_STATUS.md)）。
+  種別の唯一の正は [scripts/repo_types.toml](../scripts/repo_types.toml)。
+- 旧フォルダは参照専用。変更禁止（[pc_repo_audit.md](pc_repo_audit.md)）。
 - コード本体は各業務リポジトリにあり、本リポジトリには置かない。
+- 担当はエージェント名ではなく能力で判定（[CAPABILITIES.md](../CAPABILITIES.md)）。
+- 開発補助ツール Claude Code の提供終了が近いため、退役前整備 H1〜H7 を完了済み
+  （[PROJECT_STATUS.md](../PROJECT_STATUS.md) の該当節）。
 
-## 現在の安定版
+## 現在の安定版（2026-09-04 時点）
 
-- `next-day-setup`: 最新確認タグ `v1.1.0`
-- `inventory-reconciliation-system`: 最新確認タグ `v2.0.0`
+- `next-day-setup`: tag `v1.2.1`、main `1b048f4`
+- `inventory-reconciliation-system`: tag `v2.0.0`、main `fd2de21`
+- `menu-sheet-generator`: tag `v1.0.0`、main `fa4fdf7`
+- `food-cost-calculation-system`（俺伝）: タグなし、既定ブランチ `codex/bootstrap-invoice-reading` `1940db0`
+- `beverage-inventory-ordering-system`: タグなし、作業ブランチ `python-desktop-migration` `e458476`（upstream と同期）
+- `qr-supply-ordering-system`: タグなし、main `790fff5`
 
-これは2026-07-16にローカルGitで確認した最新タグです。実運用中の版との一致、タグ以後の未コミット変更の安定性は未確認です。
+実運用中の版との一致、タグ以後の変更の安定性は [VERSION_MATRIX.md](../VERSION_MATRIX.md) と
+各 `projects/*.md` で確認する（未確認は「未確認」と明記）。
 
 ## 進行中作業
 
-- `next-day-setup`: Google Sheetsシフト取得、印刷、ビルド、共有版更新。
-- `inventory-reconciliation-system`: Google Sheets休館日取得、キャッシュ、夜間自動実行、警告メール。
-- 両方に未コミット変更あり。変更内容の確定、テスト、実運用確認が必要。
+- 退役前整備の残り: H5 引き継ぎドライラン、M1 新PCブートストラップ、M2 gh 認証寿命、M3 俺伝の既定ブランチ依存監査。
+- `beverage-inventory-ordering-system`: Python/PySide6 版の Windows 実機確認、Draft PR #2 の merge 可否判断。
+- `recovery/from-old-clone-docs`（Draft PR）: 正本への取り込み範囲決定。
+- 実運用5アプリは標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。
 
 ## 変更禁止領域
 

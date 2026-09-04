@@ -10,38 +10,66 @@
 
 ## 開始時の確認順序
 
-1. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割、思考順序、ChatGPT/Codexの役割分担
+1. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AIの役割、思考順序、役割分担
 2. [AI_CHECKLIST.md](AI_CHECKLIST.md) — 新しいチャット開始時の確認項目
 3. [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md) — 回答・提案・思考品質の基準
 4. [AI_MEMORY.md](AI_MEMORY.md) — プロジェクト固有のルール
-5. [PROJECT_STATUS.md](PROJECT_STATUS.md) — Current Focus、未確認事項、次の作業
-6. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHubと実運用版の確認状況
-7. [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — 管理対象と全体構成
-8. [docs/decisions.md](docs/decisions.md) — 重要な設計判断
-9. [LESSONS_LEARNED.md](LESSONS_LEARNED.md) — 再発防止に使う知見
+5. [CAPABILITIES.md](CAPABILITIES.md) — 担当判定（エージェント名ではなく、そのセッションが持つ能力で判定）と正式ローカルリポジトリの同期規約（作業前 `git pull --ff-only`・作業後 `git push`）
+6. [PROJECT_STATUS.md](PROJECT_STATUS.md) — 管理対象10リポジトリの現在地、退役前整備（H1〜H7）の成果、次の作業
+7. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHubと実運用版の確認状況
+8. [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — 管理対象と全体構成
+9. [docs/decisions.md](docs/decisions.md) — 重要な設計判断
+10. [LESSONS_LEARNED.md](LESSONS_LEARNED.md) — 再発防止に使う知見
 
-担当判定と正式ローカルリポジトリの同期規約は [CAPABILITIES.md](CAPABILITIES.md) を参照します（エージェント名ではなく、そのセッションが持つ能力で判定する）。
+退役前整備で追加した運用文書（必要時に参照）:
+
+- [docs/operator_runbook.md](docs/operator_runbook.md) — 非コーダー向けの日常運用手順
+- [docs/build_deploy_paths.md](docs/build_deploy_paths.md) — 各アプリの BUILD/DEPLOY/UPDATE 経路と fail-safe
+- [docs/dev_doctor.md](docs/dev_doctor.md) — 実機ヘルスチェック（`scripts/DEV_DOCTOR.ps1`）
+- [docs/backup_restore.md](docs/backup_restore.md) / [docs/git_external_data_inventory.md](docs/git_external_data_inventory.md) — Git 管理外データのバックアップ・復元
+- [docs/pc_repo_audit.md](docs/pc_repo_audit.md) — PC 上の repo／旧 clone 監査
+- [docs/ci_action_versioning.md](docs/ci_action_versioning.md) — 共通 CI アクションのタグ運用（`@ci-v1`）
 
 対象プロジェクトがある場合は、上記に続けて対象の `projects/*.md`、README、Git状態、関連コードを確認します。
+`projects/` に対象の文書が無いリポジトリ（現状 `food-cost-calculation-system` / `qr-supply-ordering-system` /
+`hospitality-review-reply` / `kitchen-calendar`）は、対象リポジトリの README と [VERSION_MATRIX.md](VERSION_MATRIX.md) /
+[PROJECT_STATUS.md](PROJECT_STATUS.md) の該当行を正とします。`food-cost` と `qr-supply` の詳細な
+プロジェクト文書は `recovery/from-old-clone-docs`（Draft PR）に現状版があり、取り込みは保留中です。
 
 ## 管理対象と正式ソース
 
-| プロジェクト | 正式ソース | 最新確認タグ |
-|---|---|---|
-| next-day-setup | `C:\Users\suisy\Documents\Development\repos\next-day-setup` | `v1.1.0` |
-| inventory-reconciliation-system | `C:\Users\suisy\Documents\Development\repos\inventory-reconciliation-system` | `v2.0.0` |
-| beverage-inventory-ordering-system | `C:\Users\suisy\Documents\Development\repos\beverage-inventory-ordering-system` | なし |
-| call-reception-assistant | `C:\Users\suisy\Documents\Development\repos\call-reception-assistant` | なし |
+種別の唯一の正は [scripts/repo_types.toml](scripts/repo_types.toml)。正式ソースはすべて
+`C:\Users\suisy\Documents\Development\repos\<name>` 配下。詳細な現在地は [PROJECT_STATUS.md](PROJECT_STATUS.md)。
+
+| プロジェクト | 種別 | 既定ブランチ | 最新確認タグ |
+|---|---|---|---|
+| next-day-setup | desktop | `main` | `v1.2.1` |
+| inventory-reconciliation-system | service | `main` | `v2.0.0` |
+| menu-sheet-generator（.NET） | desktop | `main` | `v1.0.0` |
+| food-cost-calculation-system（俺伝） | desktop | `codex/bootstrap-invoice-reading` | なし |
+| beverage-inventory-ordering-system | desktop | `main`（移行作業は `python-desktop-migration`） | なし |
+| qr-supply-ordering-system | web | `main` | なし |
+| call-reception-assistant | desktop | `main` | なし（アプリ本体未実装） |
+| kitchen-calendar | archived | `main` | なし（next-day-setup へ統合済み。開発しない） |
+| hospitality-review-reply | knowledge | `main` | なし（テンプレート集。実行・ビルド標準対象外） |
+| development-management | — | `main` | `ci-v1`（共通CIアクション用） |
 
 タグ欄は最後に管理文書へ反映した確認値であり、実運用中の版との一致は `VERSION_MATRIX.md` と各プロジェクト文書で確認します。
 
 ## 現在の重点作業
 
-- `next-day-setup`: 実運用中。GitHubと正式ローカル、共有版の一致を確認しながら継続開発する。
-- `inventory-reconciliation-system`: 実運用中。自動実行と運用設定を継続管理する。
-- `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本としてPython/PySide6版へ段階移行中。GitHubの `python-desktop-migration` / Draft PR #2 で候補版を隔離し、CodexではまずPythonソース版のWindows実機確認を行う。EXEは必要時だけユーザーが手動ビルドし、本番共有版は確認完了まで更新しない。
-- `call-reception-assistant`: 初期管理文書を整備済み。アプリ本体は未実装。
-- `development-management`: ChatGPTがGitHub側の実装まで担当し、CodexをWindows実機・ローカル環境の問題確認へ優先配分する。Windowsアプリはソース起動、手動EXEビルド、手動配布更新の3経路を標準とする。
+最新は [PROJECT_STATUS.md](PROJECT_STATUS.md) の Current Focus を正とする。要点:
+
+- **背景**: 開発補助ツール Claude Code の提供終了が近い。終了後も ChatGPT（GitHub側）と実機セッション
+  （Windows側）だけで各アプリの開発・ビルド・配布・復旧が回るよう、退役前整備 H1〜H7 を完了した
+  （バックアップ／実機ヘルスチェック／CI 安定タグ／非コーダー向けランブック／BUILD・DEPLOY 経路検証）。
+- `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本として Python/PySide6 版へ段階移行中。
+  作業ブランチ `python-desktop-migration`（upstream と同期、`e458476`）/ Draft PR #2。Python ソース版の
+  Windows 実機確認を継続。EXE は必要時だけユーザーが手動ビルド、本番共有版は確認完了まで更新しない。
+- `next-day-setup` / `inventory-reconciliation-system` / `menu-sheet-generator` / `food-cost-calculation-system`（俺伝）
+  / `qr-supply-ordering-system`: 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。
+- `call-reception-assistant`: 設計前。無課金・ローカル完結・外部非接続の初期試作方針。
+- 残タスク: H5 引き継ぎドライラン、M1 新PCブートストラップ、M2 gh 認証寿命、M3 俺伝の既定ブランチ依存監査。
 
 ## Windowsアプリ標準
 

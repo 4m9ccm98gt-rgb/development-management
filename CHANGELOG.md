@@ -2,6 +2,39 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## v1.3.0 - 2026-09-04
+
+### Added（退役前整備 H1〜H7）
+
+- Claude Code の提供終了に備え、終了後も ChatGPT（GitHub 側）＋実機セッション（Windows 側）だけで
+  開発・ビルド・配布・復旧が回るよう、以下を整備。
+- **H1** Git 管理外データのバックアップ・復元: `scripts/BACKUP_DEV_DATA.ps1` + `_CLICK_ME.cmd`、
+  [docs/git_external_data_inventory.md](docs/git_external_data_inventory.md) / [docs/backup_restore.md](docs/backup_restore.md)。
+  実バックアップ初回作成・全項目検証（`%USERPROFILE%\DevDataBackups\` と 別物理ディスク `E:\DevDataBackups\`）。
+- **H2** PC 全体の repo／旧 clone 監査: [docs/pc_repo_audit.md](docs/pc_repo_audit.md)。旧 clone #1〜#4 を
+  救出済み／superseded／obsolete に分類（削除しない）。`hospitality-review-reply` を `knowledge` 種別で管理対象へ追加（計10）。
+- **H3** 共通 CI アクションの安定タグ: `ci-v1`（moving）/ `ci-v1.0.0` / `ci-v1.0.1`（固定）。
+  [docs/ci_action_versioning.md](docs/ci_action_versioning.md)。全 caller を `@main` → `@ci-v1` へ。
+- **H4** 実機ヘルスチェック: `scripts/DEV_DOCTOR.ps1` + `_CLICK_ME.cmd`、[docs/dev_doctor.md](docs/dev_doctor.md)。
+  指摘を ERROR / ACTION / INTENTIONAL / INFO の4段階に分離。
+- **H5** 引き継ぎドライラン: 新規セッションが development-management だけで再開できるよう、
+  [AI_STARTUP.md](AI_STARTUP.md) / [PROJECT_STATUS.md](PROJECT_STATUS.md) / [VERSION_MATRIX.md](VERSION_MATRIX.md) /
+  [REPOSITORIES.md](REPOSITORIES.md) / [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) / [docs/ai_handoff.md](docs/ai_handoff.md)
+  を10リポジトリ・現在の HEAD／タグ・退役前整備の文脈へ更新（2プロジェクト時代の記述を一掃）。
+- **H6** 非コーダー向けランブック: [docs/operator_runbook.md](docs/operator_runbook.md)。
+- **H7** BUILD / DEPLOY / UPDATE 経路の非本番実地検証: [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。
+  一時ターゲットで各アプリの経路を実走破し、成果物 SHA-256 の配布先一致を確認。実 HDD・実共有・本番は不変更。
+- 「ビルド成果物に出所（HEAD SHA + 成果物 SHA-256）を残す」方針を [docs/decisions.md](docs/decisions.md) に追加。
+
+### Changed
+
+- `beverage-inventory-ordering-system` の作業ブランチ `python-desktop-migration` を upstream `e458476` へ
+  pure fast-forward（DEV_DOCTOR の ACTION「behind 5」を解消。ローカル固有コミット 0 を確認済み）。
+
+### 確認状況
+
+開発環境確認済み（非本番）。実運用環境・実 HDD・実共有フォルダ・実プリンター・本番タスクスケジューラは未変更・未確認。
+
 ## v1.2.0 - 2026-09-04
 
 ### Changed
