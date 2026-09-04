@@ -97,10 +97,16 @@
 - `check_standards.py`：food-cost の RUN_DEV 警告が解消（WARN 6 → 5）。
 - 判明した追加知見：`main.py` の既定 DB は `%LOCALAPPDATA%\FoodCostCalculation\food_cost.db`（`FOOD_COST_DATA_DIR` / `--data-dir` で上書き可）。GUI 検証では `--screenshot` フラグが event loop なしで描画→保存→exit する。fresh venv の PySide6 一式導入は約250MB・数分かかる。
 
+### 追記（food-cost 依存チェック拡張＋merge）
+
+- 依存チェックを直接依存すべてへ拡張（`import PySide6; import cv2; import PIL; import pytesseract; import flask; import qrcode`、`;` 区切り、`9894190`）。
+- 再検証（一時 clone、`cmd.exe /c RUN_DEV.cmd --screenshot`）：(B) cold で venv 作成→`pip install`(18)→screenshot 60,726B→exit 0。(A) PySide6 等はあるが qrcode だけ欠落 → **依存不足を検知して `pip install` に入り** qrcode のみ導入→screenshot→exit 0。実 DB は両シナリオ SHA-256／mtime_ns 不変。
+- PR `food-cost-calculation-system#1` を squash merge（`8008fb7`、`codex/bootstrap-invoice-reading` へ）、ブランチ削除。正式ローカルを `codex/bootstrap-invoice-reading` へ戻して pull 済み。
+
 ### 次にやること
 
-1. ユーザーが PR `food-cost-calculation-system#1` を確認・merge 判断。
-2. `inventory-reconciliation-system`（service）と `qr-supply-ordering-system`（web、`run.py` 起動形＋デプロイ手順）へ展開。
+1. `inventory-reconciliation-system`（service、自動実行の実運用中）へ `RUN_DEV.cmd` を展開。実行時の副作用（PMS/在庫/共有/実データ）を先に確認し、安全な検証方法で end-to-end を通す。
+2. `qr-supply-ordering-system`（web）— Windows 系の展開後に、Web 用 RUN_DEV パターンとして最後に対応。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
 4. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
