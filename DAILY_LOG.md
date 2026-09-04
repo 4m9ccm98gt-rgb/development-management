@@ -117,12 +117,23 @@
 - `inventory-reconciliation-system#1` を squash merge（`1ca3793` → `main`）、ブランチ削除。正式ローカルを `main` へ戻して pull 済み。RUN_DEV.cmd は「開発時の対話 GUI 起動経路」として扱い、`--auto-run` / 夜間バッチは既存 bat のまま（ユーザー確認済みの構成）。
 - Windows 系3リポジトリ（NDS / food-cost / inventory-reconciliation）へ RUN_DEV.cmd 展開・merge 完了。
 
-### 次にやること
+### 追記（qr-supply / 小掃除 / 最終 WARN）
 
-1. `qr-supply-ordering-system`（web）を Web 用 RUN_DEV パターンとして対応。
-2. `next-day-setup` の `master_settings.json` を example 化（実ファイルは触らず、サニタイズした `*.example.json` を追加）。
-3. `development-management` README へ `menu-sheet-generator` 追記。
-4. `check_standards.py` 再実行で最終 WARN を確認。
+- **qr-supply-ordering-system**：`origin/main` はスケルトン `3e800f8` のみで、実装大半は正式ローカルの**未コミット変更**（GitHub 未反映、約31エントリ）。ローカル作業を汚さないよう `origin/main` からの新規 clone で作業。
+  - ブランチ `claude/standardize-run-dev`、PR `#1`（base `main`）。`RUN_DEV.cmd`（`import flask` → `python run.py %*`）＋ `DEPLOY.md`（社内 LAN 1ホスト構成の手順集約、新ランタイム追加なし）＋ `.gitattributes`。
+  - end-to-end（新規 clone、`cmd.exe /c RUN_DEV.cmd`）：venv → `pip install`（Flask 3.1.1 + pytest + 依存11）→ `python run.py` → Flask 構築、全ルート解決、**GET / → 200 / GET /health → 200**、socket バインドせず接続試行 NONE、DB は clone 内へ隔離、exit 0（cold/warm）。
+  - 正式ローカルの WIP は未変更（31エントリのまま）。
+- **next-day-setup master_settings.json**：調査の結果、既に `.gitignore` 済み＋ `dinner_system/master_settings.example.json`（tracked）が存在 → 対応不要。`check_standards.py` の誤検知だったため、`check_secrets` を gitignore 済みファイルはスキップするよう修正。
+- **development-management README**：`管理対象プロジェクト` 表に `menu-sheet-generator` を追記。
+- **最終 `check_standards.py`：ERROR 0 / WARN 2**（どちらも qr-supply の RUN_DEV / DEPLOY。PR #1 merge ＋ ローカル pull で解消）。
+  - 解消済み：NDS / food-cost / inventory-reconciliation の RUN_DEV、next-day-setup の master_settings（誤検知修正）、menu-sheet-generator 参照漏れ。
+
+### 未確認・次にやること
+
+1. PR merge 判断：`inventory-reconciliation-system#1`（済）、`food-cost#1`（済）、`qr-supply-ordering-system#1`（未）。
+2. qr-supply：正式ローカルの WIP を commit / push することを推奨（GitHub 未反映）。PR #1 merge 後に `git switch main && git pull`、ローカル branch `claude/standardize-run-dev` 削除。
+3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加（CI から development-management 参照）。
+4. `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。

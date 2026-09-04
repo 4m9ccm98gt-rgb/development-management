@@ -69,6 +69,7 @@ Current stable version: **v1.0.0**
 | inventory-reconciliation-system | PMS・手間いらず・JTBの販売在庫照合 | [projects/inventory-reconciliation-system.md](projects/inventory-reconciliation-system.md) |
 | beverage-inventory-ordering-system | 飲料在庫管理＋飲料発注システム | [projects/beverage-inventory-ordering-system.md](projects/beverage-inventory-ordering-system.md) |
 | call-reception-assistant | 旅館の電話受付支援・将来自動化 | [projects/call-reception-assistant.md](projects/call-reception-assistant.md) |
+| menu-sheet-generator | PMS CSV から料理説明書（帳票）を生成・印刷する対話型アプリ | [projects/menu-sheet-generator.md](projects/menu-sheet-generator.md) |
 
 正式なローカルパスは [REPOSITORIES.md](REPOSITORIES.md) を参照してください。
 

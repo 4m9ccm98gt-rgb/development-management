@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import tomllib
 from datetime import date
@@ -202,12 +203,23 @@ def check_paths(repo: Path) -> None:
                 add("WARN", repo.name, f"{loc}[{t}] {PATH_LABEL[kind]} が無い")
 
 
+def _git_ignored(repo: Path, p: Path) -> bool:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", "-q", str(p)],
+            capture_output=True, check=False,
+        ).returncode == 0
+    except OSError:
+        return False
+
+
 def check_secrets(repo: Path) -> None:
     name = repo.name
     for p in iter_files(repo):
         low = p.name.lower()
         if low in {"master_settings.json", "updater_settings.json"} and ".example." not in low:
-            add("WARN", name, f"実 settings らしきファイルが Git 内にある: {p.relative_to(repo)}（*.example.* 化を検討）")
+            if not _git_ignored(repo, p):
+                add("WARN", name, f"実 settings らしきファイルが Git 内にある: {p.relative_to(repo)}（*.example.* 化 か .gitignore 追加を検討）")
         if p.suffix.lower() not in TEXT_EXT:
             continue
         try:
@@ -218,6 +230,8 @@ def check_secrets(repo: Path) -> None:
             continue
         if ".example." in low or low.endswith((".sample", ".template")):
             continue
+        if _git_ignored(repo, p):
+            continue  # gitignore 済みは push されないので repo の問題ではない
         is_test = _is_test_file(p)
         for sev, label, pat, skip_tests in SECRET_PATTERNS:
             if skip_tests and is_test:
