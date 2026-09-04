@@ -154,21 +154,27 @@
 - `RUN_DEV.cmd` 展開：NDS / food-cost / inventory-reconciliation（desktop）、qr-supply（web、`DEPLOY.md` も）。各リポジトリで一時 clone の `cmd.exe /c RUN_DEV.cmd` end-to-end 実機確認（venv→依存→起動→GUI/HTTP→正常終了、実データ不変）を実施。beverage は既存で充足、kitchen-calendar は archived。
 - GitHub/正式ローカルのズレ解消：development-management（`4293c5e`）、qr-supply（`feature/phase1-implementation` 経由で実装を GitHub へ）。
 
+### 追記（CI 化 — 共通アクション ＋ next-day-setup パイロット、2026-09-04）
+
+- **前提**：`development-management` は public、アプリ9個は private。public リポジトリの composite action は private からも PAT なしで `uses:` 参照でき、GitHub がアクションリポジトリを自動チェックアウトする。→ ロジックを各アプリへ複製せず、`check_standards.py` / `repo_types.toml` は development-management 側のものだけを使える。
+- **development-management 側**：`.github/actions/check-standards/action.yml`（composite、`--repo` で単一リポジトリを点検、既定 warning-only）、`.github/workflows/standards-self.yml`（dogfood、`OK: 指摘なし` 成功）、`templates/ci/standards.yml`（各アプリ用の最小 caller）。
+- **パイロット（next-day-setup、PR #3 `30f85cb`、`.github/workflows/standards.yml` 1ファイルのみ）**：
+  1. push / PR で起動：両方 `completed success`
+  2. 標準準拠時は成功：`OK: 指摘なし`
+  3. 意図的な違反を検出：RUN_DEV.cmd を一時削除した commit で `[WARN] next-day-setup: [desktop] RUN_DEV.cmd 相当 が無い / ERROR 0 / WARN 1` をログ出力（検証後 reset）
+  4. warning-only：違反 run も `conclusion=success`、push/PR をブロックしない
+  5. 長期トークン不要：workflow に `secrets.*` なし、`Download action repository '4m9ccm98gt-rgb/development-management@main'` が自動・認証エラーなし
+- パイロット成功。
+
 ### 次にやること
 
-1. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加（CI から `development-management` 参照）。
+1. `standards.yml`（`templates/ci/standards.yml` と同一）を残りのアプリリポジトリへ展開（kitchen-calendar は archived、call-reception はアプリ未実装だが追加可）。
 2. `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
-2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
-3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
-4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
-5. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加（CI から `development-management` を参照）。
 
-### Git状態
+### Git状態（2026-09-04 時点）
 
-- ブランチ: `main`
-- コミット: `4293c5e`（ローカル同期）、`95ac83d`（Phase 0 契約レイヤー）、`d1805d7`（テンプレート再作成・checker サブディレクトリ対応）、本日さらに種別導入分を追加予定
-- push: 実施
-- タグ: なし
+- `development-management` `main`：能力契約・テンプレート・checker・CI アクションまで push 済み（`4dcd757` 他）。`check_standards.py` は 9 リポジトリで ERROR 0 / WARN 0。
+- 各アプリ：NDS / food-cost / inventory-reconciliation / qr-supply に RUN_DEV.cmd merge 済み。NDS に CI workflow merge 済み（PR #3）。
 
 ## 2026-07-20
 
