@@ -103,10 +103,19 @@
 - 再検証（一時 clone、`cmd.exe /c RUN_DEV.cmd --screenshot`）：(B) cold で venv 作成→`pip install`(18)→screenshot 60,726B→exit 0。(A) PySide6 等はあるが qrcode だけ欠落 → **依存不足を検知して `pip install` に入り** qrcode のみ導入→screenshot→exit 0。実 DB は両シナリオ SHA-256／mtime_ns 不変。
 - PR `food-cost-calculation-system#1` を squash merge（`8008fb7`、`codex/bootstrap-invoice-reading` へ）、ブランチ削除。正式ローカルを `codex/bootstrap-invoice-reading` へ戻して pull 済み。
 
+### 追記（inventory-reconciliation へ RUN_DEV.cmd 展開）
+
+- ブランチ `claude/standardize-run-dev`、PR `#1`（base `main`）。`RUN_DEV.cmd`（`import openpyxl` チェック、`python room_inventory_reconcile.py %*`）＋ `.gitattributes`。
+- 副作用調査：`room_inventory_reconcile.py` は引数なしで `gui()`（Tk）を開く操作者主導ツール。`--auto-run` が夜間バッチ（手間いらず/JTB取得・突合・Excel・メール送信）。全パスが `BASE_DIR` 相対、資格情報は `%LOCALAPPDATA%\SalesInventoryCheckTool\credentials.json`。
+- end-to-end 実機確認（一時 clone、`cmd.exe /c RUN_DEV.cmd`）：
+  - `--help`：venv 作成 → `pip install`（openpyxl + et-xmlfile）→ 全 import 解決 → argparse usage → exit 0。
+  - 引数なし → `gui()`：Tk ウィンドウ生成（`販売在庫チェックシステム …` / 620x500）→ socket 全ブロック下でネットワーク試行 NONE → 5秒自動クローズ → exit 0。`LOCALAPPDATA` を一時ディレクトリへ隔離、実 `credentials.json` は SHA-256／mtime_ns 不変。
+- `check_standards.py`：WARN 5 → 4。
+
 ### 次にやること
 
-1. `inventory-reconciliation-system`（service、自動実行の実運用中）へ `RUN_DEV.cmd` を展開。実行時の副作用（PMS/在庫/共有/実データ）を先に確認し、安全な検証方法で end-to-end を通す。
-2. `qr-supply-ordering-system`（web）— Windows 系の展開後に、Web 用 RUN_DEV パターンとして最後に対応。
+1. ユーザーが PR `inventory-reconciliation-system#1` を確認・merge 判断。
+2. Windows 系の展開が済んだら `qr-supply-ordering-system`（web）を Web 用 RUN_DEV パターンとして対応。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
 4. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
