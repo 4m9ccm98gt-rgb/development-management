@@ -4,7 +4,7 @@
 
 ## v1.3.0 - 2026-09-04
 
-### Added（退役前整備 H1〜H7）
+### Added（退役前整備 H1〜H7 + M2）
 
 - Claude Code の提供終了に備え、終了後も ChatGPT（GitHub 側）＋実機セッション（Windows 側）だけで
   開発・ビルド・配布・復旧が回るよう、以下を整備。
@@ -25,15 +25,24 @@
 - **H7** BUILD / DEPLOY / UPDATE 経路の非本番実地検証: [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。
   一時ターゲットで各アプリの経路を実走破し、成果物 SHA-256 の配布先一致を確認。実 HDD・実共有・本番は不変更。
 - 「ビルド成果物に出所（HEAD SHA + 成果物 SHA-256）を残す」方針を [docs/decisions.md](docs/decisions.md) に追加。
+- **M2** GitHub 認証の監査: [docs/github_auth.md](docs/github_auth.md)。この PC は `gh`（OAuth `gho_`、keyring 保存、
+  scope `gist read:org repo workflow`）と `git` push/pull（Git Credential Manager 2.9.0、`git:https://github.com`）の
+  **2系統・独立**。期限日表示なし・失効条件・失効時に何が止まるかを記録（トークン値は非記録）。
+  [docs/operator_runbook.md](docs/operator_runbook.md) §6 に『開くもの／入力するもの／ブラウザで／成功後に確認』の
+  4ステップで `gh auth login` と GCM 再ログインを明文化。
 
 ### Changed
 
 - `beverage-inventory-ordering-system` の作業ブランチ `python-desktop-migration` を upstream `e458476` へ
   pure fast-forward（DEV_DOCTOR の ACTION「behind 5」を解消。ローカル固有コミット 0 を確認済み）。
+- `scripts/DEV_DOCTOR.ps1`（M2）: `gh` 認証チェックを「"Logged in" 文字列一致」から
+  **`gh auth status` の終了コード + 失効行の検出**へ変更（失効を取りこぼさない）。失効 = `[ERROR]`。
+  private repo への `git ls-remote`（プロンプト無効）で **git(GCM) 認証を実テスト**する行を追加。失敗 = `[ACTION]`。
 
 ### 確認状況
 
 開発環境確認済み（非本番）。実運用環境・実 HDD・実共有フォルダ・実プリンター・本番タスクスケジューラは未変更・未確認。
+GitHub 認証は現在有効（`gh auth status` exit 0、private repo `git ls-remote` exit 0）。
 
 ## v1.2.0 - 2026-09-04
 

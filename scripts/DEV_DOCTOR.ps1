@@ -75,18 +75,42 @@ if ($pv) { OKV ("python: " + $pv) } else { ERRV "python / py launcher not found"
 $gh = FirstLine "gh" @("--version")
 if ($gh) {
     OKV ("gh: " + $gh)
+    # Rely on the EXIT CODE of 'gh auth status', not on any substring. A revoked or
+    # expired token makes gh exit non-zero even though the config still names an account.
     $auth = (& gh auth status 2>&1) -join "`n"
-    if ($auth -match "Logged in") {
+    $ghExit = $LASTEXITCODE
+    $ghBroken = ($auth -match "(?m)^\s*X .*(Failed to log in|token .* is invalid|expired|revoked)")
+    if ($ghExit -eq 0 -and -not $ghBroken) {
         $scopes = ""
         if ($auth -match "Token scopes:\s*(.+)") { $scopes = ($Matches[1].Trim()) }
         OKV ("gh auth: logged in. scopes: " + $scopes)
         if ($scopes -and ($scopes -notmatch "workflow")) {
-            ACTION "gh token missing 'workflow' scope (needed to push .github/workflows). Re-run: gh auth login"
+            ACTION "gh token missing 'workflow' scope (needed to push .github/workflows). Re-run: gh auth login  (see docs\operator_runbook.md)"
         }
     } else {
-        ERRV "gh not authenticated. Run: gh auth login  (scopes: repo, workflow, read:org, gist)"
+        $why = if ($auth -match "invalid|expired|revoked|Failed to log in") { "token invalid / expired / revoked" } else { "not authenticated" }
+        ERRV ("gh auth failed (" + $why + "). Fix: docs\operator_runbook.md section 6 (GitHub re-auth) -> run 'gh auth login'. Until fixed: PR / CI operations via gh do not work.")
     }
 } else { ACTION "gh (GitHub CLI) not found. Needed for PR / CI operations." }
+
+# git push/pull credential (Git Credential Manager) - separate from gh. All canonical
+# repos are private, so a no-auth 'git ls-remote' genuinely tests the stored credential.
+# Prompts are disabled so a missing/expired credential fails fast instead of blocking.
+if ($g) {
+    $probe = "https://github.com/4m9ccm98gt-rgb/development-management.git"
+    $oldTP = $env:GIT_TERMINAL_PROMPT; $oldGCM = $env:GCM_INTERACTIVE
+    $env:GIT_TERMINAL_PROMPT = "0"; $env:GCM_INTERACTIVE = "never"
+    $ls = (& git ls-remote --heads $probe 2>&1) -join "`n"
+    $lsExit = $LASTEXITCODE
+    $env:GIT_TERMINAL_PROMPT = $oldTP; $env:GCM_INTERACTIVE = $oldGCM
+    if ($lsExit -eq 0) {
+        OKV "git remote auth: OK (git can authenticate to a private repo)"
+    } elseif ($ls -match "Authentication failed|could not read Username|terminal prompts disabled|invalid credentials|403|401") {
+        ACTION "git push/pull auth failed (Git Credential Manager credential missing/expired). Fix: docs\operator_runbook.md section 6 (GitHub re-auth). Local git still works; push/pull to GitHub will not."
+    } else {
+        INFO ("git remote auth probe inconclusive (offline?): " + (($ls -split "`n") | Select-Object -First 1))
+    }
+}
 L ""
 
 # ---------- canonical repos ----------

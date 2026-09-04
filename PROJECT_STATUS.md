@@ -33,7 +33,7 @@
 
 | リポジトリ | 現在の作業 |
 |---|---|
-| （全体） | 退役前整備 H1〜H7 完了。残り: **H5 引き継ぎドライラン**（この文書群の最新化そのもの）、M1 新PCブートストラップ、M2 gh 認証寿命、M3 俺伝の既定ブランチ依存監査。 |
+| （全体） | 退役前整備 H1〜H7 + M2（GitHub 認証監査）完了。残り: **M3**（俺伝の既定ブランチ依存監査 → main 化 A/B 判断）、**M1**（新PCブートストラップ script、M3 の後）。 |
 | beverage-inventory-ordering-system | `python-desktop-migration` を upstream `e458476` へ FF 済み（DEV_DOCTOR の behind 5 解消）。Python ソース版の Windows 実機確認を継続。EXE は必要時のみユーザーが手動ビルド、本番共有版は確認完了まで更新しない。Draft PR #2 の merge 可否は未判断。 |
 | next-day-setup / inventory-reconciliation / menu-sheet-generator / 俺伝 / qr-supply | 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。個別の機能追加は各 `projects/*.md` と対象リポジトリの状態で判断。 |
 | call-reception-assistant | 設計前。無課金・ローカル完結・外部非接続の初期試作方針（[docs/decisions.md](docs/decisions.md)）。 |
@@ -71,10 +71,13 @@
 
 1. **H5**: この更新で本文書群を現状化した。新規セッションが development-management だけで
    現在地・正式ソース・未完了作業を把握できるか、実際に読み直して残ギャップを潰す。
-2. **M1**: 新 PC ブートストラップ手順／script（`git` / `py` / `gh` 導入、10 repo clone、`gh auth login`）。
-3. **M2**: `gh` 認証トークンの寿命確認と再認証手順の明文化（[docs/backup_restore.md](docs/backup_restore.md) に追記済みの内容を検証）。
-4. **M3**: 俺伝の既定ブランチ `codex/bootstrap-invoice-reading` を `main` にできるか、依存（CI・
-   ビルドスクリプト・ドキュメントの branch 参照）を監査してから判断。
+2. ~~**M2**: GitHub 認証の監査・再認証手順~~ → 完了（[docs/github_auth.md](docs/github_auth.md)、
+   [docs/operator_runbook.md](docs/operator_runbook.md) §6、DEV_DOCTOR に gh 失効=ERROR / git(GCM) 失敗=ACTION を追加）。
+3. **M3**（次）: 俺伝の既定ブランチ `codex/bootstrap-invoice-reading` を `main` にできるか、依存（GitHub default
+   branch 設定・workflow・README/AGENTS/AI_HANDOFF・development-management 各文書・BUILD/UPDATE_HDD・
+   ローカルスクリプト・clone/bootstrap 想定・open PR・branch 固有設定・外部参照）を監査してから A/B 判断。
+4. **M1**: 新 PC ブートストラップ `BOOTSTRAP_DEV_PC.ps1`（M2/M3 の確定後に作成。idempotent / fail-safe、
+   既存 repo・データを上書きしない、Git 管理外データは自動復元せず backup_restore.md へ誘導）。
 5. **beverage**: Draft PR #2 の merge 可否判断、GAS スマホ棚卸・発注システム統合。
 6. `recovery/from-old-clone-docs`（Draft PR）の取り込み範囲決定。分類表はそのブランチの
    `docs/recovery_from_old_clone.md`、概要は [docs/pc_repo_audit.md](docs/pc_repo_audit.md) の「比較・救出の結果」#1。

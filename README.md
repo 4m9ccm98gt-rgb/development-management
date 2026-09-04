@@ -31,6 +31,7 @@ Current stable version: **v1.0.0**
 ## 開発運用文書一覧
 - [docs/operator_runbook.md](docs/operator_runbook.md) — 非コーダー向け。日常操作と困ったときの相談のしかた
 - [docs/dev_doctor.md](docs/dev_doctor.md) / [docs/backup_restore.md](docs/backup_restore.md) — 実機ヘルスチェックとバックアップ・復元
+- [docs/github_auth.md](docs/github_auth.md) — GitHub 認証（`gh` と `git`/GCM の2系統）の構成・失効条件・再設定
 - [docs/pc_repo_audit.md](docs/pc_repo_audit.md) / [docs/git_external_data_inventory.md](docs/git_external_data_inventory.md) — PC 上の repo 監査と Git 管理外データ棚卸し
 - [docs/ci_action_versioning.md](docs/ci_action_versioning.md) — 共通 CI アクションのタグ運用
 - [docs/build_deploy_paths.md](docs/build_deploy_paths.md) — 各アプリの BUILD/DEPLOY/UPDATE 経路と非本番実地検証（H7）・fail-safe 一覧

@@ -399,3 +399,34 @@
 ### 退役前整備の到達点
 
 - H1〜H7 完了。残り M1（新PCブートストラップ）/ M2（gh 認証寿命）/ M3（俺伝の既定ブランチ依存監査）。
+
+## 2026-09-04（続き4）M2 GitHub 認証の監査・再認証手順
+
+### 実機確認（トークン値は記録しない）
+
+- **`gh` CLI**: OAuth トークン `gho_`（`gh auth login` のブラウザフロー）。保存 = keyring
+  （Windows 資格情報マネージャー `gh:github.com:4m9ccm98gt-rgb`）。scope = `gist, read:org, repo, workflow`。gh 2.97.0。
+- **`git` push/pull**: `credential.helper=manager` = Git Credential Manager 2.9.0（system gitconfig）。
+  保存 = 資格情報マネージャー `git:https://github.com`。GCM が自前で GitHub OAuth（アクセス+リフレッシュ）。
+  全リモート HTTPS。`gh auth setup-git` は未実行 → **2系統は独立**。
+- 期限日を表示する仕組みは両方に無い。失効条件は「OAuth アプリ連携取り消し / パスワード変更 /
+  GitHub による無効化 / SSO 再認証要求」。
+- 失効時の影響: gh 側 → `gh pr`/`gh run`/`gh api`/`gh workflow` が停止（`git push` と GitHub 上の CI は無事）。
+  git(GCM) 側 → `git push`/`pull`/`fetch` が停止（ローカル commit と `gh` は無事）。
+
+### 成果物
+
+- `docs/github_auth.md` 新規: 構成・関係・失効条件・影響範囲・DEV_DOCTOR 検知・推奨。
+- `docs/operator_runbook.md` §6 追加: 2系統の表 + `gh auth login` の4ステップ（開くもの/入力/ブラウザ/確認）
+  + GCM 再ログイン（`git credential-manager github logout` → `git fetch` → `git ls-remote origin`）+
+  資格情報マネージャーからの手動削除。§5 用語辞典に `gh` / GCM 追加。§3 の相談表に導線。
+- `scripts/DEV_DOCTOR.ps1`: gh チェックを **終了コード + `X Failed`/invalid 行**で判定へ変更（従来は
+  "Logged in" 文字列一致のみ＝失効を取りこぼす恐れ）。失効 = `[ERROR]`。
+  さらに `git ls-remote`（private repo、プロンプト無効）で **git(GCM) 認証を実テスト**、失敗 = `[ACTION]`、
+  オフライン等は `[INFO]`。ASCII のみ（メッセージは `operator_runbook.md section 6` を参照）。
+- 検証: 通常実行で両方 `[OK]`。`GH_TOKEN` にダミー値を入れた実行で `[ERROR] gh auth failed` を確認。
+- `docs/backup_restore.md` / `docs/dev_doctor.md` / `README.md` に相互リンク。
+
+### 次にやること
+
+- M3 俺伝の既定ブランチ依存監査。

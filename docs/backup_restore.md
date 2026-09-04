@@ -38,8 +38,10 @@
 
 ## 新 PC での復旧（認証まわり）
 
-- `gh`（GitHub CLI）: トークンはバックアップしていない。新PCで
-  `gh auth login` を実行し、ブラウザ認証する。必要スコープ: `repo`, `workflow`, `read:org`, `gist`。
+- **GitHub 認証（`gh` と `git` の 2 系統）**: どちらのトークンもバックアップしていない（すべきでない）。
+  新 PC では手順を [operator_runbook.md](operator_runbook.md) の「6. GitHub 認証が切れたときの再設定」に
+  従って `gh auth login` と `git`（GCM）を再ログインする。必要スコープ: `repo`, `workflow`, `read:org`, `gist`。
+  技術的な詳細（保存場所・失効条件・何が止まるか）は [github_auth.md](github_auth.md)。
 - 俺伝 / 在庫突合の各アプリ内「ログイン情報設定」等: `credentials.json` /
   `google_capture.json` を復元すれば再入力不要。復元しない場合はアプリの設定画面から手入力。
 
