@@ -112,12 +112,17 @@
   - 引数なし → `gui()`：Tk ウィンドウ生成（`販売在庫チェックシステム …` / 620x500）→ socket 全ブロック下でネットワーク試行 NONE → 5秒自動クローズ → exit 0。`LOCALAPPDATA` を一時ディレクトリへ隔離、実 `credentials.json` は SHA-256／mtime_ns 不変。
 - `check_standards.py`：WARN 5 → 4。
 
+### 追記（inventory-reconciliation PR #1 merged）
+
+- `inventory-reconciliation-system#1` を squash merge（`1ca3793` → `main`）、ブランチ削除。正式ローカルを `main` へ戻して pull 済み。RUN_DEV.cmd は「開発時の対話 GUI 起動経路」として扱い、`--auto-run` / 夜間バッチは既存 bat のまま（ユーザー確認済みの構成）。
+- Windows 系3リポジトリ（NDS / food-cost / inventory-reconciliation）へ RUN_DEV.cmd 展開・merge 完了。
+
 ### 次にやること
 
-1. ユーザーが PR `inventory-reconciliation-system#1` を確認・merge 判断。
-2. Windows 系の展開が済んだら `qr-supply-ordering-system`（web）を Web 用 RUN_DEV パターンとして対応。
-3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
-4. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
+1. `qr-supply-ordering-system`（web）を Web 用 RUN_DEV パターンとして対応。
+2. `next-day-setup` の `master_settings.json` を example 化（実ファイルは触らず、サニタイズした `*.example.json` を追加）。
+3. `development-management` README へ `menu-sheet-generator` 追記。
+4. `check_standards.py` 再実行で最終 WARN を確認。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
