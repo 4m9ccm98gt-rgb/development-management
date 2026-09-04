@@ -54,8 +54,31 @@ Git に入れていない開発データ（DB / 実設定 / 認証情報 / ロ�
 - `scripts/BACKUP_DEV_DATA_CLICK_ME.cmd` … ダブルクリック実行。`E:` があれば第2コピーも作成。
 - **一時ターゲットで1回実行し、生成物の DB integrity と JSON 妥当性を再検証済み**（上表と同結果）。
 
+## 実バックアップ 初回作成・検証（2026-09-04、完了）
+
+`BACKUP_DEV_DATA.ps1` を実保存先へ実行し、全項目を検証した。
+
+- **作成先**
+  - primary: `%USERPROFILE%\DevDataBackups\devdata-<日時>\`（C: 内蔵SSD）
+  - second : `E:\DevDataBackups\devdata-<日時>\`（Disk 1 / BusType USB / WD Elements、**C: とは別物理ディスク**の外付けHDD）
+- **検証結果（すべて合格）**
+  - primary ディレクトリ・`MANIFEST.txt`（355行、size + SHA-256、DB は integrity_check）・`RESTORE.txt`（復元先対応16項目 + gh 再認証）生成を確認
+  - SQLite 3件：バックアップ側 `integrity_check=ok`、かつ**表数・行数が元データと一致**（food_cost 9/28,566、kitchen_data 3/4,294、qr_supply 13/12）
+  - バックアップ内 JSON 229件：`json.load` 全件 valid、破損 0
+  - 逐次コピー対象（credentials.json / google_capture.json / master_settings.json / shared_folder_path.txt / repo_google_capture.json）：**バックアップの SHA-256 が元データと一致**
+  - **元データ12件の SHA-256 + サイズ + mtime_ns がバックアップ前後で不変**（読み取り専用・非破壊を確認）
+  - E: 第2コピー：ファイル352件が primary と**リスト一致**、`MANIFEST.txt` 一致
+- **機密扱いの確認**
+  - Git 管理外（`DevDataBackups/` は `.gitignore` 済み。そもそも repo 外）
+  - OneDrive 配下でない（`%USERPROFILE%\DevDataBackups` は同期対象外、Documents もリダイレクトされていない）
+  - アクセス範囲: `C:\Users\suisy\DevDataBackups` の ACL は SYSTEM / Administrators / 本人アカウント の3者のみ（Everyone・Users・共有なし）
+- **注意**：E: は「別物理ディスク」だが常時マウントの外付けHDD。真のオフマシン／オフライン保管とするには**物理的に取り外して保管**すること。ランサムウェア対策としても定期的なオフライン退避を推奨。
+
+→ **H1 は「基盤作成」だけでなく「実バックアップ作成・全項目検証」まで完了。**
+
 ## 残タスク（ユーザー作業・判断）
 
-1. `BACKUP_DEV_DATA_CLICK_ME.cmd` を定期実行する（週次目安）。出力をオフライン媒体にも保管。
-2. #14 共有配布フォルダ・#15 HDD の業務データについて、配布先の復元検証を別途行う（H7 と併せて）。
+1. `BACKUP_DEV_DATA_CLICK_ME.cmd` を定期実行する（週次目安、大きな入力・設定変更をした日は都度）。出力を USB 等のオフライン媒体にもコピーし、その媒体は取り外して保管。
+2. #14 共有配布フォルダ・#15 HDD の**業務データ**について、配布先の復元検証を別途行う（H7 と併せて）。
 3. `#16` gh: 新PCでは `gh auth login` を実行し直す（[docs/backup_restore.md](backup_restore.md)）。
+4. 古い `devdata-*` フォルダの世代管理（保持世代数・削除方針）を決める。

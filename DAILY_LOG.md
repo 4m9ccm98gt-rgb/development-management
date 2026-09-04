@@ -191,7 +191,16 @@
 - 最終確認：全7 repo + template が `check-standards@ci-v1`。`@main` 参照はゼロ。dogfood はローカルパス参照のまま。
 - 効果：`development-management` main への push が全リポジトリ CI へ即波及する事故半径を解消。
 
-### 退役前整備の残り（H2〜H5, M1〜M3）
+### 追記（退役前整備 H1 完全完了 + H3 済）
+
+- **H1**：Git 管理外データ16項目を棚卸し（`docs/git_external_data_inventory.md`、値は非記録）。従来 俺伝DB・認証情報・NDS DB にバックアップ無し、既存は同一ディスク。
+  - `scripts/BACKUP_DEV_DATA.ps1` + `_CLICK_ME.cmd`（読み取り専用、SQLite Backup API、MANIFEST/RESTORE 付き）+ `docs/backup_restore.md` 作成。
+  - **実バックアップ初回作成**：`%USERPROFILE%\DevDataBackups\` と `E:\DevDataBackups\`（別物理ディスクの外付けUSB HDD）。
+  - 全検証合格：SQLite 3件 integrity_check ok・行数一致、JSON 229件 valid・破損0、逐次コピー分は SHA-256 一致、**元データ12件は前後で SHA/サイズ/mtime 不変**、E: コピーはファイルリスト+MANIFEST 一致。
+  - 機密確認：Git 管理外・OneDrive 外・ACL は SYSTEM/Administrators/本人のみ。E: は常時マウントのため真のオフラインは物理取り外しが必要と明記。
+- **H3**：共通 Action を `@ci-v1` タグ固定（別途記載）。
+
+### 退役前整備の残り（H4, H6, H7, H5, M1〜M3, H2 #1-#4 比較）
 
 - H2 PC 全体 clone/repo 監査と GitHub 突合（削除しない・未 push 作業は要確認）
 - H1 Git 管理外データのバックアップ・復元検証（隔離環境、値は記録しない）
