@@ -166,10 +166,25 @@
   5. 長期トークン不要：workflow に `secrets.*` なし、`Download action repository '4m9ccm98gt-rgb/development-management@main'` が自動・認証エラーなし
 - パイロット成功。
 
+### 追記（CI 全展開完了、2026-09-04）
+
+- パイロット成功後、残り6リポジトリへ同一 `standards.yml` を展開・merge：
+  `inventory-reconciliation-system#2`(`0d3a00f`) / `qr-supply-ordering-system#3`(`02bfae4`) /
+  `menu-sheet-generator#2`(`a5ec884`) / `call-reception-assistant#1`(`805243b`) /
+  `food-cost-calculation-system#2`(`3f83fdc`、base `codex/bootstrap-invoice-reading`) /
+  `beverage-inventory-ordering-system#3`（base `main`）。
+- 全6リポジトリで push / pull_request の CI が `completed / success`。各ログで
+  `Download action repository '4m9ccm98gt-rgb/development-management@main'` が自動・
+  認証エラーなし。`OK: 指摘なし`（menu-sheet-generator は .NET アプリで Python の
+  app root 無し → 点検項目なし、call-reception はアプリ未実装で同様）。
+- `kitchen-calendar` は archived のため CI 対象外（`check_standards.py` も早期 return）。
+- 正式ローカルは各々の作業ブランチへ復帰、作業用 `claude/ci-standards` は全削除。
+- **CI 化完了**：development-management（public）の共通 composite action を、8アプリ
+  （private）＋ dogfood が warning-only で参照。ロジック複製なし・長期トークンなし。
+
 ### 次にやること
 
-1. `standards.yml`（`templates/ci/standards.yml` と同一）を残りのアプリリポジトリへ展開（kitchen-calendar は archived、call-reception はアプリ未実装だが追加可）。
-2. `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
+- `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
 
 ### Git状態（2026-09-04 時点）
 

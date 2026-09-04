@@ -11,13 +11,14 @@
 - `scripts/check_standards.py` を追加。アプリ種別（desktop / web / service / lib / archived）ごとに必要経路を点検。種別は `scripts/repo_types.toml` を唯一の正とし、アプリ側にマーカーを置かない。gitignore 済みファイルは秘密チェック対象外。
 - `RUN_DEV.cmd` を `next-day-setup` / `food-cost-calculation-system` / `inventory-reconciliation-system`（desktop）、`qr-supply-ordering-system`（web、`DEPLOY.md` も）へ展開。各リポジトリで一時 clone の `cmd.exe /c RUN_DEV.cmd` により venv 作成 → 依存導入 → 起動 → GUI/HTTP 応答 → 正常終了までを実機確認。`beverage-inventory-ordering-system` は既存で 3 経路充足、`kitchen-calendar` は archived。
 - `qr-supply-ordering-system` の GitHub/正式ローカルのズレを解消。スケルトンのみだった `origin/main` に対し、正式ローカルの未コミット実装（Phase 1 / 1.5 / 発注表取込）を混入監査のうえ GitHub へ保存し、アプリ実装（PR #2）と開発環境標準化（PR #1）を別履歴として `main` へ反映。
-- CI 用の共通 composite action `.github/actions/check-standards` と、各アプリ用の最小 caller workflow テンプレート `templates/ci/standards.yml` を追加（次フェーズで各リポジトリへ展開）。
+- CI 用の共通 composite action `.github/actions/check-standards` と、各アプリ用の最小 caller workflow テンプレート `templates/ci/standards.yml` を追加。
+- CI 化を実施。`development-management`（public）の composite action を、8アプリリポジトリ（private）＋ dogfood が `.github/workflows/standards.yml` から `uses:` 参照。ロジックは各アプリへ複製せず、`check_standards.py` / `repo_types.toml` は `development-management` 側のものだけを使用。`strict` なし＝warning-only で push / PR をブロックしない。public→private のため PAT 等の長期秘密情報は不要。`kitchen-calendar` は archived のため対象外。
 
 ### Result
 
-`scripts/check_standards.py` は9リポジトリすべてで `OK: 指摘なし`（ERROR 0 / WARN 0）。RUN_DEV.cmd 展開時、各アプリの実運用データ（DB / 資格情報 / master_settings）は SHA-256 不変を確認。アプリ本体・正式EXE・共有版・実運用環境・配布経路は変更なし。
+`scripts/check_standards.py` は9リポジトリすべてで `OK: 指摘なし`（ERROR 0 / WARN 0）。RUN_DEV.cmd 展開時、各アプリの実運用データ（DB / 資格情報 / master_settings）は SHA-256 不変を確認。CI は `next-day-setup` でパイロット（push/PR 起動・準拠時成功・意図的違反の WARN 検出・warning-only 非ブロック・長期トークン不要 の5条件確認）後、全8アプリへ展開し全 CI が success。アプリ本体・正式EXE・共有版・実運用環境・配布経路は変更なし。
 
-確認状況: 開発環境確認済み（一時 clone での end-to-end 実機確認）。CI 化は次フェーズ。
+確認状況: 開発環境確認済み（一時 clone での end-to-end 実機確認）＋ CI 全展開・全 success。
 
 ## v1.1.2 - 2026-09-01
 
