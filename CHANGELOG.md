@@ -2,6 +2,23 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## v1.2.0 - 2026-09-04
+
+### Changed
+
+- 開発環境整備を一巡完了。担当判定をエージェント名から能力ベースへ切り替え（[CAPABILITIES.md](CAPABILITIES.md)）。正式ローカルリポジトリの「作業前 pull・作業後 push」を必須規約化。
+- `templates/windows-python-app/` を追加（`beverage-inventory-ordering-system/python_app/` の実績3スクリプトを汎用化）。Windows `.cmd` の必須事項（ASCII のみ / CRLF / `if(...)` 内に括弧を書かない / `python -c` の複数 import は `;` 区切り）を確立し `LESSONS_LEARNED.md` へ記録。
+- `scripts/check_standards.py` を追加。アプリ種別（desktop / web / service / lib / archived）ごとに必要経路を点検。種別は `scripts/repo_types.toml` を唯一の正とし、アプリ側にマーカーを置かない。gitignore 済みファイルは秘密チェック対象外。
+- `RUN_DEV.cmd` を `next-day-setup` / `food-cost-calculation-system` / `inventory-reconciliation-system`（desktop）、`qr-supply-ordering-system`（web、`DEPLOY.md` も）へ展開。各リポジトリで一時 clone の `cmd.exe /c RUN_DEV.cmd` により venv 作成 → 依存導入 → 起動 → GUI/HTTP 応答 → 正常終了までを実機確認。`beverage-inventory-ordering-system` は既存で 3 経路充足、`kitchen-calendar` は archived。
+- `qr-supply-ordering-system` の GitHub/正式ローカルのズレを解消。スケルトンのみだった `origin/main` に対し、正式ローカルの未コミット実装（Phase 1 / 1.5 / 発注表取込）を混入監査のうえ GitHub へ保存し、アプリ実装（PR #2）と開発環境標準化（PR #1）を別履歴として `main` へ反映。
+- CI 用の共通 composite action `.github/actions/check-standards` と、各アプリ用の最小 caller workflow テンプレート `templates/ci/standards.yml` を追加（次フェーズで各リポジトリへ展開）。
+
+### Result
+
+`scripts/check_standards.py` は9リポジトリすべてで `OK: 指摘なし`（ERROR 0 / WARN 0）。RUN_DEV.cmd 展開時、各アプリの実運用データ（DB / 資格情報 / master_settings）は SHA-256 不変を確認。アプリ本体・正式EXE・共有版・実運用環境・配布経路は変更なし。
+
+確認状況: 開発環境確認済み（一時 clone での end-to-end 実機確認）。CI 化は次フェーズ。
+
 ## v1.1.2 - 2026-09-01
 
 ### Changed

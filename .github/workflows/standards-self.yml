@@ -1,0 +1,21 @@
+name: Dev standards (self, warning-only)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  standards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # このリポジトリ自身を、同梱の共通アクションで点検する（dogfood）。
+      - uses: ./.github/actions/check-standards
+        with:
+          strict: "false"

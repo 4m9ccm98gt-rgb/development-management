@@ -1,0 +1,33 @@
+name: "Dev standards check"
+description: >
+  Run development-management/scripts/check_standards.py against the calling
+  repository. repo_types.toml と check_standards.py は development-management
+  （このアクションのリポジトリ）側のものだけを使う。既定は warning-only。
+
+inputs:
+  repo-path:
+    description: "点検対象リポジトリのチェックアウトパス"
+    required: false
+    default: ${{ github.workspace }}
+  strict:
+    description: "true なら WARN でも失敗させる（既定 false = warning-only）"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run standard check (single repo)
+      shell: bash
+      env:
+        REPO_PATH: ${{ inputs.repo-path }}
+        STRICT: ${{ inputs.strict }}
+      run: |
+        set -euo pipefail
+        CHECKER="${GITHUB_ACTION_PATH}/../../../scripts/check_standards.py"
+        echo "checker : $CHECKER"
+        echo "repo    : $REPO_PATH"
+        echo "strict  : $STRICT"
+        ARGS=(--repo "$REPO_PATH")
+        if [ "$STRICT" = "true" ]; then ARGS+=(--strict); fi
+        python3 "$CHECKER" "${ARGS[@]}"

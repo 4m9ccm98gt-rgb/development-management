@@ -1,0 +1,28 @@
+# development-management の共通標準チェックを呼ぶだけの最小 workflow。
+# 各アプリリポジトリの .github/workflows/standards.yml としてこのまま配置する。
+#
+# - check_standards.py / repo_types.toml は development-management 側のものだけを使う
+#   （ロジックを各リポジトリへ複製しない）。
+# - development-management は public なので、private リポジトリからも PAT 等の
+#   長期秘密情報なしで uses: 参照できる。
+# - strict を渡さない = warning-only。WARN があってもジョブは成功し、開発をブロックしない。
+name: Dev standards (warning-only)
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  standards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: 4m9ccm98gt-rgb/development-management/.github/actions/check-standards@main
+        with:
+          strict: "false"
