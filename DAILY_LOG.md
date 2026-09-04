@@ -84,12 +84,15 @@
 - 副作用：一時 clone 内のみ（`.venv/` と gitignore 対象の監査ログ1行）。正式ソース `next-day-setup` は未変更。
 - 結論：**NDS パイロット成功**。RUN_DEV.cmd から開発版 GUI までの一本通しを実機確認。
 
+### 追記（PR #2 merge）
+
+- `next-day-setup#2` を squash merge（`277aa69`）、ブランチ削除。正式ローカルを `main` へ戻して pull 済み。`RUN_DEV.cmd` と `.gitattributes` が main に入った。NDS パイロット完了。
+
 ### 次にやること
 
-1. NDS `RUN_DEV.cmd` 修正版を pilot ブランチへ commit・push、PR #2 を通常 PR へ昇格。ユーザーが merge 判断。
-2. 残り `food-cost` / `inventory-reconciliation` / `qr-supply` へ展開（.cmd の 4 注意点を踏まえる。qr-supply は web なので `run.py` 起動形＋デプロイ手順）。
-3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
-4. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
+1. 残り `food-cost` / `inventory-reconciliation` / `qr-supply` へ `RUN_DEV.cmd` を展開。パイロットで確立した形（ASCII + CRLF + 括弧なし + `;`区切り、テンプレート準拠、一時 clone で `cmd.exe /c` 実機確認）を使う。`qr-supply` は web なので `run.py` 起動形＋デプロイ手順。
+2. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
+3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
