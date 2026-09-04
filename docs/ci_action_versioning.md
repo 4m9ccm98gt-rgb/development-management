@@ -16,8 +16,14 @@ composite action `.github/actions/check-standards` を `uses:` で参照する�
 
 | タグ | 種類 | 意味 |
 |---|---|---|
-| `ci-v1.0.0` | 不変 | ある時点の共通アクション実装。動かさない |
-| `ci-v1` | 移動する | 「現在の安定版 v1系」。検証済みの `ci-v1.x.x` へ張り替える |
+| `ci-v1.0.0` | 不変 | 初版（`c42b423`）。動かさない |
+| `ci-v1.0.1` | 不変 | `knowledge` 種別追加（`40660b4`）。dogfood + hospitality-review-reply で確認 |
+| `ci-v1` | 移動する | 「現在の安定版 v1系」。現在 `ci-v1.0.1`。検証済みの `ci-v1.x.x` へ張り替える |
+
+### 更新履歴
+
+- `ci-v1.0.0` (2026-09-04): 初版。dogfood + next-day-setup パイロット + 8repo 展開で確認。
+- `ci-v1.0.1` (2026-09-04): `check_standards.py` に `knowledge` 種別を追加。`repo_types.toml` に `hospitality-review-reply = "knowledge"`。dogfood CI 成功 → hospitality CI で `@ci-v1` が `40660b4` を解決し `OK: 指摘なし` を確認 → `ci-v1` を移動。
 
 `development-management` 自体の知識ベース版（`v1.0.0` 等）とは別系統。混同しない。
 

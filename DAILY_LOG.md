@@ -200,7 +200,17 @@
   - 機密確認：Git 管理外・OneDrive 外・ACL は SYSTEM/Administrators/本人のみ。E: は常時マウントのため真のオフラインは物理取り外しが必要と明記。
 - **H3**：共通 Action を `@ci-v1` タグ固定（別途記載）。
 
-### 退役前整備の残り（H4, H6, H7, H5, M1〜M3, H2 #1-#4 比較）
+### 追記（H4 完了・H2 #1-#4 完了・ci-v1.0.1）
+
+- **H4 DEV_DOCTOR**：`scripts/DEV_DOCTOR.ps1` + `_CLICK_ME.cmd`（読み取り専用、ASCII/CRLF）。toolchain / 正規 repo の branch・sync・dirty・venv・入口 / バックアップ鮮度・E: / ディスク / 正規パス外 clone の発見。OK/WARN/ERROR + Summary。全文を `%USERPROFILE%\DEV_DOCTOR_report.txt` へ UTF-8(BOM) 保存（ChatGPT へ貼れる）。実機実行済み（OK 7/WARN 11/ERROR 0）。`docs/dev_doctor.md`。
+- **H2 #1**：`開発環境整備プロジェクト` の未 push 编集15件を分類・救出。`recovery/from-old-clone-docs`（Draft PR `development-management#1`）に BUSINESS_MODEL.md・projects 2件・フェーズ規律・未反映5設計判断を追記。canonical 上書きなし。`docs/recovery_from_old_clone.md`。
+- **H2 #2**：`kichen-calendar` は NDS `dinner_system/kitchen_calendar/` へ統合済み・superseded。固有差分なし（旧固有モジュールは統合時に置換されたスタンドアロン配線）。保管。
+- **H2 #3**：`ChatGPT\food-cost-calculation-system` は初期作業コピー・obsolete。公式 `src/` に全ファイル存在・全て小さいか一致。固有差分なし。保管。
+- **H2 #4**：`hospitality-review-reply` を管理対象へ。`knowledge` 種別を新設（`repo_types.toml` + `check_standards.py`）＝実行・ビルド標準は課さず秘密チェックのみ。正規パスへ clone、CI 追加（PR `#1` merge `f6e1e74`）、README 明記、DEV_DOCTOR 対象へ追加。
+- **ci-v1 → ci-v1.0.1**：`knowledge` 種別を CI へ反映。dogfood green → hospitality CI で `@ci-v1` が新 SHA を解決し `OK` 確認 → `ci-v1` 移動。`docs/ci_action_versioning.md` 更新。
+- 旧 clone はいずれも**削除せず保管**（`docs/pc_repo_audit.md` に結果記録）。
+
+### 退役前整備の残り（H6, H7, H5, M1〜M3）
 
 - H2 PC 全体 clone/repo 監査と GitHub 突合（削除しない・未 push 作業は要確認）
 - H1 Git 管理外データのバックアップ・復元検証（隔離環境、値は記録しない）
