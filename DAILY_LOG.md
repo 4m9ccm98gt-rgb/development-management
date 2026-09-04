@@ -480,5 +480,8 @@
 - H1〜H7 + M1〜M3 完了。**残るユーザー作業のみ**:
   1. M3 の GitHub ブランチ改名（`docs/food_cost_default_branch.md` の `gh api ... rename` を実行）→
      実行後に DEV_DOCTOR `$Canon` と各文書の `codex/bootstrap-invoice-reading` を `main` へ。
-  2. beverage Draft PR #2（別プロジェクト。実プリンター・共有サーバー・2PC ゲート後）。
-  3. recovery PR #1（最新 main へ rebase・再確認のうえ Ready、merge はユーザー）。
+  2. beverage PR #2: Draft のまま維持（触れていない）。別 Python 移行プロジェクトとして扱い、
+     実プリンター・共有サーバー・2PC ゲート完了まで merge しない。
+  3. recovery PR #1: 最新 main（`71fdc21`）へ rebase 済み（conflict は `docs/decisions.md` の末尾追記のみ、
+     両者を残して解消）。`projects/food-cost` に M3 判断 A 反映、recovery 文書の #3 を取り消し線化。
+     内部リンク解決・秘密情報なしを再確認。**Draft 解除 → Ready for review**。mergeable CLEAN。merge はユーザー。

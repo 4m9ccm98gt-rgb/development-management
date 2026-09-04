@@ -84,5 +84,7 @@
    Git 管理外データは自動復元せず [docs/backup_restore.md](docs/backup_restore.md) へ誘導。
    一時ディレクトリへの実 clone + 再実行（idempotency）+ 非 git 衝突拒否を検証済み。
 5. **beverage**: Draft PR #2 の merge 可否判断、GAS スマホ棚卸・発注システム統合。
-6. `recovery/from-old-clone-docs`（Draft PR）の取り込み範囲決定。分類表はそのブランチの
-   `docs/recovery_from_old_clone.md`、概要は [docs/pc_repo_audit.md](docs/pc_repo_audit.md) の「比較・救出の結果」#1。
+6. `recovery/from-old-clone-docs`（PR #1）: 最新 main へ rebase 済み・conflict 解消済み・
+   **Ready for review**（Draft 解除、merge はユーザー判断待ち）。取り込み候補 = `BUSINESS_MODEL.md` /
+   現状化した `projects/food-cost-*.md` `projects/qr-supply-*.md` / 調整済みフェーズ規律 / 5 設計判断。
+   分類表はそのブランチの `docs/recovery_from_old_clone.md`。
