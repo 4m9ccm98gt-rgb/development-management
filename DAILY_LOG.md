@@ -88,11 +88,21 @@
 
 - `next-day-setup#2` を squash merge（`277aa69`）、ブランチ削除。正式ローカルを `main` へ戻して pull 済み。`RUN_DEV.cmd` と `.gitattributes` が main に入った。NDS パイロット完了。
 
+### 追記（food-cost へ RUN_DEV.cmd 展開）
+
+- `food-cost-calculation-system` にブランチ `claude/standardize-run-dev`、PR `#1`（base は `codex/bootstrap-invoice-reading` = このリポジトリの既定ブランチ、`main` は無い）。
+- `RUN_DEV.cmd`（`import PySide6` チェック、`PYTHONPATH=src` で `python -m food_cost_app.main %*`）＋ `.gitattributes` を追加。`起動.bat` / `run_app.ps1` は変更せず併存。
+- end-to-end 実機確認（一時 clone、`cmd.exe /c RUN_DEV.cmd --screenshot`）：venv 作成 → `pip install`（17パッケージ、PySide6 6.11.2 ほか）→ `python -m food_cost_app.main` 起動 → `QApplication` + DB 初期化 + `create_window()` + `window.show()` → **ウィンドウを PNG 取得（60,726 bytes）** → exit 0。
+- 実運用データ隔離：`FOOD_COST_DATA_DIR` を一時ディレクトリへ向けて実行。実 DB（`%LOCALAPPDATA%\FoodCostCalculation\food_cost.db`）は **SHA-256 完全一致・mtime 不変**（`765def13…` / 3,268,608 bytes）。正式ソース未変更。一時ディレクトリ削除済み。
+- `check_standards.py`：food-cost の RUN_DEV 警告が解消（WARN 6 → 5）。
+- 判明した追加知見：`main.py` の既定 DB は `%LOCALAPPDATA%\FoodCostCalculation\food_cost.db`（`FOOD_COST_DATA_DIR` / `--data-dir` で上書き可）。GUI 検証では `--screenshot` フラグが event loop なしで描画→保存→exit する。fresh venv の PySide6 一式導入は約250MB・数分かかる。
+
 ### 次にやること
 
-1. 残り `food-cost` / `inventory-reconciliation` / `qr-supply` へ `RUN_DEV.cmd` を展開。パイロットで確立した形（ASCII + CRLF + 括弧なし + `;`区切り、テンプレート準拠、一時 clone で `cmd.exe /c` 実機確認）を使う。`qr-supply` は web なので `run.py` 起動形＋デプロイ手順。
-2. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
-3. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
+1. ユーザーが PR `food-cost-calculation-system#1` を確認・merge 判断。
+2. `inventory-reconciliation-system`（service）と `qr-supply-ordering-system`（web、`run.py` 起動形＋デプロイ手順）へ展開。
+3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
+4. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
