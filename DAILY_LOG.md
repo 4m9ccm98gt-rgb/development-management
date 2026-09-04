@@ -182,9 +182,24 @@
 - **CI 化完了**：development-management（public）の共通 composite action を、8アプリ
   （private）＋ dogfood が warning-only で参照。ロジック複製なし・長期トークンなし。
 
-### 次にやること
+### 追記（退役前整備 H3: 共通 Action を @ci-v1 固定）
 
-- `templates/`・`CAPABILITIES.md`・`repo_types.toml` の運用が定着したら、`AI_OPERATING_MANUAL.md` / `AGENTS.md` / `AI_STARTUP.md` のエージェント名ベース記述をポインタへ整理。
+- 既存タグ `v1.0.0` は知識ベースの版。CI アクションは別系統 `ci-` 接頭辞にする。
+- `docs/ci_action_versioning.md` 追加（@main 不可の理由、`ci-v1` / `ci-v1.0.0` の意味、更新手順：main → dogfood → パイロット → 成功確認 → `ci-v1` 移動）。`templates/ci/standards.yml` を `@ci-v1` に。
+- `development-management` main `c42b423` に annotated タグ `ci-v1.0.0`（不変）と `ci-v1`（移動用）を作成・push。直前に dogfood CI `success` を確認。
+- 全7アプリ + テンプレートの caller を `@main` → `@ci-v1` へ（user 指定の順：NDS でパイロット `#4` → CI が `Download action repository '...@ci-v1' (SHA:c42b423)` で緑を確認 → 残り6を展開・merge）。全 CI `completed/success`。
+- 最終確認：全7 repo + template が `check-standards@ci-v1`。`@main` 参照はゼロ。dogfood はローカルパス参照のまま。
+- 効果：`development-management` main への push が全リポジトリ CI へ即波及する事故半径を解消。
+
+### 退役前整備の残り（H2〜H5, M1〜M3）
+
+- H2 PC 全体 clone/repo 監査と GitHub 突合（削除しない・未 push 作業は要確認）
+- H1 Git 管理外データのバックアップ・復元検証（隔離環境、値は記録しない）
+- H4 DEV_DOCTOR（ダブルクリック実行、結果を ChatGPT に貼れる）
+- H6 オペレーター用ランブック
+- H7 BUILD / DEPLOY の非本番実地検証
+- H5 引き継ぎドライラン（このチャットの記憶なしで development-management だけから再開できるか）
+- M1 新 PC ブートストラップ script / M2 gh 認証寿命 / M3 food-cost の既定ブランチ依存監査
 
 ### Git状態（2026-09-04 時点）
 
