@@ -6,3 +6,7 @@ __pycache__/
 # ローカル上書き設定（実値・秘密情報。Git 管理しない）
 project.local.toml
 *.local.toml
+
+# Git 管理外データのバックアップ出力（値を含む。絶対にコミットしない）
+DevDataBackups/
+devdata-*/
