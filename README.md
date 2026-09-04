@@ -33,6 +33,7 @@ Current stable version: **v1.0.0**
 - [docs/dev_doctor.md](docs/dev_doctor.md) / [docs/backup_restore.md](docs/backup_restore.md) — 実機ヘルスチェックとバックアップ・復元
 - [docs/pc_repo_audit.md](docs/pc_repo_audit.md) / [docs/git_external_data_inventory.md](docs/git_external_data_inventory.md) — PC 上の repo 監査と Git 管理外データ棚卸し
 - [docs/ci_action_versioning.md](docs/ci_action_versioning.md) — 共通 CI アクションのタグ運用
+- [docs/build_deploy_paths.md](docs/build_deploy_paths.md) — 各アプリの BUILD/DEPLOY/UPDATE 経路と非本番実地検証（H7）・fail-safe 一覧
 
 - [PROJECT_BOOTSTRAP.md](PROJECT_BOOTSTRAP.md) — 単体タスクを正式プロジェクトへ昇格する標準手順
 - [VERSIONING.md](VERSIONING.md) — バージョン番号とリリース運用の基準

@@ -336,6 +336,41 @@
 
 ### 退役前整備の残り
 
-- H7 BUILD / DEPLOY の非本番実地検証
+- ~~H7 BUILD / DEPLOY の非本番実地検証~~ → 下記で完了
 - H5 引き継ぎドライラン（development-management だけから作業再開できるか）
 - M1 新 PC ブートストラップ script / M2 gh 認証寿命 / M3 food-cost の既定ブランチ依存監査
+
+## 2026-09-04（続き3）退役前整備 H7 / beverage ACTION 解消
+
+### H7 BUILD / DEPLOY / UPDATE の非本番実地検証 → 完了
+
+- 記録: `docs/build_deploy_paths.md`（一目表 + 実行ログ + fail-safe まとめ + 既知ギャップ）。
+- 実共有フォルダ・実 HDD・本番タスクスケジューラは不変更。実 `E:\FoodCostCalculation\`（512 ファイル）は
+  size+mtime を検証前後で照合し完全一致。ネットワーク共有は `-TargetPath` に一時パスを渡したため未参照。
+- 経路が実際に通ったもの（成果物 SHA-256 が一時配布先で一致）:
+  - **俺伝** `1940db0`：`build_release.ps1 -DryRun -OutputRoot <一時>` → `BUILD_INFO.txt` に HEAD SHA + EXE SHA-256、
+    検証ゲート（pytest 253 passed）通過 → `update_hdd.ps1 -DryRun -HddRoot <一時>` で `Assert-TreesEqual` 通過。
+  - **NDS** `1b048f4`：`build_exe.py` 実ビルド（6,383,041 bytes / `0da441a2…`）→
+    `update_shared_folder.ps1 -TargetPath <一時>`。運用 5 ファイル SHA 前後一致、target-only `_internal` ファイル保持。
+  - **beverage** `04c3797`：`BUILD_EXE_CLICK_ME.cmd` 実ビルド（1,957,425 bytes / `ec30a6ae…`）→
+    `update_shared_folder.ps1 -TargetPath <一時>`。`data\` 2 ファイル SHA 前後一致。
+  - **menu-sheet** `fa4fdf7`：`BUILD_RELEASE.cmd`（dotnet publish、0 warn/0 error）→ `UPDATE.cmd "<一時>"`。
+    4 ファイル SHA 一致、`menu-config.json` 等の運用ファイルは不変更。
+- 静的確認のみ（要件どおり破壊的異常系・システム変更は強制しない）:
+  - **inv-recon** `fd2de21`：`room_inventory_reconcile.py --help` 生存確認。`schtasks` 登録形を記録（登録はしない）。
+  - **qr-supply** `790fff5`：`import run` 生存確認、`migrate-db` は加算型（`DROP`/`DELETE`/`TRUNCATE` なし）。
+- 検証中の観測: cwd を repo ルート以外にして `build_release.ps1` を直接実行すると `pytest -q` が exit 5
+  （no tests ran）→ 検証ゲートで停止。正式入口 `.cmd` は `cd /d "%~dp0"` するため問題なし。
+- 既知ギャップ: NDS / menu-sheet は成果物に HEAD 情報を埋め込まない（俺伝の `BUILD_INFO.txt` 相当がない）。
+  NDS はクリーンツリーも要求しない。→ `docs/decisions.md` に記録、次サイクルで検討。
+
+### beverage ACTION（DEV_DOCTOR: behind 5）解消
+
+- `origin/python-desktop-migration` へ **pure fast-forward**（`04c3797 → e458476`、5 コミット）。
+  ローカル固有コミット 0・未コミット追跡変更 0・`git merge-base --is-ancestor` YES を確認してから実行。
+- 現在 upstream と 0/0。ブランチは `python-desktop-migration` のまま（`$ActiveBranch` 変更不要）。
+- H7 のビルド検証は `04c3797` 時点。FF 後の再ビルドで EXE SHA は変わるが経路の妥当性は不変。
+
+### 次にやること
+
+- H5 引き継ぎドライラン。

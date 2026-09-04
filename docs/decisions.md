@@ -107,3 +107,15 @@
 - 判断: 飲料発注システムは独立した別プロジェクトにせず、`beverage-inventory-ordering-system` の `apps/ordering/` に移管し、飲料在庫管理システムから起動するサブシステムとして管理する。
 - 理由: 商品マスタ、発注先、発注履歴、発注中数量は在庫管理と密接に関係するため、別リポジトリ化するとデータ構造と運用判断が分散する。1プロジェクト内で段階的に統合した方が安全。
 - 影響: 単体タスクでの発注アプリ開発は今回の移管で終了し、今後は `C:\Users\suisy\Documents\Development\repos\beverage-inventory-ordering-system` を正本にする。実業者名、実FAX番号、実発注履歴はGit管理せず、開発用サンプルデータで起動確認する。
+
+## ビルド成果物に出所（HEAD SHA + 成果物 SHA-256）を残す
+
+- 判断: 配布用ビルドは、成果物と同じフォルダに `BUILD_INFO.txt`（Git branch / commit SHA /
+  ビルド日時 / EXE SHA-256 / ビルドモード）を出力する。俺伝 `tools/release/build_release.ps1` の
+  方式を標準とし、`next-day-setup/build_exe.py` と `menu-sheet-generator/BUILD_RELEASE.cmd` にも
+  同等の出力を足す（次サイクル）。
+- 理由: H7（`docs/build_deploy_paths.md`）で、俺伝以外は成果物単体から「どのコミットで作ったか」を
+  追跡できないと判明した。退役後に AI 支援が薄い状態で「配布中の EXE の出所」を確認できる必要がある。
+- 影響: 配布スクリプト側（`update_hdd.ps1` は既に `BUILD_INFO.txt` の EXE SHA-256 を再照合）でも
+  出所チェックを共通化できる。NDS はビルド時のクリーンツリー要求（俺伝 `Assert-CleanWorkingTree` 相当）が
+  無いため、`BUILD_INFO.txt` 追加と合わせて未コミット状態の警告も検討する。
