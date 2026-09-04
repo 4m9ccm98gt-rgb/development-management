@@ -309,3 +309,33 @@
 - コミット:
 - push:
 - タグ:
+
+## 2026-09-04（続き2）退役前整備 H4修正 / recovery補正 / H6
+
+### H4 DEV_DOCTOR 修正（ChatGPT レビュー #4）
+
+- 指摘を4段階に：`[ERROR]`（要修正）/`[ACTION]`（要対応）/`[INTENTIONAL]`（現在意図的）/`[INFO]`（許容・参考）。
+- `$ActiveBranch`（beverage=python-desktop-migration）と `$Archived` を導入。意図的な作業ブランチは ACTION でなく INTENTIONAL。
+- 未コミットを「追跡変更あり=ACTION／未追跡のみ=INFO」に分離。venv 未作成・E: 未接続・archived の状態=INFO。
+- Summary は ERROR→ACTION の順。実行例: ERROR 0 / ACTION 2 / INTENTIONAL 1 / INFO 28。`docs/dev_doctor.md` 反映。
+
+### recovery/from-old-clone-docs 補正（ChatGPT レビュー #1-#3、PR は Draft 維持）
+
+- #1 フェーズ規律：旧 clone 版は「各フェーズ移行に明示依頼が必要」と厳しすぎた。canonical L251/L308 に合わせ「フェーズを限定された場合は境界厳守／最終成果まで依頼された場合は依頼範囲内で調査→設計→実装→検証を連続」へ書き換え。`AI_OPERATING_MANUAL.md` / `AI_CHECKLIST.md` / `PROMPT_PRINCIPLES.md`。仮説を事実にしない・安全な作業を戻さない原則は維持。`DEVELOPMENT_RULES` / `AI_MEMORY` と整合確認。
+- #2 `projects/food-cost` / `qr-supply`：古い状態のまま取り込まず、現在の既定ブランチ・実装状態・commit/push・フェーズ・未確認事項へ書き直し。当時の記述は「経緯（参考）」節に分離。
+- #3 `BUSINESS_MODEL.md`：冒頭に「共通のチェック観点・参考モデル。適合しなければ個別要件優先。共通化を目的化しない」位置づけを明記。
+- `recovery/from-old-clone-docs` を origin/main へ rebase 済み（recovery 追加分のみを含む）。**Draft のまま維持、merge しない。**
+
+### H6 オペレーター用ランブック
+
+- `docs/operator_runbook.md`：非コーダー向け。毎週やること（バックアップ / DEV_DOCTOR）、各システムのダブルクリック操作一覧、困ったとき ChatGPT に貼るもの、やってはいけないこと、用語ミニ辞典。README にリンク集追加。
+
+### H1 実バックアップ（既実施の再確認）
+
+- `C:\Users\suisy\DevDataBackups\devdata-20260904-180931` と `E:\...` 実在。MANIFEST 57KB・integrity_check 3件。commit `0a1a514` で記録済み。**H1 は実施・検証済み。**
+
+### 退役前整備の残り
+
+- H7 BUILD / DEPLOY の非本番実地検証
+- H5 引き継ぎドライラン（development-management だけから作業再開できるか）
+- M1 新 PC ブートストラップ script / M2 gh 認証寿命 / M3 food-cost の既定ブランチ依存監査
