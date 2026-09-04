@@ -1,16 +1,17 @@
 @echo off
-rem 正式 EXE をワンクリックでビルドする。ユーザーが必要なときだけ手動実行する。
-rem Codex には通常依頼しない。dirty working tree は正式ビルドしない。
+rem Build the official EXE with one click. Run manually, only when needed.
+rem Do not ask Codex to run this. A dirty working tree is refused.
+rem NOTE: keep this file ASCII-only. cmd.exe mis-parses non-ASCII comments under CP932.
 setlocal
 cd /d "%~dp0"
 title <app-name> - Manual EXE build
 echo This script is for a USER-INITIATED manual build.
 echo.
 
-rem --- dirty working tree 拒否（正式ビルドは commit 後） ---
+rem --- refuse a dirty working tree (a formal build must be from a commit) ---
 for /f "delims=" %%S in ('git status --porcelain 2^>nul') do (
-  echo [ERROR] 未コミットの変更があります。commit してから正式ビルドしてください。
-  echo         確認用ビルドが必要なら、このチェックを一時的に外して実行します。
+  echo [ERROR] Uncommitted changes present. Commit before a formal build.
+  echo         For a throwaway check build, comment out this guard.
   goto :pause_failed
 )
 
@@ -30,8 +31,8 @@ if errorlevel 1 goto :failed
 
 rmdir /s /q build 2>nul
 rmdir /s /q dist 2>nul
-rem 方式はプロジェクトの実績に合わせる（PyInstaller onedir / Nuitka standalone 等）。
-rem PySide6 では food-cost の Nuitka 実績も比較する（REUSE_MAP.md）。
+rem Match the method the project actually uses (PyInstaller onedir / Nuitka standalone).
+rem For PySide6 compare food-cost's Nuitka track (see REUSE_MAP.md).
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --windowed --onedir --name <AppName> app.py
 if errorlevel 1 goto :failed
 
@@ -52,15 +53,15 @@ endlocal
 exit /b 0
 
 :no_python
-echo [ERROR] Python 3 が見つかりません。
+echo [ERROR] Python 3 was not found.
 goto :pause_failed
 
 :missing_exe
-echo [ERROR] ビルドは走りましたが EXE が生成されていません。
+echo [ERROR] The build ran but no EXE was produced.
 goto :pause_failed
 
 :failed
-echo [ERROR] ビルドを中止しました。上のメッセージを確認してください。
+echo [ERROR] Build stopped. Review the messages above.
 
 :pause_failed
 echo.

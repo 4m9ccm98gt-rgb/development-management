@@ -48,6 +48,13 @@ Python/Windows アプリに「起動」「ビルド」「配布更新」の3経�
 `python scripts/dev.py doctor` — Python / `.venv` / Git 状態
 `python scripts/dev.py check`  — development-management の `check_standards.py` をこのリポジトリへ適用
 
+## .cmd を書くときの注意（実機で踏んだもの）
+
+- **ASCII のみ**。`cmd.exe` は CP932 環境で非 ASCII のコメントを誤解釈し、コメント行を実行しようとする。日本語は書かない。
+- **CRLF 改行**（`.gitattributes` の `*.cmd eol=crlf` で担保）。
+- `if (...)` ブロック内の `echo` に **`(` `)` を入れない**。`)` がブロックを早期に閉じ、`... was unexpected at this time.` になる。
+- `python.exe -c "..."` の中で複数 import を **`,` で区切らない**（`;` を使う）。先頭が引用符付きパスのとき cmd がカンマで誤分割する。
+
 ## 既存アプリへの後付け
 
 稼働中アプリでは、まず `RUN_DEV.cmd` だけ追加する（最も安く、思想が一番依存する経路）。

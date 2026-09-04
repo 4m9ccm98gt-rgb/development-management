@@ -75,9 +75,21 @@
 - 検証スクリプトはスクラッチパッドの `verify_nds_gui_boot.py`。汎用化してテンプレートへ入れる価値あり（保留）。
 - 結論：GUI 実起動確認は完了。PR #2 に全結果をコメント済み。merge 判断はユーザー。
 
+### 追記（RUN_DEV.cmd の end-to-end 実機確認）
+
+- ユーザー要請で `RUN_DEV.cmd` 一本通しを確認。一時 clone（短いパス）＋ socket ブロック shim（app 実行時のみ）＋ GUI 6秒自動クローズで、`cmd.exe /c RUN_DEV.cmd`（実ダブルクリック相当）を実行。
+- 検出したバグ（`.cmd` 一般）：(1) 非 ASCII コメントを `cmd` が実行しようとする（日本語コメント不可）(2) `if (...)` ブロック内 `echo` の `(` `)` が早期にブロックを閉じ `... was unexpected at this time.` (3) `python -c "import a, b"` のカンマを cmd が誤分割。加えて (4) 深いパスで `python -m venv` の ensurepip が失敗（MAX_PATH）。
+- 対応：NDS `RUN_DEV.cmd` を ASCII・`;` 区切り・括弧なし・CRLF へ修正。テンプレートの `.cmd` / `.ps1` も同様に修正。両リポジトリに `.gitattributes`（`*.cmd eol=crlf`）追加。`LESSONS_LEARNED.md` に記録。
+- 修正後の結果（exit 0）：`RUN_DEV.cmd` → `py -3 -m venv .venv` 作成 → `pip install -r requirements.txt`（12パッケージ成功）→ `.venv` python で `dinner_system\hotel_app.py` 起動 → `next-day-setup v1.3.0` → **Tk ウィンドウ生成（1180x720、title 一致）** → ネットワーク試行 NONE → 6秒後に自動クローズ → 正常終了。
+- 副作用：一時 clone 内のみ（`.venv/` と gitignore 対象の監査ログ1行）。正式ソース `next-day-setup` は未変更。
+- 結論：**NDS パイロット成功**。RUN_DEV.cmd から開発版 GUI までの一本通しを実機確認。
+
 ### 次にやること
 
-1. ユーザーが Draft PR #2 の merge を判断（GUI 実起動はサンドボックスで確認済み。実ダブルクリックは任意、痕跡は gitignore 対象の監査ログ1行のみ）。
+1. NDS `RUN_DEV.cmd` 修正版を pilot ブランチへ commit・push、PR #2 を通常 PR へ昇格。ユーザーが merge 判断。
+2. 残り `food-cost` / `inventory-reconciliation` / `qr-supply` へ展開（.cmd の 4 注意点を踏まえる。qr-supply は web なので `run.py` 起動形＋デプロイ手順）。
+3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化、`development-management` README へ `menu-sheet-generator` 追記。
+4. `check_standards.py` を warning-only の CI チェックとして各リポジトリへ追加。
 2. 確定後、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` へ同様に展開（qr-supply は web なので RUN_DEV は `run.py` 起動形＋デプロイ手順も別途）。
 3. `next-day-setup` の実 `master_settings.json` を `*.example.*` 化。
 4. `development-management` の README 等へ `menu-sheet-generator` を追記（`projects/menu-sheet-generator.md` 参照漏れ）。
