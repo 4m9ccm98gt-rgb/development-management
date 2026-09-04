@@ -33,7 +33,7 @@
 
 | リポジトリ | 現在の作業 |
 |---|---|
-| （全体） | 退役前整備 H1〜H7 + M2（GitHub 認証監査）完了。残り: **M3**（俺伝の既定ブランチ依存監査 → main 化 A/B 判断）、**M1**（新PCブートストラップ script、M3 の後）。 |
+| （全体） | 退役前整備 H1〜H7 + M1（新PCブートストラップ）+ M2（GitHub 認証監査）+ M3（俺伝の既定ブランチ監査）完了。残るユーザー作業: **M3 の GitHub ブランチ改名の実行/承認**（`docs/food_cost_default_branch.md` のコマンド）、beverage Draft PR #2、recovery PR #1。 |
 | beverage-inventory-ordering-system | `python-desktop-migration` を upstream `e458476` へ FF 済み（DEV_DOCTOR の behind 5 解消）。Python ソース版の Windows 実機確認を継続。EXE は必要時のみユーザーが手動ビルド、本番共有版は確認完了まで更新しない。Draft PR #2 の merge 可否は未判断。 |
 | next-day-setup / inventory-reconciliation / menu-sheet-generator / 俺伝 / qr-supply | 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。個別の機能追加は各 `projects/*.md` と対象リポジトリの状態で判断。 |
 | call-reception-assistant | 設計前。無課金・ローカル完結・外部非接続の初期試作方針（[docs/decisions.md](docs/decisions.md)）。 |
@@ -73,11 +73,16 @@
    現在地・正式ソース・未完了作業を把握できるか、実際に読み直して残ギャップを潰す。
 2. ~~**M2**: GitHub 認証の監査・再認証手順~~ → 完了（[docs/github_auth.md](docs/github_auth.md)、
    [docs/operator_runbook.md](docs/operator_runbook.md) §6、DEV_DOCTOR に gh 失効=ERROR / git(GCM) 失敗=ACTION を追加）。
-3. **M3**（次）: 俺伝の既定ブランチ `codex/bootstrap-invoice-reading` を `main` にできるか、依存（GitHub default
-   branch 設定・workflow・README/AGENTS/AI_HANDOFF・development-management 各文書・BUILD/UPDATE_HDD・
-   ローカルスクリプト・clone/bootstrap 想定・open PR・branch 固有設定・外部参照）を監査してから A/B 判断。
-4. **M1**: 新 PC ブートストラップ `BOOTSTRAP_DEV_PC.ps1`（M2/M3 の確定後に作成。idempotent / fail-safe、
-   既存 repo・データを上書きしない、Git 管理外データは自動復元せず backup_restore.md へ誘導）。
+3. ~~**M3**: 俺伝の既定ブランチ依存監査~~ → 完了。判断 **A（`main` へ移行）**。
+   全数監査（機能依存は DEV_DOCTOR `$Canon` 1行のみ）と非破壊・可逆の移行手順は
+   [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。
+   **GitHub ブランチ改名 API の実行は自動化がブロックされたためユーザー実行/承認待ち。**
+   実行後、DEV_DOCTOR `$Canon` と各文書の `codex/bootstrap-invoice-reading` を `main` へ更新し検証する。
+4. ~~**M1**: 新 PC ブートストラップ~~ → 完了。`scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。
+   idempotent（既存 repo は fetch のみ・reset しない）/ fail-safe（非 git ディレクトリは上書き拒否）。
+   各 repo の既定ブランチは `git ls-remote --symref` で live 検出（俺伝が `codex/...` でも `main` でも正しく追従）。
+   Git 管理外データは自動復元せず [docs/backup_restore.md](docs/backup_restore.md) へ誘導。
+   一時ディレクトリへの実 clone + 再実行（idempotency）+ 非 git 衝突拒否を検証済み。
 5. **beverage**: Draft PR #2 の merge 可否判断、GAS スマホ棚卸・発注システム統合。
 6. `recovery/from-old-clone-docs`（Draft PR）の取り込み範囲決定。分類表はそのブランチの
    `docs/recovery_from_old_clone.md`、概要は [docs/pc_repo_audit.md](docs/pc_repo_audit.md) の「比較・救出の結果」#1。

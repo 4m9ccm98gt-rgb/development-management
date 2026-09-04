@@ -454,4 +454,31 @@
 - 監査・手順設計・検証は完了。GitHub 改名 API の自動実行はブロックされたため**ユーザー実行/承認待ち**。
   実行コマンドと後続手順は `docs/food_cost_default_branch.md`。実行後に DEV_DOCTOR `$Canon` と
   各文書を `main` へ更新し、DEV_DOCTOR / check_standards / `gh repo view` で検証する。
-- その後 M1（新 PC ブートストラップ）へ。
+
+## 2026-09-04（続き6）M1 新 PC ブートストラップ
+
+### 成果物
+
+- `scripts/BOOTSTRAP_DEV_PC.ps1` + `scripts/BOOTSTRAP_DEV_PC_CLICK_ME.cmd`。
+- 流れ: (1) git/Python/gh 存在確認（winget 案内、`-InstallMissing` で自動導入）→
+  (2) GitHub 認証2系統確認（M2 のロジック流用）→ (3) canonical repos root 作成 →
+  (4) `development-management` を clone し `repo_types.toml` から一覧取得（読めなければ組込みフォールバック）→
+  (5) 不足リポジトリを clone。**既定ブランチは `git ls-remote --symref origin HEAD` で live 検出**
+  （俺伝が `codex/...` でも M3 後の `main` でも正しい）→ (6) RUN_DEV 入口（beverage は `python_app\`、
+  menu-sheet/.NET と call-reception は対象外）と `.venv` を報告（`-PrepareVenvs` で `requirements.txt` が
+  あるものだけ venv 作成、アプリ起動しない）→ (7) Git 管理外データは復元せず `backup_restore.md` / `DEV_DOCTOR` へ誘導。
+- **idempotent**: 既存 repo は `fetch --prune` のみで reset/merge しない。`-NoFetch` で完全に触れない。
+- **fail-safe**: clone 先に非 git ディレクトリがあれば `[ERROR]` で拒否（上書きしない）。native git の
+  stderr が PS の停止エラーにならないよう `Invoke-Git` ヘルパーで吸収。ASCII のみ / `.cmd` は CRLF。
+- 検証（一時ディレクトリ `-ReposRoot <temp>` + `-Only`）: 実 clone 成功 / 再実行で「exists / fetched only,
+  not merged / ahead 0 behind 0」/ 非 git 衝突で `stray.txt` を保持したまま `[ERROR]` / 俺伝の既定ブランチ
+  `codex/bootstrap-invoice-reading` を検出 / type 別 RUN_DEV 期待も正しく分類。予備 PC が無いため
+  完全な新品 Windows E2E（winget 導入・認証フロー）は未検証、それ以外の経路は実証済み。
+
+### 退役前整備 まとめ
+
+- H1〜H7 + M1〜M3 完了。**残るユーザー作業のみ**:
+  1. M3 の GitHub ブランチ改名（`docs/food_cost_default_branch.md` の `gh api ... rename` を実行）→
+     実行後に DEV_DOCTOR `$Canon` と各文書の `codex/bootstrap-invoice-reading` を `main` へ。
+  2. beverage Draft PR #2（別プロジェクト。実プリンター・共有サーバー・2PC ゲート後）。
+  3. recovery PR #1（最新 main へ rebase・再確認のうえ Ready、merge はユーザー）。

@@ -4,7 +4,7 @@
 
 ## v1.3.0 - 2026-09-04
 
-### Added（退役前整備 H1〜H7 + M2）
+### Added（退役前整備 H1〜H7 + M1〜M3）
 
 - Claude Code の提供終了に備え、終了後も ChatGPT（GitHub 側）＋実機セッション（Windows 側）だけで
   開発・ビルド・配布・復旧が回るよう、以下を整備。
@@ -25,11 +25,20 @@
 - **H7** BUILD / DEPLOY / UPDATE 経路の非本番実地検証: [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。
   一時ターゲットで各アプリの経路を実走破し、成果物 SHA-256 の配布先一致を確認。実 HDD・実共有・本番は不変更。
 - 「ビルド成果物に出所（HEAD SHA + 成果物 SHA-256）を残す」方針を [docs/decisions.md](docs/decisions.md) に追加。
+- **M1** 新 PC ブートストラップ: `scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。
+  git/Python/gh 確認（winget 案内）→ GitHub 認証2系統確認 → `development-management` を clone して
+  `repo_types.toml` から一覧取得 → 不足 repo を clone（既定ブランチは `git ls-remote --symref` で live 検出）→
+  RUN_DEV 入口と `.venv` の有無を報告 → Git 管理外データは復元せず `backup_restore.md` へ誘導。
+  idempotent（既存 repo は fetch のみ）/ fail-safe（非 git ディレクトリは上書き拒否）。一時 clone・再実行・衝突拒否を検証済み。
 - **M2** GitHub 認証の監査: [docs/github_auth.md](docs/github_auth.md)。この PC は `gh`（OAuth `gho_`、keyring 保存、
   scope `gist read:org repo workflow`）と `git` push/pull（Git Credential Manager 2.9.0、`git:https://github.com`）の
   **2系統・独立**。期限日表示なし・失効条件・失効時に何が止まるかを記録（トークン値は非記録）。
   [docs/operator_runbook.md](docs/operator_runbook.md) §6 に『開くもの／入力するもの／ブラウザで／成功後に確認』の
   4ステップで `gh auth login` と GCM 再ログインを明文化。
+- **M3** 俺伝の既定ブランチ監査: [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。
+  `codex/bootstrap-invoice-reading` の依存を16項目で全数監査 → 判断 A（`main` へ移行）。機能依存は
+  DEV_DOCTOR `$Canon` の1行のみ。GitHub ネイティブ改名（非破壊・可逆）の移行/ロールバック手順を明記。
+  改名 API の実行はユーザー待ち。
 
 ### Changed
 

@@ -36,7 +36,17 @@
 - バックアップの `MANIFEST.txt` に `integrity_check(...): ok` とある版を使う。
 - 破損した現物は消さずに `～.corrupt` 等で保管する（部分救出の可能性）。
 
-## 新 PC での復旧（認証まわり）
+## 新 PC での復旧（手順）
+
+1. `git` / Python / `gh` を導入する（`winget install --id Git.Git` / `Python.Python.3.12` / `GitHub.CLI`）。
+2. 認証する（下記「認証まわり」）。
+3. `development-management\scripts\BOOTSTRAP_DEV_PC_CLICK_ME.cmd` をダブルクリック。
+   canonical リポジトリを `C:\Users\suisy\Documents\Development\repos` へ clone する
+   （既存 repo は fetch のみ・上書きしない。再実行しても壊れない）。
+4. `DEV_DOCTOR_CLICK_ME.cmd` で状態を確認する。
+5. Git 管理外データ（DB / 認証情報 / 実設定）は BOOTSTRAP では戻らない。下記の各項目を手動で復元する。
+
+### 認証まわり
 
 - **GitHub 認証（`gh` と `git` の 2 系統）**: どちらのトークンもバックアップしていない（すべきでない）。
   新 PC では手順を [operator_runbook.md](operator_runbook.md) の「6. GitHub 認証が切れたときの再設定」に

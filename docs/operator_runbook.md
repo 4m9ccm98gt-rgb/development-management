@@ -58,7 +58,7 @@
 | GitHub のページで赤い × / 黄色い印が出た | その画面（Actions のログ）の文字。※この CI は「警告のみ」で、開発をブロックしません。放置しても壊れませんが、内容は確認を |
 | アプリが起動しない / エラーが出た | ウィンドウに出た文字、`RUN_DEV.cmd` の黒い画面の文字 |
 | バックアップから戻したい | [backup_restore.md](backup_restore.md) の手順。復元前に必ず現物を別名で退避 |
-| 新しい PC で一から始めたい | [backup_restore.md](backup_restore.md) の「新 PC での復旧」。認証は下の **6. GitHub 認証** |
+| 新しい PC で一から始めたい | git / Python / gh を入れ、下の **6. GitHub 認証** を済ませてから `development-management\scripts\BOOTSTRAP_DEV_PC_CLICK_ME.cmd`。詳細は [backup_restore.md](backup_restore.md) の「新 PC での復旧（手順）」 |
 | GitHub に push できない / `gh` がエラー / DEV_DOCTOR に `gh auth failed` か `git push/pull auth failed` | 下の **6. GitHub 認証が切れたときの再設定** |
 
 ---
