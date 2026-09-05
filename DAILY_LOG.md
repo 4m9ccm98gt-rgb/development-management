@@ -484,3 +484,64 @@
   3. recovery PR #1: 最新 main（`71fdc21`）へ rebase 済み（conflict は `docs/decisions.md` の末尾追記のみ、
      両者を残して解消）。`projects/food-cost` に M3 判断 A 反映、recovery 文書の #3 を取り消し線化。
      内部リンク解決・秘密情報なしを再確認。**Draft 解除 → Ready for review**。mergeable CLEAN。merge はユーザー。
+
+## 2026-09-05（続き7）M3 実行完了 / recovery PR #1 merge / 退役前整備 完了
+
+### M3: GitHub ブランチ改名の実行とローカル追従
+
+- ユーザーが `gh api ... branches/codex/bootstrap-invoice-reading/rename -f new_name=main` を実行。
+  `gh api repos/.../food-cost-calculation-system --jq .default_branch` で `main` を確認。
+  GitHub 側の branches 一覧は `main` のみ（旧名は GitHub がリダイレクト）。
+- 正式ローカル food-cost-calculation-system を追従:
+  `git branch -m codex/bootstrap-invoice-reading main` → `git fetch origin --prune`
+  （`origin/codex/bootstrap-invoice-reading` 追跡枝を自動削除、`origin/main` を新規取得）→
+  `git branch -u origin/main main` → `git remote set-head origin -a`。
+  検証: HEAD SHA `1940db031df7214f8ad087c6fd6c83492427a32b` は改名前後で**不変**（履歴の書き換えなし）、
+  `git status` クリーン、ahead/behind `0/0`、`origin/HEAD` symref = `refs/heads/main`。
+  `.git/config` に重複していた `[branch "main"]`（旧 `main` の残骸 + rename 後の追記による多重値）を
+  `git config --unset-all` で統合。
+- 機能依存の更新: `scripts/DEV_DOCTOR.ps1` の `$Canon` を `food-cost-calculation-system = "main"` へ。
+- 文書更新（現状 = `main`、旧名は改名済みと分かる形で記載）: `AI_STARTUP.md` / `PROJECT_STATUS.md` /
+  `REPOSITORIES.md` / `VERSION_MATRIX.md` / `docs/ai_handoff.md` / `README.md` / `food-cost/AI_HANDOFF.md`。
+  `docs/build_deploy_paths.md` は H7 実施当時（改名前）の記録として旧名を残し、脚注で現状を明記
+  （歴史的記録を書き換えない方針）。`scripts/BOOTSTRAP_DEV_PC.ps1` のコメントも更新。
+  `DAILY_LOG.md` の当日以前のエントリは歴史的事実としてそのまま。
+- `docs/food_cost_default_branch.md`: 監査本文（改名前の状況分析）はそのまま保持し、末尾の「状態」節を
+  「完了（2026-09-04）」として全手順の実施結果を記録。
+- 検証: `scripts/BOOTSTRAP_DEV_PC.ps1` の live 既定ブランチ検出（`git ls-remote --symref`、短パス
+  `C:\tmp\m3verify` で実 clone）が `main` を正しく取得することを確認（ハードコードではなく検出のため
+  ブランチ改名後もスクリプト変更不要だったことを実証）。
+  `DEV_DOCTOR_CLICK_ME.cmd` → food-cost が `main`／`up-to-date`／`[OK]`（`[ACTION] unexpected branch` なし）。
+  `scripts/check_standards.py`（全10リポジトリ）→ `OK: 指摘なし`。
+  コミット `e0b73a0` で push 後、DEV_DOCTOR は **ERROR 0 / ACTION 0**。
+
+### recovery PR #1: 再rebase・最終確認・merge
+
+- main が `71fdc21` → `e0b73a0` へ進んだため、recovery/from-old-clone-docs を再度 `git rebase origin/main`
+  （3 commits、**conflict なし**でクリーンに rebase）。
+- `projects/food-cost-calculation-system.md` を「main 移行完了」の現状へ更新（既定ブランチ行・未確認事項）。
+- 最終確認: (1) conflict なし（`mergeable: MERGEABLE`）、(2) 分岐9ファイルの内部リンクすべて解決、
+  (3) 追加行に秘密情報・認証情報・実FAX番号・実業者名なし（設計文言としての言及のみ）、
+  (4) 古い状態文書の混入なし（VERSION_MATRIX/REPOSITORIES旧テキストとCHANGELOG/DAILY_LOG/PROJECT_STATUSの
+  ログ追記は最初から未収録）、(5) CI（`Dev standards (self, warning-only)`）が pull_request と push の
+  両方で pass、(6) DEV_DOCTOR ERROR 0 / ACTION 0（俺伝 main 化後の状態で確認済み）。
+- `gh pr merge 1 --squash --delete-branch` で merge（コミット `dd44366`）。リモートブランチ削除を確認。
+  正式ローカルを `main` へ switch → ローカル `recovery/from-old-clone-docs` を削除 → `fetch --prune` →
+  `pull --ff-only` で `dd44366` へ fast-forward。
+- merge 後の最終確認: `check_standards.py` 全10リポジトリ `OK: 指摘なし`、`DEV_DOCTOR` **ERROR 0 / ACTION 0**。
+
+### Claude Code 退役前整備 完了
+
+**H1〜H7、M1〜M3 のすべてが完了。** 内訳は `PROJECT_STATUS.md` の「退役前整備 完了記録」表を正とする。
+
+- H1 バックアップ・復元／H2 PC 全体監査／H3 CI 安定タグ／H4 DEV_DOCTOR／H5 引き継ぎドライラン／
+  H6 オペレーターランブック／H7 BUILD・DEPLOY 実地検証／M1 新PCブートストラップ／
+  M2 GitHub 認証監査・再設定手順／M3 俺伝の既定ブランチ main 化。
+- 最終状態: `check_standards.py` 全10リポジトリ `OK: 指摘なし`。`DEV_DOCTOR` `ERROR 0 / ACTION 0`。
+  development-management は `main` = `dd44366`。
+- **残課題（退役前整備とは別の通常プロジェクト課題、`PROJECT_STATUS.md` の「次にやること」参照）**:
+  beverage Draft PR #2 / #5（別プロジェクト、Draft のまま未着手）、俺伝の実データ精度・実HDD最終確認、
+  qr-supply 既存発注表の業務確認、NDS/menu-sheet への `BUILD_INFO.txt` 追加検討（次サイクル）。
+- 本セッションで development-management のコード・実運用データ・実共有フォルダ・実HDD・本番タスクは
+  一切変更していない（H7 はすべて非本番の一時ターゲットで検証、M3 の GitHub 改名のみ本番設定変更だが
+  非破壊・可逆でユーザー自身が実行）。

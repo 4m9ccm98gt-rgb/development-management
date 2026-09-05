@@ -1,12 +1,13 @@
 # プロジェクト状況
 
-最終更新: 2026-09-04（JST）
+最終更新: 2026-09-05（JST）
 
 ## この時期の背景
 
 - 開発補助ツール **Claude Code の提供終了が近い**。終了後も、ChatGPT（GitHub 側）と
   Codex／その他セッション（Windows 実機側）だけで各アプリの開発・ビルド・配布・復旧が
-  回るように、退役前整備（H1〜H7）を実施した。→ 下記「退役前整備（H1〜H7、2026-09-04 完了）」節を参照。
+  回るように、**退役前整備（H1〜H7、M1〜M3）を実施し、2026-09-05 に完了した。**
+  → 下記「退役前整備 完了記録（H1〜H7、M1〜M3）」節を参照。
 - 担当判定は「ChatGPT / Codex / Claude Code」というエージェント名ではなく、そのセッションが
   実際に持つ**能力**で判定する（[CAPABILITIES.md](CAPABILITIES.md) が正本）。
 - 非コーダーのユーザーが単独で日常運用できるよう、[docs/operator_runbook.md](docs/operator_runbook.md) を用意した。
@@ -27,28 +28,48 @@
 | call-reception-assistant（電話受付） | desktop | `main` | 初期管理文書のみ。**アプリ本体は未実装**。main `ae78cf5`。 |
 | kitchen-calendar（調理場カレンダー） | archived | `main` | next-day-setup へ統合済み。**今後開発しない**（[docs/pc_repo_audit.md](docs/pc_repo_audit.md) #2）。 |
 | hospitality-review-reply（口コミ返信） | knowledge | `main` | 旅館口コミ返信のテンプレート／知識 repo。アプリではない。main `f6e1e74`。CI は warning-only、実行・ビルド標準は課さない。 |
-| development-management | （管理repo自身） | `main` | 本知識ベース。main `d45c0c9`、moving tag `ci-v1`。 |
+| development-management | （管理repo自身） | `main` | 本知識ベース。main `dd44366`、moving tag `ci-v1`。 |
 
 ## Current Focus
 
 | リポジトリ | 現在の作業 |
 |---|---|
-| （全体） | 退役前整備 H1〜H7 + M1（新PCブートストラップ）+ M2（GitHub 認証監査）+ M3（俺伝の既定ブランチ監査）完了。残るユーザー作業: **M3 の GitHub ブランチ改名の実行/承認**（`docs/food_cost_default_branch.md` のコマンド）、beverage Draft PR #2、recovery PR #1。 |
-| beverage-inventory-ordering-system | `python-desktop-migration` を upstream `e458476` へ FF 済み（DEV_DOCTOR の behind 5 解消）。Python ソース版の Windows 実機確認を継続。EXE は必要時のみユーザーが手動ビルド、本番共有版は確認完了まで更新しない。Draft PR #2 の merge 可否は未判断。 |
+| （全体） | **退役前整備 H1〜H7 + M1〜M3 完了（2026-09-05）。** development-management は開発補助ツール無しでも
+  運用を再開できる状態。今後は各アプリの通常開発（beverage 移行、俺伝の実データ精度向上等）に戻る。 |
+| beverage-inventory-ordering-system | `python-desktop-migration` は upstream と同期。並行して `feature/mobile-stocktake-sheets`（PR #5）で
+  Google Sheets モバイル棚卸を開発中。**Draft PR #2 と #5 は今回の退役前整備とは別プロジェクトのため未着手・未マージ**
+  （実プリンター・共有サーバー・2PC ゲート完了まで merge しない）。 |
 | next-day-setup / inventory-reconciliation / menu-sheet-generator / 俺伝 / qr-supply | 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。個別の機能追加は各 `projects/*.md` と対象リポジトリの状態で判断。 |
 | call-reception-assistant | 設計前。無課金・ローカル完結・外部非接続の初期試作方針（[docs/decisions.md](docs/decisions.md)）。 |
 
-## 退役前整備（H1〜H7、2026-09-04 完了）
+## 退役前整備 完了記録（H1〜H7、M1〜M3、2026-09-04〜05）
+
+Claude Code 退役前に、ChatGPT（GitHub 側）と Codex／その他セッション（Windows 実機側）だけで
+開発・ビルド・配布・復旧・認証再設定・新PC構築が回る状態を整備した。**全項目完了。**
 
 | 記号 | 内容 | 主な成果物 |
 |---|---|---|
-| H1 | Git 管理外データのバックアップ・復元 | `scripts/BACKUP_DEV_DATA.ps1` + `_CLICK_ME.cmd`、[docs/git_external_data_inventory.md](docs/git_external_data_inventory.md)、[docs/backup_restore.md](docs/backup_restore.md)。実バックアップ初回作成・全項目検証済み（`%USERPROFILE%\DevDataBackups\` と `E:\DevDataBackups\`）。 |
-| H2 | PC 全体の repo／clone 監査、旧 clone 比較 | [docs/pc_repo_audit.md](docs/pc_repo_audit.md)。旧 clone #1〜#4 の分類。hospitality-review-reply を knowledge 種別で管理対象へ追加。 |
-| H3 | 共通 CI アクションの安定タグ運用 | `ci-v1`（moving）/ `ci-v1.0.x`（固定）。[docs/ci_action_versioning.md](docs/ci_action_versioning.md)。各 repo の CI は `@ci-v1` を参照。 |
-| H4 | 実機ヘルスチェック | `scripts/DEV_DOCTOR.ps1` + `_CLICK_ME.cmd`、[docs/dev_doctor.md](docs/dev_doctor.md)。4段階（ERROR / ACTION / INTENTIONAL / INFO）。 |
-| H5 | 引き継ぎドライラン | development-management だけから作業再開できるかの検証。本文書・[AI_STARTUP.md](AI_STARTUP.md)・[VERSION_MATRIX.md](VERSION_MATRIX.md)・[REPOSITORIES.md](REPOSITORIES.md)・[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)・[docs/ai_handoff.md](docs/ai_handoff.md) を現状へ更新。 |
-| H6 | 非コーダー向けランブック | [docs/operator_runbook.md](docs/operator_runbook.md)。毎週やること／各システムのダブルクリック操作／困ったときの相談のしかた／禁止事項／用語辞典。 |
-| H7 | BUILD / DEPLOY / UPDATE 経路の非本番実地検証 | [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。一時ターゲットで各アプリの経路を実走破。fail-safe 一覧。 |
+| H1 | Git 管理外データのバックアップ・復元 | `scripts/BACKUP_DEV_DATA.ps1` + `_CLICK_ME.cmd`、[docs/git_external_data_inventory.md](docs/git_external_data_inventory.md)、[docs/backup_restore.md](docs/backup_restore.md)。実バックアップ初回作成・全項目検証済み（`%USERPROFILE%\DevDataBackups\` と別物理ディスク `E:\DevDataBackups\`）。 |
+| H2 | PC 全体の repo／clone 監査、旧 clone 比較 | [docs/pc_repo_audit.md](docs/pc_repo_audit.md)。旧 clone #1〜#4 の分類（救出済み／superseded／obsolete、いずれも削除せず保管）。hospitality-review-reply を knowledge 種別で管理対象へ追加（10リポジトリ体制）。 |
+| H3 | 共通 CI アクションの安定タグ運用 | `ci-v1`（moving）/ `ci-v1.0.x`（固定）。[docs/ci_action_versioning.md](docs/ci_action_versioning.md)。各 repo の CI は `@ci-v1` を参照、warning-only。 |
+| H4 | 実機ヘルスチェック | `scripts/DEV_DOCTOR.ps1` + `_CLICK_ME.cmd`、[docs/dev_doctor.md](docs/dev_doctor.md)。ERROR / ACTION / INTENTIONAL / INFO の4段階。 |
+| H5 | 引き継ぎドライラン | development-management だけから作業再開できるかを検証し、「2プロジェクト時代」のまま停止していた
+  状態系文書を現状化。[AI_STARTUP.md](AI_STARTUP.md)・[VERSION_MATRIX.md](VERSION_MATRIX.md)・
+  [REPOSITORIES.md](REPOSITORIES.md)・[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)・
+  [docs/ai_handoff.md](docs/ai_handoff.md)・本文書。 |
+| H6 | 非コーダー向けランブック | [docs/operator_runbook.md](docs/operator_runbook.md)。毎週やること／各システムのダブルクリック操作／
+  困ったときの相談のしかた／禁止事項／用語辞典／GitHub 認証の再設定（H6 §6 は M2 で追加）。 |
+| H7 | BUILD / DEPLOY / UPDATE 経路の非本番実地検証 | [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。一時ターゲットで5アプリの経路を実走破
+  （成果物 SHA-256 が配布先で一致、実 HDD・実共有・本番は不変更）。fail-safe 一覧。 |
+| M1 | 新 PC ブートストラップ | `scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。git/Python/gh 確認 → GitHub 認証確認 →
+  canonical 10 リポジトリを clone（既定ブランチは live 検出）→ RUN_DEV/venv 報告。idempotent・fail-safe。
+  一時ディレクトリでの実 clone・再実行・衝突拒否を検証済み。 |
+| M2 | GitHub 認証の監査・再認証手順 | [docs/github_auth.md](docs/github_auth.md)。`gh`（OAuth）と `git` push/pull（GCM）の
+  2系統・独立の構成、失効条件、失効時の影響範囲を記録。[docs/operator_runbook.md](docs/operator_runbook.md) §6 に
+  4ステップの再ログイン手順。DEV_DOCTOR が両系統の失効を検出（gh=ERROR、git(GCM)=ACTION）。 |
+| M3 | 俺伝の既定ブランチ監査・main 化 | [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。16項目の依存監査 → 判断 A →
+  **実施完了**: `codex/bootstrap-invoice-reading` → `main`（GitHub ネイティブ改名、HEAD `1940db0` は
+  改名前後で同一 SHA、履歴の書き換えなし）。正式ローカル追従・DEV_DOCTOR `$Canon`・全文書を更新済み。 |
 
 ## Windows アプリ共通標準
 
@@ -60,30 +81,22 @@
 
 ## 全体の現在地
 
-- `development-management` を業務システム全体の司令塔として運用中。GitHub 反映済み（`main` = `d45c0c9`）。
+- `development-management` を業務システム全体の司令塔として運用中。GitHub 反映済み（`main` = `dd44366`）。
 - `github-rw` を持つセッション（ChatGPT 等）は GitHub 上で完結する調査・実装・テスト・PR まで担当。
 - `windows-real` を持つセッション（Codex 等）は Windows 実機・正式ローカル・実プリンター・共有サーバー・
   手動ビルド失敗時の原因調査へ優先配分。正式ソースに触れる前に `git fetch`（必要なら `pull --ff-only`）、
   作業後に `commit` + `push`。「編集したが push していない」は未完了工程。
 - PR merge、安定版タグ、本番共有版・実 HDD 更新は、必要な確認と明示的な判断後にのみ行う。
 
-## 次にやること
+## 次にやること（退役前整備は完了。ここからは通常の開発課題）
 
-1. **H5**: この更新で本文書群を現状化した。新規セッションが development-management だけで
-   現在地・正式ソース・未完了作業を把握できるか、実際に読み直して残ギャップを潰す。
-2. ~~**M2**: GitHub 認証の監査・再認証手順~~ → 完了（[docs/github_auth.md](docs/github_auth.md)、
-   [docs/operator_runbook.md](docs/operator_runbook.md) §6、DEV_DOCTOR に gh 失効=ERROR / git(GCM) 失敗=ACTION を追加）。
-3. ~~**M3**: 俺伝の既定ブランチ依存監査~~ → 完了・**実施済み**。判断 A（`main` へ移行）どおり、
-   2026-09-04 にユーザーが GitHub ブランチ改名 API を実行（`codex/bootstrap-invoice-reading` → `main`、
-   HEAD `1940db0` は改名前後で同一 SHA）。正式ローカルの追従・DEV_DOCTOR `$Canon`・関連文書の更新も完了。
-   詳細は [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。
-4. ~~**M1**: 新 PC ブートストラップ~~ → 完了。`scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。
-   idempotent（既存 repo は fetch のみ・reset しない）/ fail-safe（非 git ディレクトリは上書き拒否）。
-   各 repo の既定ブランチは `git ls-remote --symref` で live 検出（俺伝が `codex/...` でも `main` でも正しく追従）。
-   Git 管理外データは自動復元せず [docs/backup_restore.md](docs/backup_restore.md) へ誘導。
-   一時ディレクトリへの実 clone + 再実行（idempotency）+ 非 git 衝突拒否を検証済み。
-5. **beverage**: Draft PR #2 の merge 可否判断、GAS スマホ棚卸・発注システム統合。
-6. `recovery/from-old-clone-docs`（PR #1）: 最新 main へ rebase 済み・conflict 解消済み・
-   **Ready for review**（Draft 解除、merge はユーザー判断待ち）。取り込み候補 = `BUSINESS_MODEL.md` /
-   現状化した `projects/food-cost-*.md` `projects/qr-supply-*.md` / 調整済みフェーズ規律 / 5 設計判断。
-   分類表はそのブランチの `docs/recovery_from_old_clone.md`。
+退役前整備（H1〜H7、M1〜M3）の各項目と recovery PR #1 は上記のとおりすべて完了・merge 済み。
+以下は退役前整備とは別の、通常のプロジェクト残課題。
+
+1. **beverage**: Draft PR #2（Python 移行本体）と PR #5（`feature/mobile-stocktake-sheets`、Google Sheets
+   モバイル棚卸）は継続開発中。実プリンター・共有サーバー・2PC 同時更新のゲートを満たすまで merge しない。
+2. **俺伝**: 実伝票・実 OCR データでの精度確認、HDD 配布の実地（本番 `E:\FoodCostCalculation\`）での
+   最終確認（H7 は非本番の一時ターゲットで経路のみ検証済み）。
+3. **qr-supply**: 既存発注表の候補ファイルが現行運用の正式発注表であることの業務確認、正式 DB への確定取込。
+4. 次サイクルで検討: NDS / menu-sheet-generator のビルド成果物へ俺伝相当の `BUILD_INFO.txt`
+   （HEAD SHA + 成果物 SHA-256）を追加する方針（[docs/decisions.md](docs/decisions.md)）。

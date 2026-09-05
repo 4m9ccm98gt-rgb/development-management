@@ -2,6 +2,24 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## v1.4.0 - 2026-09-05
+
+### Changed（Claude Code 退役前整備 完了）
+
+- **M3 実施**: 俺伝の既定ブランチを `codex/bootstrap-invoice-reading` から `main` へ改名（GitHub ネイティブ
+  改名、HEAD `1940db0` は改名前後で同一 SHA、履歴の書き換えなし）。正式ローカルの追従（`git branch -m` →
+  `fetch --prune` → upstream 再設定 → `origin/HEAD` 更新）、`DEV_DOCTOR.ps1` の `$Canon`、関連文書
+  （AI_STARTUP / PROJECT_STATUS / REPOSITORIES / VERSION_MATRIX / docs/ai_handoff / README）を更新。
+  H7 実施当時の記録（`docs/build_deploy_paths.md`）は旧名を残し脚注で現状を明記（歴史的記録は書き換えない）。
+- **recovery PR #1 を squash merge**（`dd44366`）: `BUSINESS_MODEL.md`、`projects/food-cost-calculation-system.md`
+  （main 移行完了の現状で更新）、`projects/qr-supply-ordering-system.md`、フェーズ規律の調整、5つの設計判断
+  を取り込み。旧 clone `開発環境整備プロジェクト` からの救出作業が完結（[docs/recovery_from_old_clone.md](docs/recovery_from_old_clone.md)）。
+
+### 確認状況
+
+`scripts/check_standards.py` 全10リポジトリ `OK: 指摘なし`。`DEV_DOCTOR` **ERROR 0 / ACTION 0**。
+development-management `main` = `dd44366`。beverage Draft PR #2 / #5 は別プロジェクトとして未変更。
+
 ## v1.3.0 - 2026-09-04
 
 ### Added（退役前整備 H1〜H7 + M1〜M3）
