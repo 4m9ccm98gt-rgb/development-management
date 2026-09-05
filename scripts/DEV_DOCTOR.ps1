@@ -35,7 +35,7 @@ $Canon = @(
     @{ name = "menu-sheet-generator";                branch = "main" },
     @{ name = "call-reception-assistant";            branch = "main" },
     @{ name = "kitchen-calendar";                    branch = "main" },
-    @{ name = "food-cost-calculation-system";        branch = "codex/bootstrap-invoice-reading" },
+    @{ name = "food-cost-calculation-system";        branch = "main" },  # was codex/bootstrap-invoice-reading until 2026-09-04 (M3)
     @{ name = "hospitality-review-reply";            branch = "main" }
 )
 # repo -> branch(es) that are EXPECTED to be checked out right now (intentional work-in-progress).

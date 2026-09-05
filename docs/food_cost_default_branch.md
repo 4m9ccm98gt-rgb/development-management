@@ -105,8 +105,24 @@ gh api --method POST "repos/4m9ccm98gt-rgb/food-cost-calculation-system/branches
 ＋ ローカルで `git branch -m main codex/bootstrap-invoice-reading` と upstream 再設定、文書を戻す。
 commit は一切失われない。
 
-## 状態
+## 状態 — 完了（2026-09-04）
 
-- 監査・判断・手順設計: 完了（本書）。
-- 手順 1（GitHub 改名 API）は自動実行がブロックされたため**ユーザーの実行または承認待ち**。
-  実行後に手順 2〜5 を続ける。
+- 監査・判断・手順設計: 完了。
+- **手順 1（GitHub 改名 API）: ユーザーが実行済み。** 既定ブランチは `main`。GitHub 側の全ブランチ一覧は
+  `main` のみ（旧名 `codex/bootstrap-invoice-reading` は GitHub がリダイレクト）。
+- **手順 2（正式ローカルの追従）: 完了。** `git branch -m codex/bootstrap-invoice-reading main` →
+  `git fetch origin --prune`（旧 `origin/codex/bootstrap-invoice-reading` 追跡枝は自動削除）→
+  `git branch -u origin/main main` → `git remote set-head origin -a`。
+  検証: ローカル HEAD SHA は改名前後で **`1940db031df7214f8ad087c6fd6c83492427a32b` のまま不変**
+  （履歴の書き換えなし）、`git status` クリーン、ahead/behind 0/0、`origin/HEAD` symref は `refs/heads/main`。
+  重複していた `.git/config` の `[branch "main"]` セクション（旧 `main` の残骸 + rename 後の追記）も統合済み。
+- **手順 3（機能依存の更新）: 完了。** `scripts/DEV_DOCTOR.ps1` の `$Canon` を `"main"` へ。
+- **手順 4（文書更新）: 完了。** `food-cost/AI_HANDOFF.md`、development-management の
+  AI_STARTUP.md / PROJECT_STATUS.md / REPOSITORIES.md / VERSION_MATRIX.md / docs/ai_handoff.md /
+  docs/build_deploy_paths.md（H7 実施当時の記録として旧名を残し脚注で明示）/
+  scripts/BOOTSTRAP_DEV_PC.ps1（コメント）を更新。全文検索で残存する `codex/bootstrap-invoice-reading`
+  はすべて「旧ブランチ名」と分かる歴史的記録（DAILY_LOG.md の当日以前の記録、本書内の当時の記述）。
+- **手順 5（検証）: 完了。** `DEV_DOCTOR_CLICK_ME.cmd` → food-cost `[OK]`（`[ACTION] unexpected branch` なし）。
+  `check_standards.py --repo food-cost-calculation-system` → 指摘なし。
+  `gh repo view ... --json defaultBranchRef` → `main`。`git ls-remote --symref origin HEAD` → `refs/heads/main`。
+  `BOOTSTRAP_DEV_PC.ps1` の live 検出（`git ls-remote --symref`）が `main` を正しく取得することを再確認。

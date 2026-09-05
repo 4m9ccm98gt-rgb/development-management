@@ -32,7 +32,7 @@ Current stable version: **v1.0.0**
 - [docs/operator_runbook.md](docs/operator_runbook.md) — 非コーダー向け。日常操作と困ったときの相談のしかた
 - [docs/dev_doctor.md](docs/dev_doctor.md) / [docs/backup_restore.md](docs/backup_restore.md) — 実機ヘルスチェックとバックアップ・復元
 - [docs/github_auth.md](docs/github_auth.md) — GitHub 認証（`gh` と `git`/GCM の2系統）の構成・失効条件・再設定
-- [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md) — 俺伝の既定ブランチ（`codex/bootstrap-invoice-reading` → `main`）監査と移行手順
+- [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md) — 俺伝の既定ブランチ改名（`codex/bootstrap-invoice-reading` → `main`、2026-09-04 実施済み）の監査と手順
 - `scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd` — 新しい Windows PC で canonical リポジトリ一式を再構築（idempotent）
 - [docs/pc_repo_audit.md](docs/pc_repo_audit.md) / [docs/git_external_data_inventory.md](docs/git_external_data_inventory.md) — PC 上の repo 監査と Git 管理外データ棚卸し
 - [docs/ci_action_versioning.md](docs/ci_action_versioning.md) — 共通 CI アクションのタグ運用

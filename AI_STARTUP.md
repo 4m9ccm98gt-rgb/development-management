@@ -46,7 +46,7 @@
 | next-day-setup | desktop | `main` | `v1.2.1` |
 | inventory-reconciliation-system | service | `main` | `v2.0.0` |
 | menu-sheet-generator（.NET） | desktop | `main` | `v1.0.0` |
-| food-cost-calculation-system（俺伝） | desktop | `codex/bootstrap-invoice-reading` | なし |
+| food-cost-calculation-system（俺伝） | desktop | `main`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名） | なし |
 | beverage-inventory-ordering-system | desktop | `main`（移行作業は `python-desktop-migration`） | なし |
 | qr-supply-ordering-system | web | `main` | なし |
 | call-reception-assistant | desktop | `main` | なし（アプリ本体未実装） |

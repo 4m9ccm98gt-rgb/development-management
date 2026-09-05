@@ -21,7 +21,7 @@
 | next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `1b048f4`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。 |
 | inventory-reconciliation-system（在庫突合） | service | `main` | 実運用中。tag `v2.0.0`、main `fd2de21`。夜間自動実行（`install_daily_inventory_task.bat` でタスク登録）。 |
 | beverage-inventory-ordering-system（飲料在庫） | desktop | `main`（移行作業は `python-desktop-migration`） | Python/PySide6 版へ移行中。作業ブランチ `python-desktop-migration` は upstream と同期（`e458476`）。能力ベース運用の起点・3経路の実績元。 |
-| food-cost-calculation-system（俺伝） | desktop | **`codex/bootstrap-invoice-reading`**（`main` は無い） | 実運用中。HEAD `1940db0`。Nuitka ビルド + 外付け HDD 配布（`BUILD_俺伝_CLICK_ME.cmd` → `UPDATE_HDD_CLICK_ME.cmd`）。既定ブランチの `main` 化は M3 で依存監査後に判断。 |
+| food-cost-calculation-system（俺伝） | desktop | `main`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名済み。旧名は履歴として GitHub がリダイレクト） | 実運用中。HEAD `1940db0`（改名前後で同一 SHA、履歴の書き換えなし）。Nuitka ビルド + 外付け HDD 配布（`BUILD_俺伝_CLICK_ME.cmd` → `UPDATE_HDD_CLICK_ME.cmd`）。 |
 | menu-sheet-generator（料理説明書、.NET） | desktop | `main` | 実運用中。tag `v1.0.0`、main `fa4fdf7`。`BUILD_RELEASE.cmd`（dotnet publish）→ `UPDATE.cmd`。 |
 | qr-supply-ordering-system（QR 物品発注） | web | `main` | 社内 LAN の 1 ホストで Flask 常駐。main `790fff5`。`RUN_DEV.cmd` + 対象リポジトリの `DEPLOY.md`。 |
 | call-reception-assistant（電話受付） | desktop | `main` | 初期管理文書のみ。**アプリ本体は未実装**。main `ae78cf5`。 |
@@ -73,11 +73,10 @@
    現在地・正式ソース・未完了作業を把握できるか、実際に読み直して残ギャップを潰す。
 2. ~~**M2**: GitHub 認証の監査・再認証手順~~ → 完了（[docs/github_auth.md](docs/github_auth.md)、
    [docs/operator_runbook.md](docs/operator_runbook.md) §6、DEV_DOCTOR に gh 失効=ERROR / git(GCM) 失敗=ACTION を追加）。
-3. ~~**M3**: 俺伝の既定ブランチ依存監査~~ → 完了。判断 **A（`main` へ移行）**。
-   全数監査（機能依存は DEV_DOCTOR `$Canon` 1行のみ）と非破壊・可逆の移行手順は
-   [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。
-   **GitHub ブランチ改名 API の実行は自動化がブロックされたためユーザー実行/承認待ち。**
-   実行後、DEV_DOCTOR `$Canon` と各文書の `codex/bootstrap-invoice-reading` を `main` へ更新し検証する。
+3. ~~**M3**: 俺伝の既定ブランチ依存監査~~ → 完了・**実施済み**。判断 A（`main` へ移行）どおり、
+   2026-09-04 にユーザーが GitHub ブランチ改名 API を実行（`codex/bootstrap-invoice-reading` → `main`、
+   HEAD `1940db0` は改名前後で同一 SHA）。正式ローカルの追従・DEV_DOCTOR `$Canon`・関連文書の更新も完了。
+   詳細は [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。
 4. ~~**M1**: 新 PC ブートストラップ~~ → 完了。`scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。
    idempotent（既存 repo は fetch のみ・reset しない）/ fail-safe（非 git ディレクトリは上書き拒否）。
    各 repo の既定ブランチは `git ls-remote --symref` で live 検出（俺伝が `codex/...` でも `main` でも正しく追従）。

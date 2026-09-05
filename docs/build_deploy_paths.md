@@ -15,7 +15,7 @@ BUILD 入口→成果物→DEPLOY 入口→一時配布先まで到達し、成�
 
 | アプリ | 種別 | ソース HEAD（検証時） | BUILD 入口 | 成果物（size / SHA-256 先頭） | DEPLOY/UPDATE 入口 | 実際の配布先（本番・今回は不変更） |
 |---|---|---|---|---|---|---|
-| food-cost（俺伝） | desktop | `codex/bootstrap-invoice-reading` @ `1940db0` | `BUILD_俺伝_CLICK_ME.cmd` → `tools/release/build_release.ps1` | `releases/俺伝-<ts>/俺伝.exe` + `BUILD_INFO.txt`（HEAD SHA と EXE SHA-256 を記録）<br>※DryRun 実行。stub 3 bytes / `039058C6…` | `UPDATE_HDD_CLICK_ME.cmd` → `tools/release/update_hdd.ps1` | `E:\FoodCostCalculation\俺伝-<ts>\`（外付け HDD `WE-Elements`） |
+| food-cost（俺伝） | desktop | `codex/bootstrap-invoice-reading`† @ `1940db0` | `BUILD_俺伝_CLICK_ME.cmd` → `tools/release/build_release.ps1` | `releases/俺伝-<ts>/俺伝.exe` + `BUILD_INFO.txt`（HEAD SHA と EXE SHA-256 を記録）<br>※DryRun 実行。stub 3 bytes / `039058C6…` | `UPDATE_HDD_CLICK_ME.cmd` → `tools/release/update_hdd.ps1` | `E:\FoodCostCalculation\俺伝-<ts>\`（外付け HDD `WE-Elements`） |
 | next-day-setup（翌日準備） | desktop | `main` @ `1b048f4` | `BUILD_EXE_CLICK_ME.cmd` → `build_exe.py`（PyInstaller onedir） | `dist/DinnerSystem/DinnerSystem.exe`<br>6,383,041 bytes / `0da441a2…`（BUILD_INFO なし） | `UPDATE_SHARED_FOLDER.cmd` → `update_shared_folder.ps1` | `\\<サーバ>\share\DinnerSystem`（社内共有フォルダ、`Z:` 等） |
 | beverage（飲料在庫） | desktop | `python-desktop-migration` @ `04c3797`※検証後 `e458476` に FF | `python_app\BUILD_EXE_CLICK_ME.cmd`（PyInstaller onedir、pytest 同梱） | `python_app/dist/BeverageInventory/BeverageInventory.exe`<br>1,957,425 bytes / `ec30a6ae…`（コンソールに size+SHA 表示、BUILD_INFO ファイルなし） | `python_app\UPDATE_SHARED_FOLDER.cmd` → `update_shared_folder.ps1` | `\\<共有>\BeverageInventory`（社内共有フォルダ） |
 | menu-sheet-generator（料理説明書 / .NET） | desktop | `main` @ `fa4fdf7` | `BUILD_RELEASE.cmd` → `dotnet build` + `dotnet publish -r win-x64 --self-contained -o publish\` | `publish\MenuPrinterWpf.exe`(162,304) / `.dll`(206,848) / logo png / stamp png（BUILD_INFO なし） | `UPDATE.cmd [ターゲット]` | `\\192.168.10.101\Shared\共有\…\お品書き印刷アプリ` |
@@ -23,6 +23,11 @@ BUILD 入口→成果物→DEPLOY 入口→一時配布先まで到達し、成�
 | qr-supply（QR 物品発注） | web | `main` @ `790fff5` | ―（ビルド成果物なし） | `DEPLOY.md`：社内 LAN の 1 ホストに repo 配置 → `RUN_DEV.cmd` を 1 回。DB は初回 `ensure_database()` で自動生成。スキーマ更新は `flask --app run:app migrate-db`（加算型・非破壊） | 同ホストの `RUN_DEV.cmd`（`run.py` が `0.0.0.0:5000`） | `database\qr_supply.sqlite3`（同ホスト内、Git 管理外） |
 
 `<ts>` = `build_release.ps1` の `-Timestamp`（`yyyy-MM-dd-HHmm` 形式、未指定なら実行時刻）。
+
+† 俺伝の既定ブランチ名。**この検証（2026-09-04 H7）実施時点の名称であり、当時の実状を示す歴史的記録**。
+同日 M3 の監査・判断を経て、この H7 検証の後に `main` へ改名済み（HEAD `1940db0` は改名前後で同一。
+詳細は [docs/food_cost_default_branch.md](food_cost_default_branch.md)、現在の状態は
+[REPOSITORIES.md](../REPOSITORIES.md) / [PROJECT_STATUS.md](../PROJECT_STATUS.md)）。
 
 ---
 

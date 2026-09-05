@@ -7,8 +7,9 @@ What it DOES (idempotent, fail-safe, re-runnable):
   3. Create the canonical repos root (default C:\Users\suisy\Documents\Development\repos).
   4. Clone development-management first, then read scripts\repo_types.toml for the rest.
   5. Clone each canonical repo that is missing. Each repo keeps its OWN GitHub default branch
-     (detected live via 'git ls-remote --symref origin HEAD' - so food-cost is correct whether
-     it is codex/bootstrap-invoice-reading or main).
+     (detected live via 'git ls-remote --symref origin HEAD', not hardcoded - so it stays correct
+     across renames, e.g. food-cost's default was codex/bootstrap-invoice-reading until the
+     2026-09-04 rename to main, M3).
   6. Report which repos expect a RUN_DEV entrypoint and whether .venv exists yet.
   7. Point at DEV_DOCTOR and check_standards for verification.
 

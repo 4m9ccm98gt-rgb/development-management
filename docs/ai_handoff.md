@@ -16,7 +16,7 @@
 - `next-day-setup`: tag `v1.2.1`、main `1b048f4`
 - `inventory-reconciliation-system`: tag `v2.0.0`、main `fd2de21`
 - `menu-sheet-generator`: tag `v1.0.0`、main `fa4fdf7`
-- `food-cost-calculation-system`（俺伝）: タグなし、既定ブランチ `codex/bootstrap-invoice-reading` `1940db0`
+- `food-cost-calculation-system`（俺伝）: タグなし、既定ブランチ `main` `1940db0`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名）
 - `beverage-inventory-ordering-system`: タグなし、作業ブランチ `python-desktop-migration` `e458476`（upstream と同期）
 - `qr-supply-ordering-system`: タグなし、main `790fff5`
 

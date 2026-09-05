@@ -11,8 +11,8 @@
   一致は確認済みだが、現場で動いている版との突き合わせは未実施（オンサイトまたはユーザー確認が必要）。
 - 「未確認」は推測で補わず、実機、共有版、本番環境または担当者への確認が必要な項目を示す。
 - 2026-09-04 時点で全10リポジトリの GitHub と正式ローカルは同期（beverage は作業ブランチ
-  `python-desktop-migration`、俺伝は `codex/bootstrap-invoice-reading` が基準）。詳細は
-  [REPOSITORIES.md](REPOSITORIES.md) / [PROJECT_STATUS.md](PROJECT_STATUS.md)。
+  `python-desktop-migration`、俺伝は同日 M3 で `codex/bootstrap-invoice-reading` から改名した `main` が基準）。
+  詳細は [REPOSITORIES.md](REPOSITORIES.md) / [PROJECT_STATUS.md](PROJECT_STATUS.md)。
 
 ## next-day-setup
 
@@ -130,7 +130,7 @@
 |---|---|
 | GitHubリポジトリ名 | `food-cost-calculation-system` |
 | 最新確認タグ | なし |
-| 既定ブランチ | **`codex/bootstrap-invoice-reading`**（`main` ブランチは無い）。HEAD `1940db0`（2026-09-04） |
+| 既定ブランチ | `main`。HEAD `1940db0`（2026-09-04）。同日 M3 の判断どおり `codex/bootstrap-invoice-reading` から GitHub ネイティブ改名（履歴・SHA 保持、旧名は GitHub 側でリダイレクト） |
 | 実運用中バージョン | 実運用中。版番号未設定。`releases/俺伝-YYYY-MM-DD-HHMM/` に過去ビルド（`BUILD_INFO.txt` 付き）。最新は `俺伝-2026-09-02-1128`（Git SHA `cc476ca`） |
 | 共有版または本番版 | 外付け HDD `E:\FoodCostCalculation\` 経由で配布（`WE-Elements` ボリューム）。配布先の版一致は未確認 |
 | 正式ソースのローカルパス | `C:\Users\suisy\Documents\Development\repos\food-cost-calculation-system` |
@@ -138,8 +138,8 @@
 | ビルド/配布 | `BUILD_俺伝_CLICK_ME.cmd` → `tools/release/build_release.ps1`（未コミットで停止・`BUILD_INFO.txt` に HEAD SHA と EXE SHA-256）→ `UPDATE_HDD_CLICK_ME.cmd` → `tools/release/update_hdd.ps1` |
 | 確認済み機能 | H7 で DryRun による BUILD→HDD 配布経路を非本番で実走破。検証ゲート（pytest 253 passed）通過。詳細 [docs/build_deploy_paths.md](docs/build_deploy_paths.md) |
 | 未確認機能 | 実運用データとの突き合わせ、実 HDD 配布後の現場動作、請求書読み取りの実データ精度 |
-| GitHubと正式ローカルが一致しているか | 一致（`codex/bootstrap-invoice-reading` = `1940db0`、Git status クリーン）|
-| 備考 | 既定ブランチの `main` 化は M3 で依存（CI・ビルドスクリプト・文書の branch 参照）を監査してから判断 |
+| GitHubと正式ローカルが一致しているか | 一致（`main` = `1940db0`、Git status クリーン、正式ローカルは `codex/bootstrap-invoice-reading` から `git branch -m` で追従済み）|
+| 備考 | 既定ブランチは 2026-09-04 に `codex/bootstrap-invoice-reading` → `main` へ改名済み（M3、[docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)） |
 
 ## qr-supply-ordering-system
 
