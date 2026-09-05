@@ -19,7 +19,7 @@
 
 | リポジトリ | 種別 | 既定ブランチ | 現在地 |
 |---|---|---|---|
-| next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `614c985`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。2026-09-05 に pytest CI（windows-latest）・帳票ビルダー回帰テスト40件・`BUILD_INFO.txt` を追加（PR #5、[projects/next-day-setup.md](projects/next-day-setup.md)）。 |
+| next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `0d134be`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。2026-09-05 に pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`（PR #5）に続き、clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路（PR #6、[projects/next-day-setup.md](projects/next-day-setup.md)）を追加。 |
 | inventory-reconciliation-system（在庫突合） | service | `main` | 実運用中。tag `v2.0.0`、main `fd2de21`。夜間自動実行（`install_daily_inventory_task.bat` でタスク登録）。 |
 | beverage-inventory-ordering-system（飲料在庫） | desktop | `main`（移行作業は `python-desktop-migration`） | Python/PySide6 版へ移行中。作業ブランチ `python-desktop-migration` は upstream と同期（`e458476`）。能力ベース運用の起点・3経路の実績元。 |
 | food-cost-calculation-system（俺伝） | desktop | `main`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名済み。旧名は履歴として GitHub がリダイレクト） | 実運用中。HEAD `1940db0`（改名前後で同一 SHA、履歴の書き換えなし）。Nuitka ビルド + 外付け HDD 配布（`BUILD_俺伝_CLICK_ME.cmd` → `UPDATE_HDD_CLICK_ME.cmd`）。 |
@@ -101,10 +101,11 @@ Claude Code 退役前に、ChatGPT（GitHub 側）と Codex／その他セッシ
 4. 次サイクルで検討: menu-sheet-generator のビルド成果物へ俺伝相当の `BUILD_INFO.txt`
    （HEAD SHA + 成果物 SHA-256）を追加する方針（[docs/decisions.md](docs/decisions.md)）。
    next-day-setup は 2026-09-05 に対応済み（PR #5、[projects/next-day-setup.md](projects/next-day-setup.md)）。
-5. **next-day-setup の残課題**（2026-09-05 の安全網追加（pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`）で
-   確認、優先度は次サイクルで判断。大規模リファクタリングや印刷方式統合は対象外）:
-   - clean-tree gate（俺伝の `Assert-CleanWorkingTree` 相当。今回は `BUILD_INFO.txt` 追加のみで見送り）
-   - JSON保存のアトミック化（一時ファイル + rename。現状は直接上書きのためクラッシュ時に破損しうる）
-   - 配布EXEのアトミック差し替え（`update_shared_folder.ps1` は現状 `Copy-Item -Force` の直接上書き）
+5. **next-day-setup hardening**: 2026-09-05 に Phase 0（pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`、
+   PR #5）と Phase 1（clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路、PR #6）が
+   完了。**Phase 2（JSON保存・破損耐性）実施中**（[projects/next-day-setup.md](projects/next-day-setup.md)）。
+   残課題（大規模リファクタリングや印刷方式統合は対象外）:
+   - `_internal` のrobocopy同期自体は非アトミック（EXE単体のみアトミック化、既存設計のまま）
+   - 実共有フォルダでの最終確認は未実施（毎回H7同様、非本番の一時ターゲットのみで検証）
    - 実プリンターでの全帳票確認（GDI直叩き／Excel COM×2系統／reportlab+SumatraPDF／Edgeキオスク印刷の
      4方式が併存しており、実機でしか検証できない）

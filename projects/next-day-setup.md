@@ -76,8 +76,54 @@ Claude Code 退役前整備の完了後、NDSの実装・テスト・ビルド�
 
 ### 残課題（次サイクル、大規模リファクタリング・印刷方式統合は対象外）
 
-- clean-tree gate（俺伝の `Assert-CleanWorkingTree` 相当）
-- JSON保存のアトミック化（一時ファイル + rename。現状は直接上書きでクラッシュ時に破損しうる）
-- 配布EXEのアトミック差し替え（`update_shared_folder.ps1` は現状 `Copy-Item -Force` の直接上書き）
+- clean-tree gate（俺伝の `Assert-CleanWorkingTree` 相当）→ **2026-09-05 Phase 1 で対応済み（下記）**
+- JSON保存のアトミック化（一時ファイル + rename。現状は直接上書きでクラッシュ時に破損しうる）→
+  **Phase 2 で着手（下記）**
+- 配布EXEのアトミック差し替え（`update_shared_folder.ps1` は現状 `Copy-Item -Force` の直接上書き）→
+  **2026-09-05 Phase 1 で対応済み（下記）**
 - 実プリンターでの全帳票確認（GDI直叩き／Excel COM×2系統／reportlab+SumatraPDF／Edgeキオスク印刷の
-  4方式が併存。実機でしか検証できない）
+  4方式が併存。実機でしか検証できない）→ 未着手
+
+## 2026-09-05 追記2: NDS hardening Phase 1（PR #6, `0d134be`）— BUILD/配布経路の事故耐性
+
+安全網（Phase 0）を土台に、「間違ったソース・古いEXE・壊れたコピーを本番へ配布しにくい」状態への
+強化を実施。業務ロジック・`hotel_app.py`分割・新機能追加は対象外。
+
+- **clean-tree gate**（`build_exe.py`）: `git status --porcelain` でtracked/untrackedを問わず検出し、
+  正式ビルドは既定でclean treeを要求。差分一覧を理由として提示して安全停止。`--allow-dirty` は非常用
+  override（`BUILD_EXE_CLICK_ME.cmd` は無変更、通常経路では使われない）。QA生成物2フォルダ
+  （`artifacts/checkin_card_stayover_previews/`、`docs/checkin_card_previews/`、前回追記1で安全と確認済み）
+  は `.gitignore` へ追加し、ゲートを常時邪魔しないようにした。
+- **BUILD_INFOによる配布元検証・stale/dirty成果物の拒否**（`update_shared_folder.ps1` の
+  `Assert-SourceBuildInfo`）: ターゲットへ触れる前に、BUILD_INFO.txtの存在・必須項目・EXE SHA-256の一致・
+  working treeがclean（`-AllowDirtySource`で上書き可）・記載HEADが現在の正式HEADと一致
+  （`-AllowStaleSource`で上書き可）を検証。
+- **EXEのsame-directory staged swap**（`Invoke-AtomicExeSwap`）: 一時名コピー→SHA-256再照合→既存EXEを
+  `.previous`へrename→新EXEを最終名にrename。コピー破損時は既存EXEに触れず停止、rename失敗時は
+  `.previous`から復元を試みる。
+- **rollback経路**: 新スクリプトは作らず、既存の `Backup-UpdateTarget` の完全バックアップを
+  `-SourcePath` に指定し `-AllowStaleSource` 付きで再実行するだけで復元できるよう整理。
+- **Get-FileHash依存の除去**: GitHub Actions windows-latestで `Get-FileHash` が解決できないと判明
+  （`Import-Module`でも直らず）、俺伝の `build_release.ps1` と同じ.NET直呼びのハッシュ関数に置換。
+- 追加テスト25件（`tests/test_build_exe_clean_tree.py` 13件、`tests/test_update_shared_folder_hardening.py`
+  12件）。既存4件にもBUILD_INFO.txtを付与し新ゲートの下で意味のあるテストを維持。
+
+### 確認結果
+
+- ローカルpytest 512件中511 passed / 1 skipped（Tcl/Tk環境フレーキー、コード起因ではない）。
+- GitHub Actions（PR #6、push/pull_request両方）: `NDS pytest (Windows)` / `Dev standards` とも success、
+  Get-FileHash関連のskipはゼロ。
+- 非本番ビルド: dirty tree拒否 → `--allow-dirty`でDIRTY記録確認 → commit後clean treeで成功、
+  Git HEAD・EXE SHA-256とも独立計算値と完全一致。
+- 非本番デプロイ（H7方式、一時ターゲット）: 実ビルド成果物でBUILD_INFO検証・アトミックswap・
+  target-only/保護ファイルの不変性を確認。stale版の配布ブロック→`-AllowStaleSource`で配布→
+  ロールバックで旧版復元、までEXE SHA-256一致を含め実証。
+- PR #6 を squash merge（`0d134be`）、作業ブランチ削除、正式ローカルを `main` へ同期、
+  `check_standards.py` 全10リポジトリOK、`DEV_DOCTOR` next-day-setup は `up-to-date`・未追跡0件
+  （`.gitignore`追加が効いていることを確認）、ERROR 0 / ACTION 0。
+
+### 残課題（次サイクル）
+
+- `_internal` のrobocopy同期自体は非アトミック（EXE単体のみアトミック化、既存設計のまま）
+- 実共有フォルダでの最終確認は未実施（今回もH7同様、非本番の一時ターゲットのみで検証）
+- clean-tree gateのallowlist方式（`.gitignore`追加）の運用上の妥当性は、実際の開発で使いながら再評価が必要

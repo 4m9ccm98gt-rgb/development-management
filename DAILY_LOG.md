@@ -601,3 +601,54 @@
 - 実プリンターでの全帳票確認（GDI直叩き／Excel COM×2系統／reportlab+SumatraPDF／Edgeキオスク印刷の
   4方式が併存。実機でしか検証できない）
 - `artifacts/` / `docs/checkin_card_previews/` の削除可否・`.gitignore` 追加の要否はユーザー判断待ち
+
+## 2026-09-05（続き9）NDS hardening Phase 1（BUILD/配布経路の事故耐性、PR #6）
+
+### 目的
+
+- next-day-setup は今後も継続開発する方針のため、退役前最低限を超えてリリース安全性を段階的に
+  高める。Phase 1 として「間違ったソース・古いEXE・壊れたコピーを本番へ配布しにくい」状態を目指した。
+
+### 実施したこと
+
+- 対象: next-day-setup。作業ブランチ `claude/nds-hardening-phase1` で実施。
+- `build_exe.py`: clean-tree gate を追加。`git status --porcelain` でtracked/untrackedを問わず検出し、
+  既定でclean treeを要求。`--allow-dirty` は非常用override（`BUILD_EXE_CLICK_ME.cmd` は無変更）。
+  QA生成物2フォルダ（前回追記1で安全と確認済み）を `.gitignore` へ追加し、ゲートを常時邪魔しないように。
+  ビルド開始時に古い `BUILD_INFO.txt` を削除し、失敗したビルドが有効に見える出所マーカーを残さない設計に。
+- `update_shared_folder.ps1`: `Assert-SourceBuildInfo` を追加し、配布先へ触れる前にBUILD_INFO.txtの
+  存在・必須項目・EXE SHA-256一致・working tree=clean・記載HEADが現在の正式HEADと一致、を検証
+  （`-AllowDirtySource` / `-AllowStaleSource` で明示的に上書き可）。EXE差し替えは `Invoke-AtomicExeSwap`
+  （同一ディレクトリへ一時名コピー→SHA再照合→`.previous`へrename→最終名へrename）に変更し、
+  直接 `Copy-Item -Force` を廃止。ロールバックは既存の `Backup-UpdateTarget` バックアップを
+  `-SourcePath` に指定し `-AllowStaleSource` 付きで再実行するだけで済むよう整理。
+- CI実行中に判明した `Get-FileHash` がGitHub Actions windows-latestで解決できない問題
+  （`Import-Module` でも直らず）を、俺伝の `build_release.ps1` と同じ .NET 直呼びのハッシュ関数へ
+  置換して解消。
+- 追加テスト25件。既存4件にもBUILD_INFO.txtを付与。
+- `next-day-setup#6` としてPR作成 → CI green確認（push/pull_request両方）→ 差分7ファイルのみ確認 →
+  squash merge（`0d134be`）→ 作業ブランチ削除 → 正式ローカルを `main` へ同期。
+
+### 確認結果
+
+- ローカルpytest 512件中511 passed / 1 skipped（Tcl/Tk環境フレーキー）。GitHub Actions
+  （`next-day-setup#6`）は `NDS pytest (Windows)` / `Dev standards` とも success、Get-FileHash関連の
+  skipはゼロ。
+- 非本番ビルド: dirty tree拒否 → `--allow-dirty` でDIRTY記録確認 → commit後clean treeで成功、
+  Git HEAD・EXE SHA-256とも独立計算値と完全一致。
+- 非本番デプロイ（H7方式、一時ターゲット）: 実ビルド成果物でBUILD_INFO検証・アトミックswap・
+  target-only/保護ファイルの不変性を確認。stale版の配布ブロック→`-AllowStaleSource`で配布→
+  ロールバックで旧版復元、までEXE SHA-256一致を含め実証。
+- merge後: `scripts/check_standards.py` 全10リポジトリ `OK: 指摘なし`。`DEV_DOCTOR` next-day-setup は
+  `up-to-date`・未追跡0件（`.gitignore`追加が効いている）、ERROR 0 / ACTION 0。
+
+### 未確認・問題（残課題、次サイクル）
+
+- `_internal` のrobocopy同期自体は非アトミック（EXE単体のみアトミック化）
+- 実共有フォルダでの最終確認は未実施（毎回非本番の一時ターゲットのみ）
+- clean-tree gateのallowlist方式（`.gitignore`追加）の運用上の妥当性は実際の開発で再評価が必要
+
+### 次: NDS hardening Phase 2（JSON保存・破損耐性）
+
+継続してJSON I/Oの棚卸しとmaster_settings.json等の安全化に着手（大規模リファクタリングではなく、
+データ消失・設定消失を防ぐ安全化が目的）。詳細は [projects/next-day-setup.md](projects/next-day-setup.md)。

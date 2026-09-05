@@ -126,6 +126,12 @@
   完全一致することを確認済み（[projects/next-day-setup.md](../projects/next-day-setup.md) 参照）。
   クリーンツリー要求（`Assert-CleanWorkingTree` 相当）は既存のビルド運用への影響を避けるため、今回は
   見送り、残課題として記録する。**menu-sheet-generator は未対応のまま。**
+- **実施（2026-09-05、next-day-setup、NDS hardening Phase 1）**: 上記で見送ったクリーンツリー要求を
+  `build_exe.py` に追加（既定でdirty tree拒否、`--allow-dirty` は非常用override）。あわせて配布側
+  （`update_shared_folder.ps1`）にも `Assert-SourceBuildInfo` を追加し、BUILD_INFO.txt記載のEXE SHA-256・
+  working tree状態・コミットが現在の正式HEADと一致することを配布前に検証するようにした
+  （PR #6、`0d134be`。詳細は [projects/next-day-setup.md](../projects/next-day-setup.md)）。
+  **menu-sheet-generator はBUILD_INFO.txt自体が未対応のまま。**
 
 <!-- 以下は旧cloneの未push编集から救出した設計判断。canonical に未反映だったもの。 -->
 
