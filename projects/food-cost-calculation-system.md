@@ -11,7 +11,7 @@ Phase 1 は原価率計算より、伝票画像から業者名・合計金額を
 |---|---|
 | GitHub | `https://github.com/4m9ccm98gt-rgb/food-cost-calculation-system`（private） |
 | 正式ローカル | `C:\Users\suisy\Documents\Development\repos\food-cost-calculation-system` |
-| **既定ブランチ** | `codex/bootstrap-invoice-reading`（`main` は無い）。M3 監査完了 → 判断 **A（`main` へ移行）**。機能依存は DEV_DOCTOR `$Canon` 1 行のみ。GitHub ネイティブ改名（非破壊・可逆）の実行はユーザー待ち。[docs/food_cost_default_branch.md](../docs/food_cost_default_branch.md) |
+| **既定ブランチ** | `main`。2026-09-04 に M3 の判断どおり `codex/bootstrap-invoice-reading` から GitHub ネイティブ改名済み（HEAD `1940db0` は改名前後で同一 SHA、履歴の書き換えなし。旧名は GitHub がリダイレクト）。正式ローカルも追従済み。[docs/food_cost_default_branch.md](../docs/food_cost_default_branch.md) |
 | 最新コミット | `1940db0`（CI を `@ci-v1` へ固定）。実装は push 済みで初回 commit 前ではない |
 | 種別（repo_types.toml） | `desktop` |
 | 開発フェーズ | Phase 1 実装済み。`cc476ca` で仕入税基準を原価計算へ追加。Phase 1.5（短期トークン QR / スマホ撮影 / LAN 送信）実装済み。Google Apps Script 経由の 4G/5G PoC 実装済み・実デプロイ未実施 |
@@ -30,7 +30,6 @@ Phase 1 は原価率計算より、伝票画像から業者名・合計金額を
 - 実伝票の撮影条件、業者名・合計金額の正解率、Tesseract 本体・日本語データを入れた実機 OCR
 - 実運用担当者による画面・入力手順評価、iPhone/Android 実機のカメラ起動・HEIC 到達
 - Apps Script の公開範囲・所有アカウント、Google Drive 一時フォルダ、4G/5G 実機
-- GitHub の既定ブランチ改名（`codex/bootstrap-invoice-reading` → `main`、M3 で判断 A）の実施
 - 俺伝 HDD 配布の実 HDD への実地確認（H7 は非本番の一時ターゲットで経路のみ検証済み）
 
 ## 禁止事項
