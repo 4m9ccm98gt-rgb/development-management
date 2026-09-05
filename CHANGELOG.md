@@ -175,6 +175,7 @@ Initial stable release.
 
 | 日付 | 変更対象プロジェクト | 変更内容 | 確認状況 |
 |---|---|---|---|
+| 2026-09-05 | next-day-setup | Claude Code によるNDS総合評価を実施後、既存動作を変えない安全網を追加。(1) `.github/workflows/tests.yml` 新設で既存testsをwindows-latest上のCIで実行(warning-onlyのstandardsとは別ジョブ)、(2) 直接テスト0件だった`print_jobs.py`の帳票ビルダー4件(会計伝票・担当割表・食事提供表・本日の状況)へ回帰テスト40件追加、(3) `build_exe.py`へ`BUILD_INFO.txt`出力(Git HEAD SHA/working tree状態/EXE SHA-256等)を追加。アプリ本体の業務ロジック・`update_shared_folder.ps1`・本番共有フォルダ・実業務データ・実プリンターは変更なし | ローカルpytest 487件中486 passed/1 skipped(環境依存)。GitHub Actions CI(`NDS pytest (Windows)`/`Dev standards`)とも成功。非本番ビルドでdirty/clean両方の`BUILD_INFO.txt`を検証しGit HEAD・EXE SHA-256の一致を確認。PR #5をsquash merge(`614c985`)、作業ブランチ削除、正式ローカル同期、`check_standards.py`全10リポジトリOK、`DEV_DOCTOR`確認済み |
 | 2026-09-01 | beverage-inventory-ordering-system | 旧PySide6タブUIのUI差異を実機で確認し、現行ブラウザUIを正本としたPySide6全面再構築へ移行。データ互換は維持し、UI同等性を独立本番ゲート化 | GitHub第一弾実装・Actions成功。Windows実機見比べ未完了。共有サーバー試験停止 |
 | 2026-09-01 | development-management | Python/Windowsアプリをソース起動・手動EXEビルド・手動配布更新の3経路へ統一。Codexの通常担当からEXEビルドを外し、`BUILD_EXE_CLICK_ME.cmd` と `UPDATE_SHARED_FOLDER.cmd` / `update_shared_folder.ps1` を標準化 | 管理文書をGitHub `main`で更新。既存各アプリへのスクリプト適用状況は別途確認 |
 | 2026-09-01 | development-management | ChatGPTをGitHub側の第一実装担当、CodexをWindows実機・ローカル環境作業の第一担当とする分業へ変更。GitHub上の実装・テスト・branch・commit・push・PR・レビューをChatGPT側で進め、Codexクレジットを実機作業へ優先配分する運用を正式化 | `AGENTS.md`、`AI_OPERATING_MANUAL.md`、`AI_STARTUP.md`、`DEVELOPMENT_RULES.md`、`docs/decisions.md`、`PROJECT_STATUS.md`、飲料在庫プロジェクト文書をGitHub `main`で更新。コード・本番環境変更なし |

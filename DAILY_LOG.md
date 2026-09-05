@@ -545,3 +545,59 @@
 - 本セッションで development-management のコード・実運用データ・実共有フォルダ・実HDD・本番タスクは
   一切変更していない（H7 はすべて非本番の一時ターゲットで検証、M3 の GitHub 改名のみ本番設定変更だが
   非破壊・可逆でユーザー自身が実行）。
+
+## 2026-09-05（続き8）NDS 総合評価 + 安全網追加（pytest CI / 帳票ビルダー回帰テスト / BUILD_INFO.txt）
+
+### 目的
+
+- 退役前整備完了後、Claude Code から見た next-day-setup（NDS）の総合評価を実施。「今すぐ直す価値が高い」
+  として挙げた3項目（pytest CI追加・未テスト帳票ビルダーの回帰テスト・BUILD_INFO.txt追加）を、既存の
+  業務ロジックを一切変更しない安全網として実装した。
+
+### 実施したこと
+
+- 対象: next-day-setup。作業ブランチ `claude/nds-safety-net`（main比 ahead 2 / behind 0）で実施。
+- `.github/workflows/tests.yml` 新設: 既存の `standards.yml`（warning-only）とは別ジョブとして、
+  pytest を windows-latest 上で push / pull_request ごとに実行。失敗時は CI を red にする。
+- `tests/test_print_jobs_builders.py` 新設（40テスト）: 直接テストが0件だった `build_bill_slips`
+  （会計伝票）/ `build_assignment_sheet`（担当割表）/ `build_service_sheet_v2`（食事提供表）/
+  `build_today_status_room_order`（本日の状況）に、予約情報・部屋・人数・空値・複数予約・境界値を
+  中心とした回帰テストを追加。既存仕様は変更していない。
+- `build_exe.py` に `write_build_info()` を追加。ビルド成功後に `dist/DinnerSystem/BUILD_INFO.txt`
+  （Git branch/commit SHA・working tree clean/dirty・ビルド日時・アプリバージョン・EXE名/サイズ/SHA-256）
+  を出力。失敗してもビルド自体は失敗させない設計。俺伝の `BUILD_INFO.txt` と同じ考え方
+  （[docs/decisions.md](docs/decisions.md) の該当判断に実施記録を追記）。clean-tree強制は今回見送り。
+- CIを実際にwindows-latestで走らせて判明した、コード起因ではない環境依存の失敗（Tcl/Tk破損、
+  `Get-FileHash` 未ロード、テスト側一時ディレクトリのパス短縮名(8.3)不一致）に対処。該当テストのみを
+  対象にし、`update_shared_folder.ps1` 本体・アプリ本体は変更していない。
+- 未追跡の `artifacts/` と `docs/checkin_card_previews/` を一時退避してclean tree状態を作り、
+  `BUILD_INFO.txt` が `clean`/`DIRTY` 両方を正しく記録することを確認（検証後、両フォルダは元の場所へ
+  復元、削除はしていない）。この2フォルダは `checkin_cards.save_checkin_card_previews()` が出力する、
+  git追跡履歴のないQAプレビュー画像と判明（自動テストからの参照なし）。安全に削除可能と見られるが、
+  ユーザー作成物の可能性を排除できないため、今回は削除も `.gitignore` 追加もせず現状維持。
+- `next-day-setup#5` としてPR作成 → CI green確認 → 差分が今回の安全網追加のみであることを確認
+  （7ファイル、+559/-5） → squash merge（`614c985`）→ 作業ブランチ削除（remote/local）→ 正式ローカルを
+  `main` へ同期。development-management 側（本文書、`PROJECT_STATUS.md`、`CHANGELOG.md`、
+  `docs/decisions.md`、`projects/next-day-setup.md`）を更新。
+
+### 確認結果
+
+- ローカル `pytest tests/`: 487件中486 passed / 1 skipped（ローカル機のTcl/Tkランタイム破損起因、
+  コード起因ではない）。
+- GitHub Actions（`next-day-setup#5`）: `NDS pytest (Windows)` success（485 passed / 2 skipped /
+  84 subtests）、`Dev standards (warning-only)` success。
+- `build_exe.py` を非本番ビルド出力先（`dist/DinnerSystem/`、共有フォルダではない）で2回実施:
+  dirty tree（既存の未追跡2フォルダが存在する状態）で `DIRTY (2 uncommitted change(s))`、
+  上記2フォルダを一時退避したclean tree状態で `clean` と、双方が正しく記録された。
+  いずれも Git HEAD SHA・EXE SHA-256 の独立再計算値と完全一致。
+- merge後: `scripts/check_standards.py` 全10リポジトリ `OK: 指摘なし`。`DEV_DOCTOR` next-day-setup は
+  `main`/`up-to-date`、未追跡2件は既知のQAプレビュー画像として `[INFO]` 表示のみ（ERROR/ACTIONなし）。
+
+### 未確認・問題（残課題、次サイクル。大規模リファクタリングや印刷方式統合は対象外）
+
+- clean-tree gate（俺伝の `Assert-CleanWorkingTree` 相当）
+- JSON保存のアトミック化（一時ファイル + rename。現状は直接上書きでクラッシュ時に破損しうる）
+- 配布EXEのアトミック差し替え（`update_shared_folder.ps1` は現状 `Copy-Item -Force` の直接上書き）
+- 実プリンターでの全帳票確認（GDI直叩き／Excel COM×2系統／reportlab+SumatraPDF／Edgeキオスク印刷の
+  4方式が併存。実機でしか検証できない）
+- `artifacts/` / `docs/checkin_card_previews/` の削除可否・`.gitignore` 追加の要否はユーザー判断待ち

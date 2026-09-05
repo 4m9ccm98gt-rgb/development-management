@@ -119,6 +119,13 @@
 - 影響: 配布スクリプト側（`update_hdd.ps1` は既に `BUILD_INFO.txt` の EXE SHA-256 を再照合）でも
   出所チェックを共通化できる。NDS はビルド時のクリーンツリー要求（俺伝 `Assert-CleanWorkingTree` 相当）が
   無いため、`BUILD_INFO.txt` 追加と合わせて未コミット状態の警告も検討する。
+- **実施（2026-09-05、next-day-setup）**: `build_exe.py` に `write_build_info()` を追加し、
+  `dist/DinnerSystem/BUILD_INFO.txt`（Git branch / commit SHA / working tree clean-dirty 状態 /
+  ビルド日時 / アプリバージョン / EXE 名・サイズ・SHA-256）を出力するよう対応済み（PR #5、`614c985`）。
+  非本番ビルドで dirty tree・clean tree 双方を実際に検証し、Git HEAD SHA・EXE SHA-256 とも独立再計算値と
+  完全一致することを確認済み（[projects/next-day-setup.md](../projects/next-day-setup.md) 参照）。
+  クリーンツリー要求（`Assert-CleanWorkingTree` 相当）は既存のビルド運用への影響を避けるため、今回は
+  見送り、残課題として記録する。**menu-sheet-generator は未対応のまま。**
 
 <!-- 以下は旧cloneの未push编集から救出した設計判断。canonical に未反映だったもの。 -->
 

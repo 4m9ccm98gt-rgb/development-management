@@ -41,3 +41,43 @@
 3. 検出確認後、`FAX!B9`と`FAX!A11:D48`候補への転記・印刷を実装する。
 4. 既存の未コミット差分全体をレビューし、Python版・ビルド・共有版を検証する。
 5. 内容確認後にコミット可否を判断する。
+
+## 2026-09-05 追記: Claude Code 総合評価 + 安全網追加（PR #5, `614c985`）
+
+Claude Code 退役前整備の完了後、NDSの実装・テスト・ビルド配布経路を実際に確認して総合評価を実施。
+「今すぐ直す価値が高い」とされた3項目を、既存の業務ロジック・`update_shared_folder.ps1`・本番共有フォルダ・
+実業務データ・実プリンターを一切変更しない安全網として、作業ブランチ `claude/nds-safety-net` で実装した。
+
+- **NDS pytest CI追加**: `.github/workflows/tests.yml` を新設。既存の `standards.yml`（warning-only）とは
+  別ジョブとして、`tests/` の pytest スイートを windows-latest 上で push / pull_request ごとに実行し、
+  失敗時は CI を red にする（従来は 446〜447 件のテストが存在するのにローカルでしか実行されておらず、
+  CI では何も守っていなかった）。
+- **print_jobs 帳票ビルダー40件の回帰テスト追加**（`tests/test_print_jobs_builders.py`）: 直接テストが
+  0件だった `build_bill_slips`（会計伝票）/ `build_assignment_sheet`（担当割表）/
+  `build_service_sheet_v2`（食事提供表）/ `build_today_status_room_order`（本日の状況）に、
+  予約情報・部屋・人数・空値・複数予約・境界値を中心とした回帰テストを追加。現在の仕様を変更するものではない。
+- **BUILD_INFO.txt追加**（`build_exe.py`）: ビルド成功後に `dist/DinnerSystem/BUILD_INFO.txt`
+  （Git branch / commit SHA / working tree clean-dirty 状態 / ビルド日時 / アプリバージョン /
+  EXE 名・サイズ・SHA-256）を出力。失敗してもビルド自体は失敗させない。俺伝の `BUILD_INFO.txt` と
+  同じ考え方（[decisions.md](../docs/decisions.md) の「ビルド成果物に出所を残す」判断を参照）。
+  clean-tree 強制（俺伝の `Assert-CleanWorkingTree` 相当）は今回追加していない。
+- CIを実際にwindows-latestで走らせて判明した、コード起因ではない環境依存の失敗（Tcl/Tk破損、
+  `Get-FileHash` 未ロード、パス短縮名(8.3)不一致）は該当テストのみを対象に対処。アプリ本体・
+  `update_shared_folder.ps1` は無変更。
+- 未追跡の `artifacts/` と `docs/checkin_card_previews/` は、`checkin_cards.save_checkin_card_previews()`
+  が出力するQAプレビュー画像（git追跡履歴なし、自動テストからの参照なし）と判明。BUILD_INFOのdirty/clean
+  両パターン検証のため一時退避して確認後、削除せず元の場所へ復元済み。安全に削除または `.gitignore` 追加が
+  できそうだが、ユーザー作成物の可能性を排除できないため今回は現状維持（要ユーザー判断）。
+- 検証: ローカル pytest 487件中486 passed / 1 skipped（ローカル機のTcl/Tk破損起因）。GitHub Actions
+  （`next-day-setup#5`）は `NDS pytest (Windows)` / `Dev standards` とも success。非本番ビルド（dist/local、
+  共有フォルダ未使用）で dirty tree / clean tree 両方の `BUILD_INFO.txt` を検証し、Git HEAD SHA・EXE SHA-256
+  とも独立再計算値と完全一致。PR #5 を squash merge（`614c985`）、作業ブランチ削除、正式ローカルを
+  `main` へ同期、`check_standards.py` 全10リポジトリ OK、`DEV_DOCTOR` next-day-setup は `up-to-date`。
+
+### 残課題（次サイクル、大規模リファクタリング・印刷方式統合は対象外）
+
+- clean-tree gate（俺伝の `Assert-CleanWorkingTree` 相当）
+- JSON保存のアトミック化（一時ファイル + rename。現状は直接上書きでクラッシュ時に破損しうる）
+- 配布EXEのアトミック差し替え（`update_shared_folder.ps1` は現状 `Copy-Item -Force` の直接上書き）
+- 実プリンターでの全帳票確認（GDI直叩き／Excel COM×2系統／reportlab+SumatraPDF／Edgeキオスク印刷の
+  4方式が併存。実機でしか検証できない）
