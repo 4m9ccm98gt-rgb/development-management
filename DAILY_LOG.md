@@ -838,3 +838,85 @@
 - `render_direct_preview()`の`bill`向け暗黙`else`分岐の明示化、印刷レジストリの3分岐の一本化は
   今回対象外（次サイクル候補）。
 - 実プリンターでの最終確認は未実施（Phase 4で最小チェックリスト10項目を作成済み、実施は次回）。
+
+## 2026-09-06 NDS hardening Phase 4.1（印刷fail-safeハードニング、PR #10）
+
+### 目的
+
+Phase 4監査で発見した3件の具体的な問題（未知job keyのfail-open挙動、印刷UI経路の生traceback表示、
+Add-Printerの恒久的副作用）へ対応。印刷方式の統合や`hotel_app.py`分割は引き続き対象外。
+
+### 実施したこと（作業ブランチ `claude/nds-print-failsafe-phase4.1`）
+
+- **Part A（未知job keyのfail closed化）**: `print_jobs.py`に`UnknownPrintJobError`と
+  `known_print_job_keys()`を追加。`get_print_job`/`render_job`/`render_direct_preview`/
+  `print_job`が未登録job key（または登録済みだが対応する分岐が無いjob key）を明示的に拒否する
+  ように変更。Phase 4で「`render_direct_preview()`は未知job keyを暗黙`else`で伝票として誤描画、
+  `print_job()`は逆に汎用Edge/HTML経路へ静かにfallback」と指摘した「次サイクル候補」を今回
+  対応した——`bill`を明示分岐化し、真の`else`/末尾フォールバックは拒否に置き換え。正式11帳票の
+  挙動は無変更（全job keyが既に明示分岐でカバーされていることをテストで固定済み）。
+- **Part B（印刷UI経路の生traceback監査）**: `hotel_app.py`の印刷UI経路6箇所
+  （`preview_assignment_print`、`preview_kitchen_calendar`、`print_kitchen_calendar`、
+  `preview()`の`open_selected`、`print_one`、`print_all_jobs`、`print_configured_jobs`の
+  非dinner=朝食一括印刷分岐）で、`traceback.format_exc()`をそのまま`messagebox.showerror`へ
+  渡す箇所、または例外処理が一切無い箇所を発見。新設`HotelApp.summarize_print_failure`/
+  `report_print_failure`（日本語要約をダイアログへ、詳細tracebackは`audit_event`へ）で統一。
+  **一括印刷の停止/継続という業務ポリシー自体は変更しない**方針だったが、実装直後の初版で
+  「朝食一括印刷は最初の失敗でバッチを停止する」という既存仕様を誤って「1件失敗しても継続する」
+  へ変えてしまっていたことをレビューで指摘され、修正コミットで制御フロー自体を完全に元へ戻し
+  （except節の中身＝表示方式だけを変更）、対応するテストも停止ポリシーを固定するよう書き直した。
+  同様の意図しない変更が無いか`print_all_jobs`（死んだコード）も確認し、同じ方針で復元。
+  `print_one`等の単発印刷経路はそもそも「バッチ」の概念が無いため対象外。
+- **Part C（Add-Printer: 挙動変更なし、テスト可能な範囲のみ強化）**: `print_preparation.py`の
+  `Ensure-DuplexPrinter`から、複製プリンター名の計算部分のみを`Get-DuplexPrinterName`という
+  プリンター操作コマンドを一切含まない純粋関数へ切り出し。`Ensure-DuplexPrinter`自体は同じ順序・
+  同じ条件でGet-Printer/Add-Printer/Set-PrintConfigurationを呼ぶままで、**Add-Printerが呼ばれる
+  かどうか・いつ呼ばれるかは一切変更していない**。新規テストは、この関数定義を実際のスクリプト
+  テキストから正規表現でそのまま抜き出し、プリンター操作コマンドが含まれないことを確認した上で、
+  実際の`powershell.exe`にその抜粋だけを実行させて検証（実機のプリンター名`Kyocera TASKalfa
+  3554ci(J) KX`から実際に発見された`Codex_Duplex_Long_Kyocera_TASKalfa_3554ci(J)_KX`が生成される
+  ことも確認）。指示通りRemove-Printer追加・確認ダイアログ・既存clone変更は一切行っていない。
+- **Part D（実印刷チェックリストの再圧縮）**: 10項目→5項目。夕食一括印刷ボタンを「自動印刷も
+  実行する」チェックボックスON・`duplex_long`設定のExcel自動印刷アイテムを含めた状態で1回実行
+  すれば、GDI A4/A3/横/両面・一括印刷パイプライン・Excel COM+duplex clone・ケーキ帳票（独立
+  Excel COM）をまとめて確認できることに気づき、これを軸に再構成。
+
+### 発見した副作用とその調査
+
+テスト実装中、新設した`audit_event`呼び出しが、既存の`tests/test_bulk_print_error_continuation.py`
+の一部テスト（`audit_event`を未スタブ）を経由して、**実際に`dinner_system/保存データ/
+operation_audit_2026-09-06.jsonl`へ2行書き込んでいた**ことが判明。指示により実ファイルの編集・
+削除は行わず、内容のみ調査: 両行とも`stack_trace`に`tests\test_bulk_print_error_continuation.py`
+のファイルパスと`unittest.mock`のスタックフレームがそのまま含まれており、テスト由来であることが
+断定できる（実業務では発生し得ない経路）。`event: "print_error"`という分類が本物の失敗と共通のため
+集計上の誤カウントの可能性はあるが、`stack_trace`を開けば一目でテスト由来と判別できる。
+安全に除去する場合は該当2行（`timestamp`が`2026-09-06T16:52:48+09:00`と`16:54:06+09:00`）のみが
+対象。原因（該当フィクスチャの`audit_event`未スタブ）は修正済みで、以降の全pytest実行で再発
+しないことを確認済み。
+
+### ユーザー向けエラー文の書式について
+
+`summarize_print_failure()`が生成する`"{帳票名}: {例外クラス名}: {例外内容}"`という書式について、
+「例外クラス名は不要では」という指摘を受け検討したが、(1)この書式はPhase 4.1が新規に考案した
+ものではなくPhase 3以前から存在する既存の「dinner分岐」の書式を踏襲したものであること、
+(2)`{例外内容}`部分は既に日本語で具体的な対処を含むメッセージであることが多く、これを
+「ログを確認してください」に置き換えるとフロントスタッフにとってかえって不親切になりうること
+から、現状維持を選択（詳細は`docs/PHASE4_PRINT_AUDIT.md`のPart E）。
+
+### 確認結果
+
+- ローカルpytest 697 passed。GitHub Actions（PR #10、push/pull_request両方）
+  `NDS pytest (Windows)` / `Dev standards` とも success。
+- 差分8ファイルのみ確認、`origin/main`からbehind 0。正式11帳票・Add-Printer挙動・一括印刷の
+  停止/継続ポリシーがいずれも無変更であることを確認。
+- PR #10 を squash merge（`a369735`）、作業ブランチ削除、正式ローカルを`main`へ同期、
+  `check_standards.py`全10リポジトリOK、`DEV_DOCTOR` next-day-setupは`up-to-date`・未追跡0件、
+  ERROR 0（他リポジトリの無関係なACTIONを除く）。
+
+### 残課題・次サイクル候補
+
+- `Codex_Duplex_Short/Long_*`合成プリンターの削除処理は引き続き無し（Phase 4から継続、意図的）。
+  `Add-Printer`成功後の`Set-PrintConfiguration`失敗時に中途半端な状態のまま残るリスクも未対応。
+- 実プリンターでの最終確認は未実施（5項目の最小チェックリストを作成済み、実施は次回）。
+- `operation_audit_2026-09-06.jsonl`のテスト混入2行は実ファイル未変更のまま（除去するかどうかは
+  ユーザー判断、原因は修正済みで実害は軽微）。

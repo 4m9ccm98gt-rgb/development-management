@@ -286,3 +286,63 @@ Edge HTMLが併存する印刷サブシステムを可視化し、安全な範�
 - 実プリンターでの最終確認は未実施——Phase 4で最小チェックリスト10項目を作成済み
   （GDI A4/A3/B5代表帳票、両面印刷、Excel自動印刷のduplex clone実機確認、
   ケーキ帳票、調理場カレンダーPDF/画像経路の見比べ、一括印刷、プレビューとの一致）、実施は次回。
+
+## 2026-09-06 追記: NDS hardening Phase 4.1（PR #10, `a369735`）— 印刷fail-safeハードニング
+
+Phase 4監査で発見した3件（未知job keyのfail-open挙動、印刷UI経路の生traceback表示、
+Add-Printerの恒久的副作用）へ対応。印刷方式の統合や`hotel_app.py`分割は引き続き対象外。
+作業ブランチ `claude/nds-print-failsafe-phase4.1`。
+
+- **Part A（未知job keyのfail closed化）**: `print_jobs.py`に`UnknownPrintJobError`と
+  `known_print_job_keys()`を追加。`get_print_job`/`render_job`/`render_direct_preview`/
+  `print_job`が未登録job key（または登録済みだが分岐の無いjob key）を明示的に拒否するよう変更。
+  `bill`をPhase 4で残課題としていた暗黙`else`から明示分岐へ。正式11帳票の挙動は無変更。
+- **Part B（印刷UI経路の生traceback監査と修正）**: `hotel_app.py`の6箇所
+  （`preview_assignment_print`/`preview_kitchen_calendar`/`print_kitchen_calendar`/
+  `preview()`の`open_selected`/`print_one`/`print_all_jobs`/`print_configured_jobs`の
+  非dinner=朝食一括印刷分岐）で生traceback表示・無保護例外を発見し、新設
+  `HotelApp.summarize_print_failure`/`report_print_failure`（要約はダイアログへ、詳細は
+  `audit_event`へ）で統一。**一括印刷の停止/継続ポリシー自体は変更しない**方針を実装直後の
+  レビューで再確認——初版で朝食一括印刷の「最初の失敗でバッチ停止」を誤って「継続」へ変えて
+  いた箇所を制御フローごと復元し、テストも書き直した。
+- **Part C（Add-Printer: 挙動変更なし）**: `Ensure-DuplexPrinter`から複製プリンター名の計算のみを
+  `Get-DuplexPrinterName`という印刷コマンドを含まない純粋関数へ切り出し。Add-Printerが呼ばれる
+  条件・タイミングは無変更。実際の`powershell.exe`でこの抜粋のみを実行するテストを追加
+  （実機で確認済みの`Codex_Duplex_Long_Kyocera_TASKalfa_3554ci(J)_KX`が生成されることも確認）。
+  Remove-Printer追加・確認ダイアログ・既存clone変更は指示通り未実施。
+- **Part D（実印刷チェックリスト再圧縮）**: 10項目→5項目。夕食一括印刷1回（自動印刷ON、
+  duplex_long設定のExcelアイテムを含む）でGDI複数用紙・両面・一括パイプライン・
+  Excel COM+duplex clone・ケーキ帳票をまとめて確認できることに気づき再構成。
+
+### 発見した副作用: operation_auditへのテスト混入2行
+
+テスト実装中、`audit_event`未スタブの既存テストを経由して実際に`dinner_system/保存データ/
+operation_audit_2026-09-06.jsonl`へ2行書き込まれていたことが判明。**実ファイルは未変更**——
+両行とも`stack_trace`に`tests\test_bulk_print_error_continuation.py`のパスが含まれテスト由来と
+断定可能（該当`timestamp`: `2026-09-06T16:52:48+09:00`と`16:54:06+09:00`）。原因（該当フィクスチャの
+`audit_event`未スタブ）は修正済みで、以降の全pytest実行で行数増加が無いことを確認済み。
+
+### ユーザー向けエラー文の書式は現状維持
+
+`summarize_print_failure()`の`"{帳票名}: {例外クラス名}: {例外内容}"`という書式は、Phase 3以前
+から存在する「dinner分岐」の既存書式を踏襲したものであり、`{例外内容}`が既に具体的な日本語の
+対処を含むことが多いため、「詳細はログを確認してください」への置き換えは見送った
+（詳細は`docs/PHASE4_PRINT_AUDIT.md`のPart E）。
+
+### 確認結果
+
+- ローカルpytest 697 passed。GitHub Actions（PR #10、push/pull_request両方）
+  `NDS pytest (Windows)` / `Dev standards` とも success。
+- 差分8ファイルのみ確認、`origin/main`からbehind 0。正式11帳票・Add-Printer挙動・一括印刷の
+  停止/継続ポリシーがいずれも無変更であることを確認。
+- PR #10 を squash merge（`a369735`）、作業ブランチ削除、正式ローカルを`main`へ同期、
+  `check_standards.py`全10リポジトリOK、`DEV_DOCTOR` next-day-setupは`up-to-date`・未追跡0件、
+  ERROR 0（他リポジトリの無関係なACTIONを除く）。
+
+### 残課題（次サイクル候補）
+
+- `Codex_Duplex_Short/Long_*`合成プリンターの削除処理は引き続き無し（`Add-Printer`成功後の
+  `Set-PrintConfiguration`失敗時のロールバックも含め未対応、意図的）。
+- 実プリンターでの最終確認は未実施——5項目の最小チェックリストを作成済み、実施は次回。
+- `operation_audit_2026-09-06.jsonl`のテスト混入2行は実ファイル未変更のまま
+  （除去するかはユーザー判断、原因は修正済みで実害は軽微）。
