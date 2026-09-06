@@ -101,9 +101,9 @@ T3では、構造変更・repo横断・移行のため、次を順番に確認�
 
 - **背景**: 開発補助ツール Claude Code の提供終了が近い。終了後も ChatGPT（GitHub側）と実機セッション（Windows側）だけで各アプリの開発・ビルド・配布・復旧が回るよう、退役前整備 H1〜H7 と M1〜M3 を完了した。
 - `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本として Python/PySide6 版へ段階移行中。作業ブランチ `python-desktop-migration`。Pythonソース版のWindows実機確認を継続。EXEは必要時だけユーザーが手動ビルド、本番共有版は確認完了まで更新しない。
-- `next-day-setup` / `inventory-reconciliation-system` / `menu-sheet-generator` / `food-cost-calculation-system`（俺伝） / `qr-supply-ordering-system`: 実運用中。標準3経路（または相当）と構成チェックCIを整備済み。**full suite CIの有無は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §9 のbranch別表を正とする。**
+- `next-day-setup` / `inventory-reconciliation-system` / `menu-sheet-generator` / `food-cost-calculation-system`（俺伝） / `qr-supply-ordering-system`: 実運用中。標準3経路（または相当）に加え、決定的に自動実行できる回帰テストはpush / PR時のGitHub Actionsへ移行済み。**automated regression CIの有無・範囲は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §9 のbranch別表を正とする。**
 - `call-reception-assistant`: 設計前。無課金・ローカル完結・外部非接続の初期試作方針。
-- 退役前整備 H1〜H7・M1〜M3 は完了済み。現在の改善課題は、各アプリの通常開発に加え、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` / `menu-sheet-generator` 等の**full test CI未整備branchを段階的に整備すること**。
+- Codex消費削減の主要CI整備は完了。現状の主な未整備branchは `beverage-inventory-ordering-system / main` で、移行作業の `python-desktop-migration` はCIカバー済み。実プリンター・実共有サーバー・live外部接続等は変更が触れる場合だけ実機確認する。
 
 ## Windowsアプリ標準
 
@@ -163,7 +163,7 @@ T0/T1のために、変更と無関係な管理文書を形式的に更新しな
 >
 > GitHubへ直接アクセスできる場合は、GitHub上で完結する調査・実装・targeted test・ブランチ・PRまでChatGPT側で進めてください。Python/Windowsアプリはソース起動を標準とし、EXEは必要時だけユーザーがワンクリックで手動ビルド、配布更新も専用スクリプトで手動実行できる状態にしてください。通常のEXEビルドはCodexへ依頼しないでください。
 >
-> T1はtargeted test、T2はtargeted + blast-radius regressionを基本とし、現在branchをfull suite CIがカバーしている場合はCodexローカルでfull suiteを回さないでください。CIカバレッジは `AGENT_EFFICIENCY_POLICY.md` §9 の表を正としてください。失敗1件の診断にfull suiteを使わず、同じ原因仮説の修正ループは2回までにしてください。
+> T1はtargeted test、T2はtargeted + blast-radius regressionを基本とし、現在branchをautomated regression CIがカバーしている場合はCodexローカルで同じautomated full regressionを回さないでください。CIカバレッジは `AGENT_EFFICIENCY_POLICY.md` §9 の表を正としてください。実プリンター、実共有サーバー、live IMAP、外部サイト、実HDD等はCI成功と別の確認レベルです。失敗1件の診断にfull suiteを使わず、同じ原因仮説の修正ループは2回までにしてください。
 >
 > Windows実機、正式ローカル、実プリンター、共有サーバー、手動ビルド失敗時の原因調査などが必要な作業だけCodexへ引き継いでください。引き継ぎには変更ティア、確立した事実、棄却した仮説、greenベースライン、回すテスト、回さないテスト、残作業を含めてください。
 >
