@@ -19,7 +19,7 @@
 
 | リポジトリ | 種別 | 既定ブランチ | 現在地 |
 |---|---|---|---|
-| next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `754d214`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。2026-09-05 に pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`（PR #5）、clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路（PR #6）に続き、2026-09-06 に master_settings.json/日次保存データ/closing_tasks.jsonのJSON保存・破損耐性（PR #7、[projects/next-day-setup.md](projects/next-day-setup.md)）を追加。 |
+| next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `9606da9`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。2026-09-05 に pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`（PR #5）、clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路（PR #6）、2026-09-06 に master_settings.json/日次保存データ/closing_tasks.jsonのJSON保存・破損耐性（PR #7）に続き、同日 monthly_tasks.json/締め作業日次スナップショットの破損時サイレントリセット禁止・SQLite/日次JSON整合性検出・SQLite冗長コピー（PR #8、[projects/next-day-setup.md](projects/next-day-setup.md)）を追加。 |
 | inventory-reconciliation-system（在庫突合） | service | `main` | 実運用中。tag `v2.0.0`、main `fd2de21`。夜間自動実行（`install_daily_inventory_task.bat` でタスク登録）。 |
 | beverage-inventory-ordering-system（飲料在庫） | desktop | `main`（移行作業は `python-desktop-migration`） | Python/PySide6 版へ移行中。作業ブランチ `python-desktop-migration` は upstream と同期（`e458476`）。能力ベース運用の起点・3経路の実績元。 |
 | food-cost-calculation-system（俺伝） | desktop | `main`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名済み。旧名は履歴として GitHub がリダイレクト） | 実運用中。HEAD `1940db0`（改名前後で同一 SHA、履歴の書き換えなし）。Nuitka ビルド + 外付け HDD 配布（`BUILD_俺伝_CLICK_ME.cmd` → `UPDATE_HDD_CLICK_ME.cmd`）。 |
@@ -104,11 +104,15 @@ Claude Code 退役前に、ChatGPT（GitHub 側）と Codex／その他セッシ
 5. **next-day-setup hardening**: 2026-09-05 に Phase 0（pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`、
    PR #5）と Phase 1（clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路、PR #6）、
    2026-09-06 に Phase 2 第一段階（master_settings.json/日次保存データ/closing_tasks.jsonのJSON保存・
-   破損耐性、PR #7）が完了（[projects/next-day-setup.md](projects/next-day-setup.md)）。
+   破損耐性、PR #7）、続けて同日 Phase 3（日次データ整合性・復旧力の強化。`monthly_tasks.json`/締め作業
+   日次スナップショットの破損時サイレントリセット禁止、SQLite/日次JSON整合性の検出専用チェック、SQLite
+   `operator_state_backup`テーブルによる冗長コピー、全call-site監査による印刷経路の未保護箇所修正、PR #8）
+   が完了（[projects/next-day-setup.md](projects/next-day-setup.md)）。SQLiteへの全面移行は行っていない。
    残課題（大規模リファクタリングや印刷方式統合は対象外）:
    - `_internal` のrobocopy同期自体は非アトミック（EXE単体のみアトミック化、既存設計のまま）
    - 実共有フォルダでの最終確認は未実施（毎回H7同様、非本番の一時ターゲットのみで検証）
    - 実プリンターでの全帳票確認（GDI直叩き／Excel COM×2系統／reportlab+SumatraPDF／Edgeキオスク印刷の
      4方式が併存しており、実機でしか検証できない）
-   - `ui_prefs.json`等の低優先度JSON、SQLite/日次JSONの整合性統一、`monthly_tasks.json`の破損時リセットは
-     Phase 2でも意図的に対象外（次サイクル候補）
+   - `ui_prefs.json`等の低優先度JSONの安全化は未着手（意図的、次サイクル候補）
+   - 日次JSONと`operator_state_backup`の両方が失われた場合の`seats`/`staff_assignments`/
+     `closing_task_snapshot`は復元不能。締め作業第3ファイルは冗長コピー対象外（次サイクル候補）

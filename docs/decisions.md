@@ -156,6 +156,36 @@
 - 関連リポジトリ: next-day-setup。
 - 確認状況: 実施済み。ローカル・GitHub Actions CIで検証済み、実物の設定ファイルコピーで後方互換確認済み。
 
+## 日次JSON/SQLiteの不整合は検出のみ行い、自動修復・自動上書きは一切しない
+
+- 判断: NDSの日次保存データ（`保存データ/{date}.json`、正本）とSQLite（`kitchen_data.sqlite3`）の
+  PMS取込履歴の間に食い違いを検出した場合、どちらか一方をもう一方に合わせて自動的に上書き・復元する
+  ことはせず、`messagebox.showwarning`でユーザーに知らせるだけに留める。同様に、SQLite側に
+  `operator_state_backup`テーブルを追加して`seats`/`staff_assignments`/`closing_task_snapshot`
+  （従来SQLiteに一切存在しなかった日次JSON唯一のコピー）のベストエフォート冗長コピーを持たせるが、
+  これも自動復元機能は持たせず、日次JSONを正本のまま維持する。
+- 理由: 日次JSONとSQLiteは保存タイミング・トランザクション境界が異なり（3B調査で判明）、どちらが
+  「正しい」かをコードが機械的に判断できるとは限らない。誤った側へ自動的に揃えると、手動で調整した
+  席割・担当割・締め作業の配置（SQLiteには存在しない情報）を silently 失う恐れがある。
+- 採用案: `compare_kitchen_snapshot_provenance`によるPMS取込ID比較（`match`/`json_stale`/
+  `sqlite_stale`/`no_snapshot`/`unknown`の5分類、警告表示のみ）と、`operator_state_backup`テーブル
+  （読み出し関数のみ提供、自動復元なし）を、NDS hardening Phase 3（PR #8、`9606da9`）として実装。
+  あわせて`monthly_tasks.json`・締め作業日次スナップショットの「破損時に空状態へ静かにリセットする」
+  挙動も、`ScheduledTaskStateLoadError`/`ClosingTaskDailyLoadError`を送出し元ファイルを変更しない
+  設計へ変更（PR前の全call-site監査で、印刷系の未保護呼び出し元2箇所も追加修正）。
+- 却下案: 不一致検出時にSQLite側の最新取込内容で日次JSONを自動上書きする案。却下理由: `seats`/
+  `staff_assignments`/`closing_task_snapshot`はSQLiteに存在しないため、上書きすればこれらのJSON専有
+  データを失う。逆に日次JSONの内容でSQLiteを上書きする案も、SQLite側の`business_day_snapshot`履歴
+  （`version`管理）と矛盾するため却下。
+- 影響: 復旧はあくまで「人が判断して行う」ことが前提。将来、復旧候補として`operator_state_backup`を
+  実際に使うUIを作る場合は、`work_data_saved_at`が必ずしも最新のバックアップ成功時刻ではない
+  （SQLite側保存が失敗すると古い値のまま残る）ことを踏まえ、日次JSON側の保存日時と必ず突き合わせる
+  必要がある（[projects/next-day-setup.md](../projects/next-day-setup.md)、next-day-setup 側
+  `docs/PHASE3_DATA_CONSISTENCY.md`参照）。
+- 関連リポジトリ: next-day-setup。
+- 確認状況: 実施済み。ローカル・GitHub Actions CIで検証済み、一時環境でのリカバリーシナリオテストと
+  呼び出し元回帰テストで確認済み。自動復元・自動上書きロジックが存在しないことをgrepで確認済み。
+
 <!-- 以下は旧cloneの未push编集から救出した設計判断。canonical に未反映だったもの。 -->
 
 ## 期間限定タスクエンジンを採用する

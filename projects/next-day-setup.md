@@ -167,3 +167,68 @@ Phase 0/1（リリース安全性）に続き、データ・設定消失を防�
 - `ui_prefs.json`・`print_preparation.json`等の低優先度JSONは未対応（意図的、影響軽微のため）
 - SQLite/日次JSONの整合性統一は未着手（調査・文書化のみ、Phase 2では意図的に見送り）
 - `monthly_tasks.json`の「破損時に空状態へ静かにリセット」は今回未対応（棚卸しで発見、対応は次サイクル）
+
+## 2026-09-06 追記: NDS hardening Phase 3（PR #8, `9606da9`）— 日次データ整合性・復旧力の強化
+
+Phase 2で棚卸しのみで持ち越した2課題（`monthly_tasks.json`の破損時サイレントリセット、SQLite/日次JSON
+の整合性未統一）に対応。**SQLiteへの全面移行は目的ではなく**、「食い違いを検出できる」「唯一データを
+失っても復旧しやすい」状態を作ることが目的。作業ブランチ `claude/nds-hardening-phase3`。
+
+- **3A（最優先）**: `closing_tasks.py`の`load_scheduled_task_state`（`monthly_tasks.json`、旧形式含む）
+  と`load_daily`（締め作業当日スナップショット`保存データ/締め作業/{date}.json`）が、破損時に空状態へ
+  静かにリセットしていた挙動を、`ScheduledTaskStateLoadError`/`ClosingTaskDailyLoadError`を送出する
+  設計へ変更。ファイル不存在（＝正常な「未保存」）と実際の破損を明確に区別。破損ファイルは
+  `quarantine_corrupted_file`で複製隔離し、元ファイルは変更しない。保存は`atomic_write_json(backup=True)`
+  へ統一。
+- **3B**: 実際の保存フロー（PMS CSV取込→SQLite保存→日次JSON保存→席割/担当割/締め作業変更→再CSV取込
+  →アプリ終了→次回起動）をコードから追跡し、`docs/PHASE3_DATA_CONSISTENCY.md`として文書化。
+  `seats`/`staff_assignments`/`closing_task_snapshot`はSQLiteに一切存在しない日次JSON唯一のコピーで
+  あることを確認。
+- **3C**: 日次JSON保存時に`kitchen_import_id`/`kitchen_imported_at`を埋め込み、起動時にSQLite側の
+  現在の取込IDと比較する`compare_kitchen_snapshot_provenance`（`hotel_app.py`）を追加。
+  `match`/`json_stale`/`sqlite_stale`/`no_snapshot`/`unknown`の5分類。**いずれの判定でも自動上書き・
+  自動修復は一切行わず**、不一致は`messagebox.showwarning`で通知するのみ。
+- **3D**: SQLiteに新テーブル`operator_state_backup`（`kitchen_snapshot_store.py`、`CREATE TABLE
+  IF NOT EXISTS`で既存DB非破壊）を追加。`save_work_data`成功後にベストエフォートで`seats`/
+  `staff_assignments`/`closing_task_snapshot`を複写（失敗しても保存自体は成功のまま、
+  `HotelApp.backup_operator_state_to_sqlite`が`audit_event`にのみ記録）。**日次JSON＝正本、SQLite側
+  ＝復旧用の冗長コピーという位置づけは変更せず**、自動復元は行わない（`load_operator_state_backup`は
+  読み出し関数のみ）。
+- **3E**: 一致/日次JSON古い/SQLite古い/破損JSON/対応スナップショットなし/JSON成功SQLite失敗/SQLite成功
+  JSON失敗/再取込直後クラッシュ、を一時環境で再現するリカバリーシナリオテスト（`test_phase3_recovery_
+  scenarios.py`）を追加。実業務データ・実共有フォルダ・実プリンターは無変更。
+
+### 最終監査（PR作成前、追加コミット）
+
+Phase 3Aの2例外の全呼び出し元をリポジトリ全体でgrepベースに追跡し、未保護の2箇所を新規発見・修正:
+
+- `closing_task_ui.print_closing_task_sheet`（単体印刷ボタン経由）: 例外処理が一切なかった。
+- `hotel_app.HotelApp.prepare_dinner_print_queue`の`CLOSING_TASK_BULK_PRINT_ENTRY`分岐（一括印刷
+  ボタン経由）: 呼び出し元`print_dinner_jobs`/`print_all_jobs`が`traceback.format_exc()`を
+  そのままダイアログに埋め込む実装だったため、生のトレースバックがユーザーに表示される経路だった。
+
+両者とも、既存の`kitchen_calendar`ジョブ分岐と同じパターン（例外捕捉→単一ダイアログ or
+印刷キューへ「スキップ・理由記録」エントリ）で修正。純粋関数側への個別try/except追加は避け、
+UI境界でまとめて処理する既存方針を踏襲。呼び出し元回帰テスト8件を追加
+（`tests/test_closing_task_ui_call_site_protection.py`）。`docs/PHASE3_DATA_CONSISTENCY.md`に、
+`operator_state_backup.work_data_saved_at`はSQLite側保存が失敗すると古い値のまま残るため、将来の
+復旧UIで必ず日次JSON側の保存日時と突き合わせ、最新であるという前提を置いてはならない旨を明記。
+
+### 確認結果
+
+- ローカルpytest 617 passed / 1 skipped（Tcl/Tk環境フレーキー、既存の環境依存事象）。GitHub Actions
+  （PR #8、push/pull_request両方）`NDS pytest (Windows)` / `Dev standards` とも success。
+- 差分は想定通り11ファイル（Phase 3の10ファイル＋最終監査の追加）のみ。`origin/main`からbehind 0。
+  自動復元・自動上書きロジックが存在しないことをgrepで再確認、日次JSONが正本のままであることを確認。
+- PR #8 を squash merge（`9606da9`）、作業ブランチ削除、正式ローカルを`main`へ同期、
+  `check_standards.py`全10リポジトリOK、`DEV_DOCTOR` next-day-setupは`up-to-date`・未追跡0件、
+  ERROR 0 / ACTION 0。
+
+### 残る「復元不能ケース」・次サイクル候補
+
+- 日次JSONと`operator_state_backup`の**両方**が失われた場合、`seats`/`staff_assignments`/
+  `closing_task_snapshot`は復元不能。
+- 締め作業の第3ファイル（`保存データ/締め作業/{date}.json`）は`operator_state_backup`の対象外。
+- `compare_kitchen_snapshot_provenance`はSQLiteの`import_id`比較のみで、日次JSON内の`reservations`
+  本体の実差分までは比較しない。
+- `ui_prefs.json`等の低優先度JSONの安全化は引き続き未着手（Phase 2から継続、意図的）。
