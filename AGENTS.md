@@ -1,6 +1,6 @@
 # development-management AI入口ガイド
 
-このリポジトリは、設計判断、開発ルール、進行状況、AI共同開発知識を管理する司令塔である。作業を始めるAIは、最初に [AI_STARTUP.md](AI_STARTUP.md) を読み、そこに定めた順序で関連文書を確認する。詳細な運用基準は [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) を正本とし、このファイルには重複して記載しない。
+このリポジトリは、設計判断、開発ルール、進行状況、AI共同開発知識を管理する司令塔である。作業を始めるAIは、最初に [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を読み、変更ティアと読み込み予算を決める。その後、必要な範囲だけ [AI_STARTUP.md](AI_STARTUP.md) と関連文書を確認する。T0 / T1 で開始文書一式を機械的に全読みしない。詳細な運用基準は [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) を正本とするが、調査範囲・開始文書・REUSE_MAP・テスト範囲・反復上限については `AGENT_EFFICIENCY_POLICY.md` の具体的な上限を優先する。
 
 作業の担当は、エージェント名（ChatGPT / Codex / Claude Code）ではなく、そのセッションが実際に持つ能力で判定する。判定基準と、正式ローカルリポジトリの同期規約（作業前 `git pull`・作業後 `git push`）は [CAPABILITIES.md](CAPABILITIES.md) を正本とする。以下のエージェント名ベースの記述は、能力判定の目安として残す。
 
@@ -13,19 +13,20 @@
 - 配布対象のWindowsアプリには、配布先更新用の `update_shared_folder.ps1` と、そのワンクリックラッパー `UPDATE_SHARED_FOLDER.cmd` を原則必須とする。
 - ChatGPTだけで完結できるGitHub作業を、Codexクレジットを消費して重複実施しない。
 - Codexが必要になるまではChatGPT側で作業を進め、実機・ローカル環境が必要になった時点で、確認済みの状態と残作業だけをCodexへ引き継ぐ。
+- Codexへ引き継ぐ際は、変更ティア、確立した事実、棄却した仮説、greenベースライン、回すテスト、回さないテストを明記し、同じ調査を再導出させない。
 - ユーザーへPowerShellやGit操作を依頼するのは、ChatGPT・Codexのどちらでも安全に実行できない場合の最終手段とする。
 - チャットを唯一の情報源にせず、重要な設計判断、仕様変更、運用変更、Lessons Learnedを `development-management` へ記録する。
 - Gitは正式ソースを基準とし、既存変更を保護する。commit、push、タグ作成はユーザーの明示的な指示がある場合にのみ行う。
 
 ## GitHubプロジェクト初期確認ルール
 
-新規チャットで GitHub リポジトリをプロジェクトとして開いた場合は、機能追加・修正に着手する前に、必ず次の手順を適用する。
+新規チャットで GitHub リポジトリをプロジェクトとして開いた場合は、機能追加・修正に着手する前に、必ず次の手順を適用する。ただし読み込み・調査範囲は `AGENT_EFFICIENCY_POLICY.md` のティア別上限に従う。
 
 - GitHub から取得した内容だけを使用する。
 - 既存・旧運用のローカルフォルダは参照しない。
 - 最初はコードを変更せず、現状確認のみ実施する。
 - 必要ファイルが揃っていることを確認する。
-- Python/Windowsアプリでは、ソース起動手順、手動EXEビルド手順、配布更新スクリプトの有無を確認する。
+- Python/Windowsアプリでは、ソース起動手順、手動EXEビルド手順、配布更新スクリプトの有無を確認する。ただし今回の変更に無関係なT0 / T1では、その確認を機械的な必須ゲートにしない。
 - ChatGPTから起動確認できないWindowsアプリ等は、コード・テスト・既存記録で確認できる範囲を明示し、実機確認をCodexへ引き継ぐ。
 - ブラウザアプリ等で実行環境を直接確認できる場合は、起動とコンソールエラーを確認する。
 - 確認できた GitHub 上の状態を正本（Single Source of Truth）とする。
