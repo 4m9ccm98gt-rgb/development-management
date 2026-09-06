@@ -1,6 +1,6 @@
 # プロジェクト状況
 
-最終更新: 2026-09-05（JST）
+最終更新: 2026-09-07（JST）
 
 ## この時期の背景
 
@@ -8,6 +8,8 @@
   Codex／その他セッション（Windows 実機側）だけで各アプリの開発・ビルド・配布・復旧が
   回るように、**退役前整備（H1〜H7、M1〜M3）を実施し、2026-09-05 に完了した。**
   → 下記「退役前整備 完了記録（H1〜H7、M1〜M3）」節を参照。
+- 2026-09-07 に Codex クレジット消費を抑えるため、`AGENT_EFFICIENCY_POLICY.md` を中心に
+  **T0〜T3 のリスク比例型開発フロー**へ移行し、決定的に自動実行できる回帰テストを GitHub Actions へ移した。
 - 担当判定は「ChatGPT / Codex / Claude Code」というエージェント名ではなく、そのセッションが
   実際に持つ**能力**で判定する（[CAPABILITIES.md](CAPABILITIES.md) が正本）。
 - 非コーダーのユーザーが単独で日常運用できるよう、[docs/operator_runbook.md](docs/operator_runbook.md) を用意した。
@@ -20,27 +22,42 @@
 | リポジトリ | 種別 | 既定ブランチ | 現在地 |
 |---|---|---|---|
 | next-day-setup（翌日準備） | desktop | `main` | 実運用中。tag `v1.2.1`、main `a369735`。RUN_DEV / BUILD_EXE_CLICK_ME / UPDATE_SHARED_FOLDER 完備。2026-09-05 に pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`（PR #5）、clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路（PR #6）、2026-09-06 に master_settings.json/日次保存データ/closing_tasks.jsonのJSON保存・破損耐性（PR #7）、monthly_tasks.json/締め作業日次スナップショットの破損時サイレントリセット禁止・SQLite/日次JSON整合性検出・SQLite冗長コピー（PR #8）、印刷経路（GDI/Excel COM/reportlab+SumatraPDF/Edge）の全棚卸しと回帰テスト46件（PR #9）に続き、同日 未知job keyのfail closed化・印刷UI経路の生traceback表示除去・Add-Printer複製名生成ロジックの純粋関数化（挙動変更なし、PR #10、[projects/next-day-setup.md](projects/next-day-setup.md)）を追加。実印刷は依然未実施。 |
-| inventory-reconciliation-system（在庫突合） | service | `main` | 実運用中。tag `v2.0.0`、main `fd2de21`。夜間自動実行（`install_daily_inventory_task.bat` でタスク登録）。 |
-| beverage-inventory-ordering-system（飲料在庫） | desktop | `main`（移行作業は `python-desktop-migration`） | Python/PySide6 版へ移行中。作業ブランチ `python-desktop-migration` は upstream と同期（`e458476`）。能力ベース運用の起点・3経路の実績元。 |
-| food-cost-calculation-system（俺伝） | desktop | `main`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名済み。旧名は履歴として GitHub がリダイレクト） | 実運用中。HEAD `1940db0`（改名前後で同一 SHA、履歴の書き換えなし）。Nuitka ビルド + 外付け HDD 配布（`BUILD_俺伝_CLICK_ME.cmd` → `UPDATE_HDD_CLICK_ME.cmd`）。 |
-| menu-sheet-generator（料理説明書、.NET） | desktop | `main` | 実運用中。tag `v1.0.0`、main `fa4fdf7`。`BUILD_RELEASE.cmd`（dotnet publish）→ `UPDATE.cmd`。 |
-| qr-supply-ordering-system（QR 物品発注） | web | `main` | 社内 LAN の 1 ホストで Flask 常駐。main `790fff5`。`RUN_DEV.cmd` + 対象リポジトリの `DEPLOY.md`。 |
+| inventory-reconciliation-system（在庫突合） | service | `main` | 実運用中。tag `v2.0.0`、main `9b33d50`。夜間自動実行。2026-09-07 に deterministic unittest 78件 + 休館日ローカル回帰を GitHub Actions 化し green。live IMAP / browser / external-site は必要時の実機確認として分離。 |
+| beverage-inventory-ordering-system（飲料在庫） | desktop | `main`（移行作業は `python-desktop-migration`） | Python/PySide6 版へ移行中。作業ブランチ `python-desktop-migration` は upstream と同期（`e458476`）。`python-desktop-migration` は pytest CI あり。`main` は automated regression CI 未整備。 |
+| food-cost-calculation-system（俺伝） | desktop | `main`（2026-09-04 M3 で `codex/bootstrap-invoice-reading` から改名済み。旧名は履歴として GitHub がリダイレクト） | 実運用中。main `858e51d`。Nuitka ビルド + 外付け HDD 配布。2026-09-07 に Windows pytest CI を追加し **254 passed / 2 skipped**。release dry-run も含む。CI導入時に Windows PowerShell 5.1 の UTF-8/BOM 互換で露出した `release_helpers.ps1` の文字コード依存を修正。 |
+| menu-sheet-generator（料理説明書、.NET） | desktop | `main` | 実運用中。tag `v1.0.0`、main `12eaa31`。`BUILD_RELEASE.cmd` → `UPDATE.cmd`。2026-09-07 に Windows CI を追加し PMS CSV aggregation / GDI pre-spool の両回帰ハーネス green。実プリンター出力は別確認。 |
+| qr-supply-ordering-system（QR 物品発注） | web | `main` | 社内 LAN の 1 ホストで Flask 常駐。main `0a2230a`。`RUN_DEV.cmd` + `DEPLOY.md`。2026-09-07 に Windows pytest CI を追加し **18 passed**。 |
 | call-reception-assistant（電話受付） | desktop | `main` | 初期管理文書のみ。**アプリ本体は未実装**。main `ae78cf5`。 |
 | kitchen-calendar（調理場カレンダー） | archived | `main` | next-day-setup へ統合済み。**今後開発しない**（[docs/pc_repo_audit.md](docs/pc_repo_audit.md) #2）。 |
 | hospitality-review-reply（口コミ返信） | knowledge | `main` | 旅館口コミ返信のテンプレート／知識 repo。アプリではない。main `f6e1e74`。CI は warning-only、実行・ビルド標準は課さない。 |
-| development-management | （管理repo自身） | `main` | 本知識ベース。main `dd44366`、moving tag `ci-v1`。 |
+| development-management | （管理repo自身） | `main` | 本知識ベース。2026-09-07 に Agent Efficiency Policy、ティア別開始ゲート、branch別 automated regression CI 表を整備。moving tag `ci-v1`。 |
 
 ## Current Focus
 
 | リポジトリ | 現在の作業 |
 |---|---|
-| （全体） | **退役前整備 H1〜H7 + M1〜M3 完了（2026-09-05）。** development-management は開発補助ツール無しでも
-  運用を再開できる状態。今後は各アプリの通常開発（beverage 移行、俺伝の実データ精度向上等）に戻る。 |
-| beverage-inventory-ordering-system | `python-desktop-migration` は upstream と同期。並行して `feature/mobile-stocktake-sheets`（PR #5）で
-  Google Sheets モバイル棚卸を開発中。**Draft PR #2 と #5 は今回の退役前整備とは別プロジェクトのため未着手・未マージ**
-  （実プリンター・共有サーバー・2PC ゲート完了まで merge しない）。 |
-| next-day-setup / inventory-reconciliation / menu-sheet-generator / 俺伝 / qr-supply | 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。個別の機能追加は各 `projects/*.md` と対象リポジトリの状態で判断。 |
+| （全体） | **退役前整備 H1〜H7 + M1〜M3 完了。Codex 消費削減の主要CI整備も 2026-09-07 に完了。** 今後のAI開発は T0〜T3 の変更ティアで調査・テスト範囲を制御し、CIで代替できる automated regression を Codex ローカルで重複実行しない。 |
+| beverage-inventory-ordering-system | `python-desktop-migration` は upstream と同期。並行して `feature/mobile-stocktake-sheets`（PR #5）で Google Sheets モバイル棚卸を開発中。Draft PR #2 と #5 は今回の退役前整備とは別プロジェクトのため未着手・未マージ。実プリンター・共有サーバー・2PC ゲート完了まで merge しない。移行branchは pytest CI カバー済み。 |
+| next-day-setup / inventory-reconciliation / menu-sheet-generator / 俺伝 / qr-supply | 実運用中。決定的に自動実行できる回帰テストは push / PR 時の GitHub Actions へ移行済み。CIの範囲は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §9 を正とし、実プリンター・実共有サーバー・live外部接続・実HDDは変更が触れる場合だけ別途実機確認する。 |
 | call-reception-assistant | 設計前。無課金・ローカル完結・外部非接続の初期試作方針（[docs/decisions.md](docs/decisions.md)）。 |
+
+## Agent効率化・自動回帰CI整備（2026-09-07）
+
+Codexのクレジット消費を抑えつつ安全性を維持するため、Development全体をリスク比例型へ変更した。
+
+- `AGENT_EFFICIENCY_POLICY.md` を正本として T0〜T3 の変更ティア、読み込み予算、REUSE_MAP発火条件、targeted / regression / automated full の分担、反復上限、green baseline の鮮度規則を定義。
+- T0/T1 は `AI_STARTUP.md` を開かず、対象file + 直接呼び出し元1ホップを基本とする。
+- T2 は targeted + blast-radius regression。現在branchが automated regression CI でカバーされる場合、Codexは同じ full regression をローカルで重複実行しない。
+- ChatGPT→Codex 引き継ぎに `変更ティア / 確立した事実 / 棄却した仮説 / green baseline / 回すテスト / 回さないもの / 残作業` を含め、再調査を防ぐ。
+- 自動回帰CIの green baseline:
+  - `food-cost-calculation-system/main` `858e51d`: Windows pytest **254 passed / 2 skipped**。release dry-run testsを含む。
+  - `inventory-reconciliation-system/main` `9b33d50`: deterministic unittest **78 tests OK** + shift-holiday local regression green。live IMAP / browser / external-site は除外。
+  - `qr-supply-ordering-system/main` `0a2230a`: pytest **18 passed**。
+  - `menu-sheet-generator/main` `12eaa31`: PMS CSV aggregation / GDI pre-spool の2ハーネス green。
+- NDS `main` は既存 `tests.yml` で pytest full、beverage `python-desktop-migration` は既存 `python-migration-tests.yml` で migration pytest を継続。
+- GitHub Actions成功を、実プリンター、実共有サーバー、live IMAP、外部サイト、実HDDの確認済みとは扱わない。
+
+これにより、通常のT2開発で「Codexがtargeted/regression後にさらにfull suiteをローカル実行してログ解析する」工程を大幅に減らせる状態になった。
 
 ## 退役前整備 完了記録（H1〜H7、M1〜M3、2026-09-04〜05）
 
@@ -51,25 +68,14 @@ Claude Code 退役前に、ChatGPT（GitHub 側）と Codex／その他セッシ
 |---|---|---|
 | H1 | Git 管理外データのバックアップ・復元 | `scripts/BACKUP_DEV_DATA.ps1` + `_CLICK_ME.cmd`、[docs/git_external_data_inventory.md](docs/git_external_data_inventory.md)、[docs/backup_restore.md](docs/backup_restore.md)。実バックアップ初回作成・全項目検証済み（`%USERPROFILE%\DevDataBackups\` と別物理ディスク `E:\DevDataBackups\`）。 |
 | H2 | PC 全体の repo／clone 監査、旧 clone 比較 | [docs/pc_repo_audit.md](docs/pc_repo_audit.md)。旧 clone #1〜#4 の分類（救出済み／superseded／obsolete、いずれも削除せず保管）。hospitality-review-reply を knowledge 種別で管理対象へ追加（10リポジトリ体制）。 |
-| H3 | 共通 CI アクションの安定タグ運用 | `ci-v1`（moving）/ `ci-v1.0.x`（固定）。[docs/ci_action_versioning.md](docs/ci_action_versioning.md)。各 repo の CI は `@ci-v1` を参照、warning-only。 |
+| H3 | 共通 CI アクションの安定タグ運用 | `ci-v1`（moving）/ `ci-v1.0.x`（固定）。[docs/ci_action_versioning.md](docs/ci_action_versioning.md)。各 repo の構成チェック CI は `@ci-v1` を参照、warning-only。2026-09-07 に追加した automated regression CI とは役割を分ける。 |
 | H4 | 実機ヘルスチェック | `scripts/DEV_DOCTOR.ps1` + `_CLICK_ME.cmd`、[docs/dev_doctor.md](docs/dev_doctor.md)。ERROR / ACTION / INTENTIONAL / INFO の4段階。 |
-| H5 | 引き継ぎドライラン | development-management だけから作業再開できるかを検証し、「2プロジェクト時代」のまま停止していた
-  状態系文書を現状化。[AI_STARTUP.md](AI_STARTUP.md)・[VERSION_MATRIX.md](VERSION_MATRIX.md)・
-  [REPOSITORIES.md](REPOSITORIES.md)・[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)・
-  [docs/ai_handoff.md](docs/ai_handoff.md)・本文書。 |
-| H6 | 非コーダー向けランブック | [docs/operator_runbook.md](docs/operator_runbook.md)。毎週やること／各システムのダブルクリック操作／
-  困ったときの相談のしかた／禁止事項／用語辞典／GitHub 認証の再設定（H6 §6 は M2 で追加）。 |
-| H7 | BUILD / DEPLOY / UPDATE 経路の非本番実地検証 | [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。一時ターゲットで5アプリの経路を実走破
-  （成果物 SHA-256 が配布先で一致、実 HDD・実共有・本番は不変更）。fail-safe 一覧。 |
-| M1 | 新 PC ブートストラップ | `scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。git/Python/gh 確認 → GitHub 認証確認 →
-  canonical 10 リポジトリを clone（既定ブランチは live 検出）→ RUN_DEV/venv 報告。idempotent・fail-safe。
-  一時ディレクトリでの実 clone・再実行・衝突拒否を検証済み。 |
-| M2 | GitHub 認証の監査・再認証手順 | [docs/github_auth.md](docs/github_auth.md)。`gh`（OAuth）と `git` push/pull（GCM）の
-  2系統・独立の構成、失効条件、失効時の影響範囲を記録。[docs/operator_runbook.md](docs/operator_runbook.md) §6 に
-  4ステップの再ログイン手順。DEV_DOCTOR が両系統の失効を検出（gh=ERROR、git(GCM)=ACTION）。 |
-| M3 | 俺伝の既定ブランチ監査・main 化 | [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。16項目の依存監査 → 判断 A →
-  **実施完了**: `codex/bootstrap-invoice-reading` → `main`（GitHub ネイティブ改名、HEAD `1940db0` は
-  改名前後で同一 SHA、履歴の書き換えなし）。正式ローカル追従・DEV_DOCTOR `$Canon`・全文書を更新済み。 |
+| H5 | 引き継ぎドライラン | development-management だけから作業再開できるかを検証し、「2プロジェクト時代」のまま停止していた 状態系文書を現状化。[AI_STARTUP.md](AI_STARTUP.md)・[VERSION_MATRIX.md](VERSION_MATRIX.md)・[REPOSITORIES.md](REPOSITORIES.md)・[SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md)・[docs/ai_handoff.md](docs/ai_handoff.md)・本文書。 |
+| H6 | 非コーダー向けランブック | [docs/operator_runbook.md](docs/operator_runbook.md)。毎週やること／各システムのダブルクリック操作／困ったときの相談のしかた／禁止事項／用語辞典／GitHub 認証の再設定（H6 §6 は M2 で追加）。 |
+| H7 | BUILD / DEPLOY / UPDATE 経路の非本番実地検証 | [docs/build_deploy_paths.md](docs/build_deploy_paths.md)。一時ターゲットで5アプリの経路を実走破（成果物 SHA-256 が配布先で一致、実 HDD・実共有・本番は不変更）。fail-safe 一覧。 |
+| M1 | 新 PC ブートストラップ | `scripts/BOOTSTRAP_DEV_PC.ps1` + `_CLICK_ME.cmd`。git/Python/gh 確認 → GitHub 認証確認 → canonical 10 リポジトリを clone（既定ブランチは live 検出）→ RUN_DEV/venv 報告。idempotent・fail-safe。一時ディレクトリでの実 clone・再実行・衝突拒否を検証済み。 |
+| M2 | GitHub 認証の監査・再認証手順 | [docs/github_auth.md](docs/github_auth.md)。`gh`（OAuth）と `git` push/pull（GCM）の2系統・独立の構成、失効条件、失効時の影響範囲を記録。[docs/operator_runbook.md](docs/operator_runbook.md) §6 に4ステップの再ログイン手順。DEV_DOCTOR が両系統の失効を検出（gh=ERROR、git(GCM)=ACTION）。 |
+| M3 | 俺伝の既定ブランチ監査・main 化 | [docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)。16項目の依存監査 → 判断 A → **実施完了**: `codex/bootstrap-invoice-reading` → `main`（GitHub ネイティブ改名、HEAD `1940db0` は改名前後で同一 SHA、履歴の書き換えなし）。正式ローカル追従・DEV_DOCTOR `$Canon`・全文書を更新済み。 |
 
 ## Windows アプリ共通標準
 
@@ -81,52 +87,27 @@ Claude Code 退役前に、ChatGPT（GitHub 側）と Codex／その他セッシ
 
 ## 全体の現在地
 
-- `development-management` を業務システム全体の司令塔として運用中。GitHub 反映済み（`main` = `dd44366`）。
+- `development-management` を業務システム全体の司令塔として運用中。Agent効率化ポリシーと automated regression CI カバレッジを 2026-09-07 更新済み。
 - `github-rw` を持つセッション（ChatGPT 等）は GitHub 上で完結する調査・実装・テスト・PR まで担当。
-- `windows-real` を持つセッション（Codex 等）は Windows 実機・正式ローカル・実プリンター・共有サーバー・
-  手動ビルド失敗時の原因調査へ優先配分。正式ソースに触れる前に `git fetch`（必要なら `pull --ff-only`）、
-  作業後に `commit` + `push`。「編集したが push していない」は未完了工程。
+- `windows-real` を持つセッション（Codex 等）は Windows 実機・正式ローカル・実プリンター・共有サーバー・手動ビルド失敗時の原因調査へ優先配分。正式ソースに触れる前に `git fetch`（必要なら `pull --ff-only`）、作業後に `commit` + `push`。「編集したが push していない」は未完了工程。
+- automated regression CI で代替できる full test を Codex ローカルで重複しない。CI外の実環境確認は blast-radius が触れる場合だけ行う。
 - PR merge、安定版タグ、本番共有版・実 HDD 更新は、必要な確認と明示的な判断後にのみ行う。
 
-## 次にやること（退役前整備は完了。ここからは通常の開発課題）
+## 次にやること（退役前整備・主要CI整備は完了。ここからは通常の開発課題）
 
-退役前整備（H1〜H7、M1〜M3）の各項目と recovery PR #1 は上記のとおりすべて完了・merge 済み。
-以下は退役前整備とは別の、通常のプロジェクト残課題。
+退役前整備（H1〜H7、M1〜M3）と Codex 消費削減の主要 automated regression CI 整備は完了。
+以下は通常のプロジェクト残課題。
 
-1. **beverage**: Draft PR #2（Python 移行本体）と PR #5（`feature/mobile-stocktake-sheets`、Google Sheets
-   モバイル棚卸）は継続開発中。実プリンター・共有サーバー・2PC 同時更新のゲートを満たすまで merge しない。
-2. **俺伝**: 実伝票・実 OCR データでの精度確認、HDD 配布の実地（本番 `E:\FoodCostCalculation\`）での
-   最終確認（H7 は非本番の一時ターゲットで経路のみ検証済み）。
+1. **beverage**: Draft PR #2（Python 移行本体）と PR #5（`feature/mobile-stocktake-sheets`、Google Sheets モバイル棚卸）は継続開発中。実プリンター・共有サーバー・2PC 同時更新のゲートを満たすまで merge しない。`python-desktop-migration` は automated regression CI カバー済み。`main` は必要になった時点で整備する。
+2. **俺伝**: 実伝票・実 OCR データでの精度確認、HDD 配布の実地（本番 `E:\FoodCostCalculation\`）での最終確認（H7 は非本番の一時ターゲットで経路のみ検証済み）。
 3. **qr-supply**: 既存発注表の候補ファイルが現行運用の正式発注表であることの業務確認、正式 DB への確定取込。
-4. 次サイクルで検討: menu-sheet-generator のビルド成果物へ俺伝相当の `BUILD_INFO.txt`
-   （HEAD SHA + 成果物 SHA-256）を追加する方針（[docs/decisions.md](docs/decisions.md)）。
-   next-day-setup は 2026-09-05 に対応済み（PR #5、[projects/next-day-setup.md](projects/next-day-setup.md)）。
-5. **next-day-setup hardening**: 2026-09-05 に Phase 0（pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`、
-   PR #5）と Phase 1（clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路、PR #6）、
-   2026-09-06 に Phase 2 第一段階（master_settings.json/日次保存データ/closing_tasks.jsonのJSON保存・
-   破損耐性、PR #7）、続けて同日 Phase 3（日次データ整合性・復旧力の強化。`monthly_tasks.json`/締め作業
-   日次スナップショットの破損時サイレントリセット禁止、SQLite/日次JSON整合性の検出専用チェック、SQLite
-   `operator_state_backup`テーブルによる冗長コピー、全call-site監査による印刷経路の未保護箇所修正、PR #8）、
-   続けて同日 Phase 4（印刷経路・Windows実機監査。GDI直接印刷／Excel COM／reportlab+SumatraPDF／
-   Edge HTMLの全11帳票＋独立2系統の棚卸し、print/preview分岐の不一致発見（`bill`への暗黙fallback、
-   kitchen_calendarの一括/単体で実装が完全分岐）、回帰テスト46件追加、**実印刷・Add-Printer実行は
-   一切なし**、PR #9）、続けて同日 Phase 4.1（印刷fail-safeハードニング。未知job keyのfail closed化、
-   印刷UI経路6箇所の生traceback表示を日本語要約＋監査ログ記録へ統一（一括印刷の停止/継続ポリシー
-   自体は変更せず表示方式のみ改善）、Add-Printerの複製名生成ロジックの純粋関数化（Add-Printer自体の
-   挙動は無変更）、実印刷チェックリストを10→5項目へ再圧縮、回帰テスト33件追加、PR #10）が完了
-   （[projects/next-day-setup.md](projects/next-day-setup.md)）。
-   SQLiteへの全面移行・印刷方式の統合は行っていない。
+4. 次サイクルで検討: menu-sheet-generator のビルド成果物へ俺伝相当の `BUILD_INFO.txt`（HEAD SHA + 成果物 SHA-256）を追加する方針（[docs/decisions.md](docs/decisions.md)）。next-day-setup は 2026-09-05 に対応済み（PR #5、[projects/next-day-setup.md](projects/next-day-setup.md)）。
+5. **next-day-setup hardening**: 2026-09-05 に Phase 0（pytest CI・帳票ビルダー回帰テスト・`BUILD_INFO.txt`、PR #5）と Phase 1（clean-tree gate・BUILD_INFO配布元検証・EXEアトミックswap・rollback経路、PR #6）、2026-09-06 に Phase 2 第一段階（master_settings.json/日次保存データ/closing_tasks.jsonのJSON保存・破損耐性、PR #7）、続けて同日 Phase 3（日次データ整合性・復旧力の強化。`monthly_tasks.json`/締め作業日次スナップショットの破損時サイレントリセット禁止、SQLite/日次JSON整合性の検出専用チェック、SQLite `operator_state_backup`テーブルによる冗長コピー、全call-site監査による印刷経路の未保護箇所修正、PR #8）、続けて同日 Phase 4（印刷経路・Windows実機監査。GDI直接印刷／Excel COM／reportlab+SumatraPDF／Edge HTMLの全11帳票＋独立2系統の棚卸し、print/preview分岐の不一致発見（`bill`への暗黙fallback、kitchen_calendarの一括/単体で実装が完全分岐）、回帰テスト46件追加、**実印刷・Add-Printer実行は一切なし**、PR #9）、続けて同日 Phase 4.1（印刷fail-safeハードニング。未知job keyのfail closed化、印刷UI経路6箇所の生traceback表示を日本語要約＋監査ログ記録へ統一（一括印刷の停止/継続ポリシー自体は変更せず表示方式のみ改善）、Add-Printerの複製名生成ロジックの純粋関数化（Add-Printer自体の挙動は無変更）、実印刷チェックリストを10→5項目へ再圧縮、回帰テスト33件追加、PR #10）が完了（[projects/next-day-setup.md](projects/next-day-setup.md)）。SQLiteへの全面移行・印刷方式の統合は行っていない。
    残課題（大規模リファクタリングや印刷方式統合は対象外）:
    - `_internal` のrobocopy同期自体は非アトミック（EXE単体のみアトミック化、既存設計のまま）
    - 実共有フォルダでの最終確認は未実施（毎回H7同様、非本番の一時ターゲットのみで検証）
    - 実プリンターでの全帳票確認は未実施（Phase 4/4.1で5項目の最小チェックリストを作成済み、実施は次回）
    - `ui_prefs.json`等の低優先度JSONの安全化は未着手（意図的、次サイクル候補）
-   - 日次JSONと`operator_state_backup`の両方が失われた場合の`seats`/`staff_assignments`/
-     `closing_task_snapshot`は復元不能。締め作業第3ファイルは冗長コピー対象外（次サイクル候補）
-   - **`Codex_Duplex_Short/Long_*`という合成プリンターが開発機に既に存在し、削除処理が無い**
-     （Phase 4で発見。`Add-Printer`成功後の`Set-PrintConfiguration`失敗時に中途半端な状態のまま
-     残るリスクも含め、Phase 4.1でも意図的に未対応。次サイクルで改善検討）
-   - `dinner_system/保存データ/operation_audit_2026-09-06.jsonl`にPhase 4.1のテスト実行由来の
-     行が2件混入（`stack_trace`に`tests\test_bulk_print_error_continuation.py`のパスが含まれ
-     テスト由来と断定可能）。実ファイルは未変更、原因（`audit_event`未スタブ）は修正済みで再発なし
-     （詳細はnext-day-setup側`docs/PHASE4_PRINT_AUDIT.md`のPart F参照）
+   - 日次JSONと`operator_state_backup`の両方が失われた場合の`seats`/`staff_assignments`/`closing_task_snapshot`は復元不能。締め作業第3ファイルは冗長コピー対象外（次サイクル候補）
+   - **`Codex_Duplex_Short/Long_*`という合成プリンターが開発機に既に存在し、削除処理が無い**（Phase 4で発見。`Add-Printer`成功後の`Set-PrintConfiguration`失敗時に中途半端な状態のまま残るリスクも含め、Phase 4.1でも意図的に未対応。次サイクルで改善検討）
+   - `dinner_system/保存データ/operation_audit_2026-09-06.jsonl`にPhase 4.1のテスト実行由来の行が2件混入（`stack_trace`に`tests\test_bulk_print_error_continuation.py`のパスが含まれテスト由来と断定可能）。実ファイルは未変更、原因（`audit_event`未スタブ）は修正済みで再発なし（詳細はnext-day-setup側`docs/PHASE4_PRINT_AUDIT.md`のPart F参照）
