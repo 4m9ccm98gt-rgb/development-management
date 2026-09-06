@@ -127,3 +127,43 @@ Claude Code 退役前整備の完了後、NDSの実装・テスト・ビルド�
 - `_internal` のrobocopy同期自体は非アトミック（EXE単体のみアトミック化、既存設計のまま）
 - 実共有フォルダでの最終確認は未実施（今回もH7同様、非本番の一時ターゲットのみで検証）
 - clean-tree gateのallowlist方式（`.gitignore`追加）の運用上の妥当性は、実際の開発で使いながら再評価が必要
+
+## 2026-09-06 追記: NDS hardening Phase 2 第一段階（PR #7, `754d214`）— JSON保存・破損耐性
+
+Phase 0/1（リリース安全性）に続き、データ・設定消失を防ぐJSON保存・読込の安全化に着手。
+大規模リファクタリングではなく、重要度の高いJSONから段階的に適用。
+
+- **JSON I/O 棚卸し**（`next-day-setup/docs/JSON_SAFETY_PHASE2.md`）: `dinner_system/`配下の全JSON/JSONL
+  ファイルを、読み書き箇所・重要度・正本orキャッシュ・SQLite重複・書き込み方式・読み込み失敗時の挙動・
+  バックアップ有無で一覧化。SQLiteとの整合（`seats`/`staff_assignments`/`closing_task_snapshot`は
+  `kitchen_data.sqlite3`に存在しない日次JSON唯一のコピーであること、保存順序に共有トランザクションが
+  ないこと）も調査・文書化（コード変更はせず、統一は次サイクル課題として記録）。
+- **共通の安全なJSON書き込み**（新規`dinner_system/json_safety.py`）: `atomic_write_json`（同一ディレクトリ
+  一時ファイル→flush→fsync→再パース検証→任意でバックアップ→`os.replace`）、`backup_existing_file`
+  （世代数制限付き、既定20世代）、`quarantine_corrupted_file`（破損ファイルの隔離保存）。
+- **master_settings.json（最優先）**: 「不存在（初回起動）」「正常」「壊れたJSON」「型不正」を区別し、
+  壊れている場合は隔離保存（元ファイル無変更）＋起動時警告ダイアログ。黙って初期化・上書きしない。
+  レビューで指摘された`__init__`内の旧キー移行処理（`cake_order_lead_days`等削除）の直接書き込みも
+  `atomic_write_json`へ統一し、最終grepで対象3ファイル（本ファイル・日次保存データ・closing_tasks.json）
+  への直接write_text残存がないことを確認済み。
+- **日次保存データ**: `load_work_data`が生のトレースバックではなく`WorkDataLoadError`（ファイル名・
+  何が壊れているか・バックアップからの復元手順を明記）を出す設計に変更。空データを異常扱いしない。
+- **closing_tasks.json**: `save_master`を`atomic_write_json`+バックアップへ統一（`load_master`は
+  既に良好な実装のため変更なし）。
+
+### 確認結果
+
+- ローカルpytest 558 passed / 2 skipped（Tcl/Tk環境フレーキー）。GitHub Actions（PR #7、push/PR両方）
+  `NDS pytest (Windows)` / `Dev standards` とも success。
+- CIでのみタイムスタンプ衝突（Windowsのクロック分解能起因）による2件のflakeを発見しUUID付与で修正。
+- 実物の`master_settings.json`（28キー）・`closing_tasks.json`（18タスク）のコピーで警告ゼロの読み込みと
+  アトミック書き込みの往復一致を確認 — 既存データ形式との後方互換を実機で確認済み。
+- PR #7 を squash merge（`754d214`）、作業ブランチ削除、正式ローカルを`main`へ同期、
+  `check_standards.py`全10リポジトリOK、`DEV_DOCTOR` next-day-setupは`up-to-date`・未追跡0件、
+  ERROR 0 / ACTION 0。
+
+### 残課題（次サイクル）
+
+- `ui_prefs.json`・`print_preparation.json`等の低優先度JSONは未対応（意図的、影響軽微のため）
+- SQLite/日次JSONの整合性統一は未着手（調査・文書化のみ、Phase 2では意図的に見送り）
+- `monthly_tasks.json`の「破損時に空状態へ静かにリセット」は今回未対応（棚卸しで発見、対応は次サイクル）

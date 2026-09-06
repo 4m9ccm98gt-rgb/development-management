@@ -133,6 +133,29 @@
   （PR #6、`0d134be`。詳細は [projects/next-day-setup.md](../projects/next-day-setup.md)）。
   **menu-sheet-generator はBUILD_INFO.txt自体が未対応のまま。**
 
+## JSON保存はアトミック書き込み＋破損時隔離を、重要度の高いファイルから段階的に適用する
+
+- 判断: NDSの各種JSON設定・業務データファイルについて、直接 `Path.write_text()` で上書きする方式から、
+  一時ファイル書き込み＋fsync＋再パース検証＋`os.replace()`によるアトミック書き込みへ移行する。
+  読み込み失敗時は「不存在（初回起動）」と「壊れている」を区別し、壊れている場合は元ファイルを
+  そのまま保護した上で別名複製（隔離）し、黙って初期化・上書きしない。
+  NDS全体を一度に書き換えるのではなく、重要度の高いファイルから段階的に適用する。
+- 理由: レビューで `master_settings.json` が破損時に警告なく既定値へフォールバックし、そのまま保存すると
+  元の内容が失われる可能性が指摘された。直接上書き方式はクラッシュ・電源断・書き込み中断時に
+  ファイルそのものを壊すリスクもある。
+- 採用案: 共通ヘルパー `next-day-setup/dinner_system/json_safety.py`（`atomic_write_json` /
+  `backup_existing_file` / `quarantine_corrupted_file`）を新設し、`master_settings.json`・
+  日次保存データ（`保存データ/YYYY-MM-DD.json`）・`closing_tasks.json` の順に適用（NDS hardening
+  Phase 2、PR #7、`754d214`）。
+- 却下案: NDS全JSON I/Oを一度に書き換える一括対応。却下理由: 影響範囲が大きく、業務中の日次運用を
+  壊すリスクがレビュー方針（大規模リファクタリング回避）に反する。
+- 影響: `ui_prefs.json`・`print_preparation.json`等の低優先度JSONは当面現状維持。SQLiteと日次JSONの
+  整合性統一（`seats`/`staff_assignments`/`closing_task_snapshot`はSQLiteに存在しない）は別課題として
+  次サイクルへ持ち越し。詳細は [projects/next-day-setup.md](../projects/next-day-setup.md) と
+  next-day-setup 側 `docs/JSON_SAFETY_PHASE2.md` を参照。
+- 関連リポジトリ: next-day-setup。
+- 確認状況: 実施済み。ローカル・GitHub Actions CIで検証済み、実物の設定ファイルコピーで後方互換確認済み。
+
 <!-- 以下は旧cloneの未push编集から救出した設計判断。canonical に未反映だったもの。 -->
 
 ## 期間限定タスクエンジンを採用する

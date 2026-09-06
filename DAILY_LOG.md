@@ -652,3 +652,49 @@
 
 継続してJSON I/Oの棚卸しとmaster_settings.json等の安全化に着手（大規模リファクタリングではなく、
 データ消失・設定消失を防ぐ安全化が目的）。詳細は [projects/next-day-setup.md](projects/next-day-setup.md)。
+
+## 2026-09-06 NDS hardening Phase 2 第一段階（JSON保存・破損耐性、PR #7）
+
+### 目的
+
+- Phase 0/1（リリース安全性）に続き、データ・設定消失を防ぐJSON保存・読込の安全化に着手。
+  大規模リファクタリングではなく、重要度の高いJSONから段階的に適用する方針。
+
+### 実施したこと
+
+- 対象: next-day-setup。作業ブランチ `claude/nds-hardening-phase2` で実施。
+- `dinner_system/`配下の全JSON/JSONLファイルを棚卸しし、`next-day-setup/docs/JSON_SAFETY_PHASE2.md`
+  として文書化（読み書き箇所・重要度・正本orキャッシュ・SQLite重複・書き込み方式・読み込み失敗時の
+  挙動・バックアップ有無）。SQLiteとの整合（`seats`/`staff_assignments`/`closing_task_snapshot`は
+  `kitchen_data.sqlite3`に存在しない日次JSON唯一のコピーであること等）も調査・文書化。
+- 新規`dinner_system/json_safety.py`: `atomic_write_json`（同一ディレクトリ一時ファイル→flush→fsync→
+  再パース検証→任意でバックアップ→`os.replace`）、`backup_existing_file`（世代数制限付き、既定20世代）、
+  `quarantine_corrupted_file`（破損ファイルの隔離保存）。
+- `master_settings.json`（最優先）: 「不存在（初回起動）」「正常」「壊れたJSON」「型不正」を区別し、
+  壊れている場合は隔離保存＋起動時警告ダイアログ。黙って初期化・上書きしない。
+- 日次保存データ: `load_work_data`が`WorkDataLoadError`（ファイル名・何が壊れているか・バックアップ
+  からの復元手順を明記）を出す設計に変更。空データを異常扱いしない。
+- `closing_tasks.json`: `save_master`を`atomic_write_json`+バックアップへ統一。
+- レビュー指摘対応: `HotelApp.__init__`内の旧設定キー（`cake_order_lead_days`等）削除処理に残っていた
+  直接`write_text`を`migrate_legacy_master_settings`関数へ切り出し`atomic_write_json`へ統一。最終grepで
+  対象3ファイル（master_settings.json・日次保存データ・closing_tasks.json）への直接write_text残存が
+  ないことを確認（`ui_prefs.json`等の意図的対象外ファイルは除く）。
+- `next-day-setup#7`としてPR作成 → CI green確認（push/pull_request両方）→ 差分8ファイルのみ確認 →
+  squash merge（`754d214`）→ 作業ブランチ削除 → 正式ローカルを`main`へ同期。
+
+### 確認結果
+
+- ローカルpytest 558 passed / 2 skipped（Tcl/Tk環境フレーキー）。GitHub Actions（`next-day-setup#7`）は
+  `NDS pytest (Windows)` / `Dev standards` とも success。
+- CIでのみタイムスタンプ衝突（Windowsのクロック分解能起因、`datetime.now()`の`%f`がミリ秒未満で
+  同一値になりうる）による2件のflakeを発見し、UUID付与で修正。
+- 実物の`master_settings.json`（28キー）・`closing_tasks.json`（18タスク）のコピーで警告ゼロの読み込みと
+  アトミック書き込みの往復一致を確認 — 既存データ形式との後方互換を実機で確認済み。
+- merge後: `check_standards.py`全10リポジトリ`OK: 指摘なし`。`DEV_DOCTOR` next-day-setupは`up-to-date`・
+  未追跡0件、ERROR 0 / ACTION 0。
+
+### 未確認・問題（残課題、次サイクル）
+
+- `ui_prefs.json`・`print_preparation.json`等の低優先度JSONは未対応（意図的、影響軽微のため）
+- SQLite/日次JSONの整合性統一は未着手（調査・文書化のみ、Phase 2では意図的に見送り）
+- `monthly_tasks.json`の「破損時に空状態へ静かにリセット」は今回未対応（棚卸しで発見、対応は次サイクル）
