@@ -70,13 +70,14 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 - **T0**: 構文/import確認または当該ファイルの最小テスト。full禁止。
 - **T1**: targeted testのみ。例 `pytest -k <対象> -q --tb=short -p no:cacheprovider`。full禁止。
 - **T2**: targeted + blast-radiusで名指しした regression。**regression ≠ full suite**。
-- **T3**: full suite + 必要な dry-run / 実環境確認。CIで代替できるfullをCodexローカルで重複しない。
+- **T3**: automated full regression + 必要な dry-run / 実環境確認。CIで代替できる automated regression をCodexローカルで重複しない。
 
-### T2とfull suite
+### T2と automated regression CI
 
-- §9の表で、現在branchをfull suite CIがカバーしている場合、Codexはローカルfullを回さない。push後CIを回帰ゲートとする。
-- CIがfullをカバーしないbranchでは、修正ループ中にfullを回さない。
-- 金額・在庫・価格・帳票・印刷・DB・共有フォルダ・HDD同期に触れるT2だけ、最終チェックポイントでローカルfullを1回許可する。
+- §9の表で現在branchを automated regression CI がカバーしている場合、Codexはローカルで同じ automated full regression を回さない。push後CIを回帰ゲートとする。
+- 実プリンター、実共有サーバー、live IMAP、外部サイト、実HDD等はCIとは別の確認レベル。今回のblast-radiusが触れる場合だけ Windows実機で確認し、CI成功を実機確認済みとは扱わない。
+- CIが automated regression をカバーしないbranchでは、修正ループ中にfullを回さない。
+- 金額・在庫・価格・帳票・印刷・DB・共有フォルダ・HDD同期に触れるT2だけ、CI未整備branchでは最終チェックポイントでローカルfullを1回許可する。
 - そのfullで回帰が出た場合、修正後に**もう1回だけ**fullを許可する（合計2回まで）。2回目でもgreenにならなければ報告へ移る。
 
 成功ログはサマリ1行に圧縮し、FAILED行・短いtracebackだけを残す。その他の禁止事項は§8。
@@ -132,21 +133,23 @@ ChatGPT→Codex / 別sessionの引き継ぎには次を含める。
 - ChatGPT側で確立済みの根本原因を再導出する
 - 通常EXE build / 通常配布更新をCodexへ戻す
 
-## 9. full suite CI カバレッジ
+## 9. automated regression CI カバレッジ
 
 agentは原則この表を正とし、毎回 `.github/workflows` を総当たりして推定しない。workflowを変更した場合、または実物と矛盾を発見した場合だけ表を更新する。
 
-| repo / branch | full suite CI | workflow |
-|---|---|---|
-| `next-day-setup / main` | あり | `.github/workflows/tests.yml` |
-| `beverage-inventory-ordering-system / python-desktop-migration` | あり | `.github/workflows/python-migration-tests.yml` |
-| `beverage-inventory-ordering-system / main` | なし | `standards.yml` のみ |
-| `food-cost-calculation-system / main` | なし | `standards.yml` のみ |
-| `inventory-reconciliation-system / main` | なし | `standards.yml` のみ |
-| `qr-supply-ordering-system / main` | なし | `standards.yml` のみ |
-| `menu-sheet-generator / main` | なし | `standards.yml` のみ |
+ここで「あり」は、そのbranchで**決定的に自動実行できる回帰テスト一式**をpush / PR時にCIが実行することを意味する。実プリンター、実共有サーバー、live IMAP、外部サイト、実HDD等の実環境確認をCI済みとは扱わない。
 
-「なし」のbranchでは§4のCI未整備分岐を使う。未整備repoへのfull test CI追加は優先改善項目とする。
+| repo / branch | automated regression CI | workflow / scope |
+|---|---|---|
+| `next-day-setup / main` | あり | `.github/workflows/tests.yml` / pytest full |
+| `beverage-inventory-ordering-system / python-desktop-migration` | あり | `.github/workflows/python-migration-tests.yml` / Python migration pytest |
+| `beverage-inventory-ordering-system / main` | なし | `standards.yml` のみ |
+| `food-cost-calculation-system / main` | あり | `.github/workflows/tests.yml` / pytest full + release dry-run tests |
+| `inventory-reconciliation-system / main` | あり | `.github/workflows/tests.yml` / deterministic unittest + local shift-holiday regression。live IMAP / browser / external-site は必要時の実機確認 |
+| `qr-supply-ordering-system / main` | あり | `.github/workflows/tests.yml` / pytest full |
+| `menu-sheet-generator / main` | あり | `.github/workflows/tests.yml` / PMS CSV aggregation + GDI pre-spool .NET harnesses |
+
+「なし」のbranchでは§4のCI未整備分岐を使う。現状の主な未整備branchは `beverage-inventory-ordering-system / main`。移行作業の `python-desktop-migration` はCIでカバー済み。
 
 ## 10. 完了報告
 
