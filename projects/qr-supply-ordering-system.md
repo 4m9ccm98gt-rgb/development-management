@@ -90,6 +90,13 @@ beverage-inventory-ordering-system PR #7 で、まず以下を同一PySide6ウ�
 
 ## 未確認事項
 
+2026-09-06 Windows確認追記: beverage PR #7の候補 `94dcd29` を正式ローカルへ取得し、
+2タブ・ライト/ダーク・正式物品SQLiteの自動検出・取消1件の実読込・状態/検索/再読込・
+DB未接続時の起動継続を確認した。物品repoは `main` / `790fff5` とoriginが一致。
+物品コード・DB schema・マスター・FAX処理は変更していない。
+詳細と検証の限界は `projects/beverage-inventory-ordering-system.md` の2026-09-06追記を参照。
+以下の実機UI関連項目は同追記の範囲で確認済み。スマートフォン・本番運用関連は引き続き未確認。
+
 - PR #7 を正式Windowsローカルへ取得した際の2タブ実描画
 - ライト / ダークテーマ
 - 既存飲料UIへのレイアウト影響
