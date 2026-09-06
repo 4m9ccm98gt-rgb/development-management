@@ -8,7 +8,7 @@
 ただし、飲料と物品の商品マスター・DB・発注先マスター・履歴・業務ロジックは共有しない。
 物品側SQLiteと既存実装は物品ドメインの正として維持し、飲料側統合デスクトップから専用アダプタ経由で参照・操作する。
 
-## 現在の状態（2026-09-06）
+## 現在の状態（2026-09-07）
 
 | 項目 | 内容 |
 |---|---|
@@ -169,31 +169,42 @@ Apps Script実装はbeverage repoの `google_apps_script/supply_order/` に置�
 - 状態絞り込み / 検索 / 再読込
 - DB未接続でもアプリ起動継続
 
-QRのGoogle経路はまだ実機未確認。
+2026-09-07、物品QR発注のGoogle経路も実機確認済み。
 
-## 次の実機ゲート
+- Apps Scriptを物品QR発注用Web Appとして独立デプロイ
+- 既存飲料スマホ棚卸と同じSpreadsheet ID / Bridge secretを使用
+- `setupSupplyOrderSheets()` 正常完了
+- `supply_qr_items` / `supply_qr_requests` の2シート作成
+- PCから商品マスタ3件をGoogleへ同期
+- iPhoneを4G/5GでQR読取
+- 商品名・数量・`発注する` のスマホ画面を確認
+- スマホから1件発注し、PCの `今すぐ取込` で発注依頼一覧へ1件追加
+- 再度 `今すぐ取込` を実行しても2件目は作成されず、`request_token` の冪等性を実機確認
 
-GitHub CIを先に通し、自動テストはGitHub側で完結させる。
-Codexへ重いpytest・全面UI監査・ビルドを繰り返し依頼しない。
+途中でWeb App公開範囲不足による401が出たが、公開設定修正後は解消。
+その後の一時的な `Google bridge returned an invalid response` は再現せず、Codexの最小通信調査で `/exec` POSTが302経由で `script.googleusercontent.com/macros/echo` に到達し、最終200 / `application/json; charset=utf-8` でdoPostのJSONが返ることを確認した。コード修正は不要だった。
 
-GitHub側実装完了後に必要な実機作業だけ行う。
+## 実機ゲート結果
 
-1. development-management と beverage 正式ローカルを最新へfast-forward
-2. `RUN_DEV.cmd` で起動できることだけ確認
-3. Apps Script `google_apps_script/supply_order/` をデプロイ
-4. Web App URLを物品タブのQR発注設定へ保存
-5. 商品同期を1回実行
-6. QRラベルを1枚だけ出力
-7. iPhoneで4G/5GからQRを読む
-8. 数量を指定して1件発注
-9. PCへ自動または `今すぐ取込` で1件だけ入ることを確認
-10. 同じGoogle依頼を再取得してもSQLiteへ二重登録されないことを確認
+QR受付の実機ゲートは完了。
+GitHub CIの自動テストと合わせ、QR読取からSQLite登録までの主要経路と二重登録防止を確認済み。
 
-この実機ゲートでは、ユーザーが操作確認を担当する。Codexはローカル取得・起動補助・必要最小限の設定確認に限定する。
+- `RUN_DEV.cmd` 正常起動
+- QR発注UIの5項目表示
+- Apps Scriptデプロイ
+- Web App URL設定
+- 商品同期
+- QRラベル生成
+- iPhone 4G/5G読取
+- 1件発注
+- PC取込
+- 同一依頼の再取込で重複なし
+
+以後、Codexへ同じQR経路の重いpytestや全面再検証を繰り返し依頼しない。
 
 ## 次段階
 
-QR受付が実機で通った後、PC側のFAX処理を設計・実装する。
+QR受付が実機で通ったため、PC側のFAX処理を設計・実装する。
 FAX実装前に架空の状態遷移や帳票仕様を作らない。
 
 ## 経緯
@@ -201,3 +212,4 @@ FAX実装前に架空の状態遷移や帳票仕様を作らない。
 2026-09-04時点では飲料システムとの統合境界を「相互URLリンクのみ」としていた。
 2026-09-06、別アプリ間遷移ではなく「飲料PySide6を母艦に、物品発注依頼処理を同じウィンドウ内へ再構成する」方針へ変更した。
 同日、館内Wi-Fiを利用できない運用条件を再確認し、QRスマホ受付はローカルFlask直結ではなくGoogle Apps Script / Sheetsを一時HUBとする方式に確定した。
+2026-09-07、Apps Script独立デプロイからiPhone 4G/5G発注、PC取込、`request_token` 再取込まで実機確認し、QR受付ゲートを完了した。
