@@ -6,9 +6,9 @@
 
 `development-management` は、業務システム全体の設計判断、開発ルール、進行状況、AIとの共同開発知識を管理する正式な知識ベースです。コード本体は管理しません。
 
-[AGENTS.md](AGENTS.md) はAIがこのリポジトリで作業する際の短い入口ガイドです。本ファイルは開始時の確認方法の正本です。単体タスクを正式プロジェクトへ昇格する場合は [PROJECT_BOOTSTRAP.md](PROJECT_BOOTSTRAP.md) を適用します。
+[AGENTS.md](AGENTS.md) はAIがこのリポジトリで作業する際の短い入口ガイドです。本ファイルはT2/T3で必要になる開始時確認の詳細です。**T0/T1ではこのファイルを開かず、[AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §2だけで開始判断を完結させます。** 単体タスクを正式プロジェクトへ昇格する場合は [PROJECT_BOOTSTRAP.md](PROJECT_BOOTSTRAP.md) を適用します。
 
-開始時の文書読み込み、調査範囲、テスト範囲、反復上限は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を最優先します。小変更で開始文書一式を機械的に全読みしません。
+開始時の文書読み込み、調査範囲、テスト範囲、反復上限は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を最優先します。
 
 ## 開始時の確認順序
 
@@ -17,23 +17,25 @@
 1. [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を読む。
 2. 対象リポジトリ / ブランチ / HEAD SHA / dirty tree を確認する。
 3. 今回の作業を `T0 / T1 / T2 / T3` に分類し、1行のblast-radiusを決める。
-4. 以下のティア別ルートで必要な文書だけ読む。
+4. T0/T1ならこのファイルの確認をここで終了する。T2/T3は以下のティア別ルートで必要な文書だけ読む。
 
 ### T0 / T1 の最小ルート
 
-- 対象のREADMEまたは対象 `projects/*.md` のうち、今回に直接必要な部分
+通常は本ファイルを開かない。すでに開いた場合も、[AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §2に従い次だけで止める。
+
+- 対象のREADMEまたは対象 `projects/*.md` の今回に直接必要な部分
 - 対象ファイルと直接の呼び出し元1ホップ
 - 能力判定が必要な場合のみ [CAPABILITIES.md](CAPABILITIES.md)
 - 今回に直接関係するルール・判断がある場合だけ、該当文書の関連箇所
 
-T0 / T1では、`PROJECT_STATUS.md`、`VERSION_MATRIX.md`、`SYSTEM_OVERVIEW.md`、`docs/decisions.md`、`LESSONS_LEARNED.md` 等を一律に全読みしない。既存機構の局所修正ではREUSE_MAP横断調査も自動発火させない。
+`PROJECT_STATUS.md`、`VERSION_MATRIX.md`、`SYSTEM_OVERVIEW.md`、`docs/decisions.md`、`LESSONS_LEARNED.md` 等を一律に全読みしない。既存機構の局所修正ではREUSE_MAP横断調査も自動発火させない。
 
 ### T2 の標準ルート
 
 1. [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md)
 2. [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) の今回に関係する部分
 3. [AI_CHECKLIST.md](AI_CHECKLIST.md)
-4. [CAPABILITIES.md](CAPABILITIES.md)
+4. [CAPABILITIES.md](CAPABILITIES.md)（能力判定が必要な場合）
 5. [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) の今回に関係する部分
 6. 対象の `projects/*.md` またはREADME
 7. 金額・在庫・印刷・DB・共有フォルダ・build/deploy等に関係する場合だけ、該当する [docs/decisions.md](docs/decisions.md) / [LESSONS_LEARNED.md](LESSONS_LEARNED.md) / [REUSE_MAP.md](REUSE_MAP.md)
@@ -50,7 +52,7 @@ T3では、構造変更・repo横断・移行のため、次を順番に確認�
 4. [PROMPT_PRINCIPLES.md](PROMPT_PRINCIPLES.md) — 回答・提案・思考品質の基準
 5. [AI_MEMORY.md](AI_MEMORY.md) — プロジェクト固有のルール
 6. [CAPABILITIES.md](CAPABILITIES.md) — 担当判定（エージェント名ではなく、そのセッションが持つ能力で判定）と正式ローカルリポジトリの同期規約（作業前 `git pull --ff-only`・作業後 `git push`）
-7. [PROJECT_STATUS.md](PROJECT_STATUS.md) — 管理対象10リポジトリの現在地、退役前整備（H1〜H7）の成果、次の作業
+7. [PROJECT_STATUS.md](PROJECT_STATUS.md) — 管理対象10リポジトリの現在地
 8. [VERSION_MATRIX.md](VERSION_MATRIX.md) — GitHubと実運用版の確認状況
 9. [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md) — 管理対象と全体構成
 10. [docs/decisions.md](docs/decisions.md) — 重要な設計判断
@@ -68,7 +70,7 @@ T3では、構造変更・repo横断・移行のため、次を順番に確認�
 対象プロジェクトがある場合は、ティアに応じて対象の `projects/*.md`、README、Git状態、関連コードを確認します。
 `projects/` に対象の文書が無いリポジトリ（現状 `food-cost-calculation-system` / `qr-supply-ordering-system` /
 `hospitality-review-reply` / `kitchen-calendar`）は、対象リポジトリの README と [VERSION_MATRIX.md](VERSION_MATRIX.md) /
-[PROJECT_STATUS.md](PROJECT_STATUS.md) の該当行を正とします。ただしT0 / T1では今回の変更に不要な文書まで機械的に読み込みません。`food-cost` と `qr-supply` の詳細な
+[PROJECT_STATUS.md](PROJECT_STATUS.md) の該当行を正とします。ただしT0/T1では今回の変更に不要な文書まで機械的に読み込みません。`food-cost` と `qr-supply` の詳細な
 プロジェクト文書は `recovery/from-old-clone-docs`（Draft PR）に現状版があり、取り込みは保留中です。
 
 同一セッション / 同一ブランチで一度確認した開始文書は、HEAD・文書・前提が変わらない限り回答ごとに再ロードしません。
@@ -97,16 +99,11 @@ T3では、構造変更・repo横断・移行のため、次を順番に確認�
 
 最新は [PROJECT_STATUS.md](PROJECT_STATUS.md) の Current Focus を正とする。要点:
 
-- **背景**: 開発補助ツール Claude Code の提供終了が近い。終了後も ChatGPT（GitHub側）と実機セッション
-  （Windows側）だけで各アプリの開発・ビルド・配布・復旧が回るよう、退役前整備 H1〜H7 を完了した
-  （バックアップ／実機ヘルスチェック／CI 安定タグ／非コーダー向けランブック／BUILD・DEPLOY 経路検証）。
-- `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本として Python/PySide6 版へ段階移行中。
-  作業ブランチ `python-desktop-migration`（upstream と同期、`e458476`）/ Draft PR #2。Python ソース版の
-  Windows 実機確認を継続。EXE は必要時だけユーザーが手動ビルド、本番共有版は確認完了まで更新しない。
-- `next-day-setup` / `inventory-reconciliation-system` / `menu-sheet-generator` / `food-cost-calculation-system`（俺伝）
-  / `qr-supply-ordering-system`: 実運用中。標準3経路（または相当）と CI（warning-only、`@ci-v1`）を整備済み。
+- **背景**: 開発補助ツール Claude Code の提供終了が近い。終了後も ChatGPT（GitHub側）と実機セッション（Windows側）だけで各アプリの開発・ビルド・配布・復旧が回るよう、退役前整備 H1〜H7 と M1〜M3 を完了した。
+- `beverage-inventory-ordering-system`: 現行ブラウザ版を仕様正本として Python/PySide6 版へ段階移行中。作業ブランチ `python-desktop-migration`。Pythonソース版のWindows実機確認を継続。EXEは必要時だけユーザーが手動ビルド、本番共有版は確認完了まで更新しない。
+- `next-day-setup` / `inventory-reconciliation-system` / `menu-sheet-generator` / `food-cost-calculation-system`（俺伝） / `qr-supply-ordering-system`: 実運用中。標準3経路（または相当）と構成チェックCIを整備済み。**full suite CIの有無は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §9 のbranch別表を正とする。**
 - `call-reception-assistant`: 設計前。無課金・ローカル完結・外部非接続の初期試作方針。
-- 残タスク: H5 引き継ぎドライラン、M1 新PCブートストラップ、M2 gh 認証寿命、M3 俺伝の既定ブランチ依存監査。
+- 退役前整備 H1〜H7・M1〜M3 は完了済み。現在の改善課題は、各アプリの通常開発に加え、`food-cost-calculation-system` / `inventory-reconciliation-system` / `qr-supply-ordering-system` / `menu-sheet-generator` 等の**full test CI未整備branchを段階的に整備すること**。
 
 ## Windowsアプリ標準
 
@@ -118,7 +115,7 @@ Python等のWindowsアプリでは、次を標準確認する。
 - Codexへ通常のEXEビルドを依頼しない。
 - Codexは手動ビルド失敗、EXE固有不具合、実プリンター、共有サーバー、ローカル専用ファイル等の実機問題確認に使う。
 
-T0 / T1で今回の変更にビルド・配布経路が関係しない場合、この標準確認を毎回の固定ゲートとして再実行しない。
+T0/T1で今回の変更にビルド・配布経路が関係しない場合、この標準確認を毎回の固定ゲートとして再実行しない。
 
 ## 作業前チェック
 
@@ -126,7 +123,7 @@ T0 / T1で今回の変更にビルド・配布経路が関係しない場合、�
 - 対象リポジトリのブランチ、HEAD SHA、未コミット変更を確認する。
 - 自分のセッションが持つ能力（`github-rw` / `sandbox-exec` / `windows-real` 等）の確認が必要なら [CAPABILITIES.md](CAPABILITIES.md) を参照し、タスクの必要能力と照合する。
 - `windows-real` を持つ場合、正式ソースに触れる前に `git fetch`（必要なら `git pull --ff-only`）、作業後に `git commit` + `git push` する。「編集したが push していない」は未完了工程として扱う。
-- [VERSION_MATRIX.md](VERSION_MATRIX.md) は実運用版・デモ機版との一致が今回の作業に関係する場合に確認する。T0 / T1で無関係なら固定ゲートにしない。
+- [VERSION_MATRIX.md](VERSION_MATRIX.md) は実運用版・デモ機版との一致が今回の作業に関係する場合に確認する。T0/T1で無関係なら固定ゲートにしない。
 - 旧フォルダ、共有版、業務データ、実運用設定を無断で変更対象にしない。
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) と設計判断は、ティアと影響範囲に応じて必要箇所を読む。
 - ChatGPTでGitHub側の作業が完結できるかを先に判断し、可能ならGitHub上で実装・テスト・PRまで進める。
@@ -144,7 +141,7 @@ T0 / T1で今回の変更にビルド・配布経路が関係しない場合、�
 - 変更履歴は [CHANGELOG.md](CHANGELOG.md) に記録する。
 - コードを変更した場合は、対象リポジトリのREADMEも更新する。
 
-T0 / T1のために、変更と無関係な管理文書を形式的に更新しない。記録は「将来の判断に使う事実・運用変更・設計変更」がある場所へ絞る。
+T0/T1のために、変更と無関係な管理文書を形式的に更新しない。記録は「将来の判断に使う事実・運用変更・設計変更」がある場所へ絞る。
 
 ## 禁止事項
 
@@ -154,7 +151,7 @@ T0 / T1のために、変更と無関係な管理文書を形式的に更新し�
 - GitHub上のテスト成功だけで、Windows実機・EXE・共有版・実プリンターまで確認済みと扱うこと。
 - ChatGPTとCodexで同じGitHub実装を理由なく二重に行うこと。
 - 単純なEXEビルドのためだけにCodexクレジットを消費すること。
-- T0 / T1で開始文書一式、repo全体、他repoの類似実装を理由なく全読みすること。
+- T0/T1で開始文書一式、repo全体、他repoの類似実装を理由なく全読みすること。
 - targeted failureの診断にfull suiteを使うこと。
 - コード変更なしで同じfull suiteを安心のためだけに繰り返すこと。
 
@@ -162,11 +159,11 @@ T0 / T1のために、変更と無関係な管理文書を形式的に更新し�
 
 > 新しいチャットでは、まず development-management の `AGENT_EFFICIENCY_POLICY.md` を確認し、対象repo / branch / HEAD SHA / dirty treeを確認して変更ティア T0〜T3 を決めてください。
 >
-> T0 / T1では開始文書一式を機械的に全読みせず、対象READMEまたはprojects文書、対象ファイル、直接の呼び出し元1ホップを基本にしてください。T2は関連する運用・安全文書を追加し、T3だけAI_STARTUPのフル開始チェーンを適用してください。同一セッションで確認済みの文書・確立した事実は前提が変わらない限り再読込・再導出しないでください。
+> T0/T1では `AI_STARTUP.md` を開かず、対象READMEまたはprojects文書、対象ファイル、直接の呼び出し元1ホップを基本にしてください。T2は関連する運用・安全文書を追加し、T3だけAI_STARTUPのフル開始チェーンを適用してください。同一セッションで確認済みの文書・確立した事実は前提が変わらない限り再読込・再導出しないでください。
 >
 > GitHubへ直接アクセスできる場合は、GitHub上で完結する調査・実装・targeted test・ブランチ・PRまでChatGPT側で進めてください。Python/Windowsアプリはソース起動を標準とし、EXEは必要時だけユーザーがワンクリックで手動ビルド、配布更新も専用スクリプトで手動実行できる状態にしてください。通常のEXEビルドはCodexへ依頼しないでください。
 >
-> T1はtargeted test、T2はtargeted + blast-radius regressionを基本とし、CIがfull suiteをカバーしている場合はCodexローカルでfull suiteを回さないでください。失敗1件の診断にfull suiteを使わず、同じ修正ループは原則2回までにしてください。
+> T1はtargeted test、T2はtargeted + blast-radius regressionを基本とし、現在branchをfull suite CIがカバーしている場合はCodexローカルでfull suiteを回さないでください。CIカバレッジは `AGENT_EFFICIENCY_POLICY.md` §9 の表を正としてください。失敗1件の診断にfull suiteを使わず、同じ原因仮説の修正ループは2回までにしてください。
 >
 > Windows実機、正式ローカル、実プリンター、共有サーバー、手動ビルド失敗時の原因調査などが必要な作業だけCodexへ引き継いでください。引き継ぎには変更ティア、確立した事実、棄却した仮説、greenベースライン、回すテスト、回さないテスト、残作業を含めてください。
 >
