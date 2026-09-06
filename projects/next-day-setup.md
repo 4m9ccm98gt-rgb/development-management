@@ -232,3 +232,57 @@ UI境界でまとめて処理する既存方針を踏襲。呼び出し元回帰
 - `compare_kitchen_snapshot_provenance`はSQLiteの`import_id`比較のみで、日次JSON内の`reservations`
   本体の実差分までは比較しない。
 - `ui_prefs.json`等の低優先度JSONの安全化は引き続き未着手（Phase 2から継続、意図的）。
+
+## 2026-09-06 追記: NDS hardening Phase 4（PR #9, `5955bf9`）— 印刷経路・Windows実機監査
+
+印刷方式の統合や`hotel_app.py`の分割ではなく、GDI直接印刷／Excel COM／reportlab+SumatraPDF／
+Edge HTMLが併存する印刷サブシステムを可視化し、安全な範囲（読み取り専用診断・pure logicテスト）
+で検証することが目的。作業ブランチ `claude/nds-print-audit-phase4`。
+
+- **全印刷経路の棚卸し**（`docs/PHASE4_PRINT_AUDIT.md`）: `PRINT_JOBS`登録11帳票＋レジストリ外の
+  独立2系統（ケーキ帳票Excel COM、設定可能なExcel自動印刷アイテム）を、job key・呼び出しUI・
+  builder・preview経路・実印刷経路・印刷エンジン・用紙サイズ・DPI・外部依存・実プリンター必須か・
+  テスト有無・重要度で一覧化。
+- **print/preview分岐の不一致**: `render_direct_preview()`は未知job keyを暗黙`else`で「伝票」として
+  誤描画、`print_job()`は逆に汎用Edge/HTML経路へ静かにfallbackする真逆の失敗モードを発見。
+  `kitchen_calendar`は一括印刷（reportlab PDF+SumatraPDF）と単体印刷/プレビュー（PIL画像+GDI）が
+  同一job keyで完全に別実装であることも判明。レジストリの全面統合は今回は実施せず。
+- **死んだ印刷経路**（削除せず記録のみ）: `seating_chart`、`print_all`/`render_all`/
+  `BULK_PRINT_KEYS`、未使用HTMLビルダー群、`print_one`とその呼び出し元一式
+  （`select_print_job`/`select_breakfast_print_job`/`print_all_jobs`/`preview_assignment_print`）
+  ——いずれも呼び出し元ゼロを確認済み。
+- **Add-Printer副作用の実地確認**: `print_preparation.py`の`Ensure-DuplexPrinter`
+  （Excel印刷の両面設定用に複製プリンターを`Add-Printer`で作成、対になる`Remove-Printer`は
+  存在せず恒久的に残る）について読み取り専用の`Get-Printer`診断を実施した結果、**この開発機に
+  既に`Codex_Duplex_Short_Kyocera_TASKalfa_3554ci(J)_KX`/`Codex_Duplex_Long_Kyocera_TASKalfa_3554ci(J)_KX`
+  が実在する**ことを確認——理論上ではなく実際に発火済み。リポジトリ追跡の
+  `config/print_preparation.json`にも`duplex_mode: duplex_long`が1件設定済み。
+  **今回はAdd-Printer/Remove-Printer実行、プリンター設定変更は一切行っていない**。
+- **回帰テスト46件を追加**（実プリンター・PowerShell実行・Excel COM不要）:
+  - `tests/test_direct_print_render_coverage.py`(32件): 未テストだった8帳票描画関数の
+    寸法固定・空データ耐性・固定グリッド超過時の切り詰め耐性。
+  - `tests/test_excel_duplex_mode_safety.py`(8件): `normalize_excel_print_items`の
+    duplex_mode正規化フォールバック境界（Add-Printer発火条件）と、正規化後の値が
+    PowerShellスクリプトへ正しく渡ることの確認。
+  - `tests/test_print_job_registry_consistency.py`(6件): `PRINT_JOBS`/`render_job()`/
+    `render_direct_preview()`/`print_job()`のjob key集合一致をソース検査で固定。
+
+### 確認結果
+
+- ローカルpytest 664 passed。GitHub Actions（PR #9、push/pull_request両方）
+  `NDS pytest (Windows)` / `Dev standards` とも success。
+- 差分4ファイル（監査ドキュメント＋テスト3本）のみ確認、`origin/main`からbehind 0。
+  プリンター状態・印刷エンジン実装・`hotel_app.py`挙動はいずれも無変更。
+- PR #9 を squash merge（`5955bf9`）、作業ブランチ削除、正式ローカルを`main`へ同期、
+  `check_standards.py`全10リポジトリOK、`DEV_DOCTOR` next-day-setupは`up-to-date`・未追跡0件、
+  ERROR 0。
+
+### 残課題（次サイクル候補）
+
+- `Codex_Duplex_Short/Long_*`合成プリンターの削除処理（`Remove-Printer`）が存在しない。
+  改善案（対応するクリーンアップ処理、作成前の確認ダイアログ、失敗時ロールバック、
+  診断用UI）を`docs/PHASE4_PRINT_AUDIT.md`に記録のみ、今回は実装せず。
+- `render_direct_preview()`の`bill`向け暗黙`else`分岐の明示化、印刷レジストリ3分岐の一本化。
+- 実プリンターでの最終確認は未実施——Phase 4で最小チェックリスト10項目を作成済み
+  （GDI A4/A3/B5代表帳票、両面印刷、Excel自動印刷のduplex clone実機確認、
+  ケーキ帳票、調理場カレンダーPDF/画像経路の見比べ、一括印刷、プレビューとの一致）、実施は次回。
