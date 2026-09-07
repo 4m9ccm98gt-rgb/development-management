@@ -19,7 +19,7 @@
 | PC統合先 | `beverage-inventory-ordering-system` Draft PR #7 / `feature/unified-ordering-flow` |
 | PC UI | `飲料在庫チェック` 直下に `飲料在庫・発注` / `物品発注依頼処理` |
 | QR受付 | 館内LANを使わず、スマホの4G/5G → Google Apps Script → Google Sheets一時受付箱 → PC → 物品SQLite |
-| FAX | 業者別集約、個別 `FAX送信`、`未送信を一斉FAX`、Windows FAX COM送信、成功履歴までGitHub側実装済み。実運用PCでの実送信確認待ち |
+| FAX | 業者別集約、個別 `FAX送信`、`未送信を一斉FAX`、Windows FAX COM送信、成功履歴、永続診断ログまで実装済み。開発PCではCOMジョブ投入とNO_LINE安全挙動まで実機確認済み。次は実運用PCでの実送信確認 |
 | 納品管理 | 行わない |
 
 ## 統合境界
@@ -99,7 +99,6 @@ SQLite側の依頼者名は `QR発注` として記録する。
 
 `最終発注日時` はスマホからQR依頼を送った日時ではなく、PC側で業者へ実際にFAX送信が成功した日時を基準とする。
 納品管理を行わないため、スマホ側には `発注中` / `納品待ち` のような継続状態を表示しない。
-これにより、スタッフは「最後にいつ実発注した商品か」を確認できるが、納品済みかどうかをシステムが推測しない。
 
 ### 商品マスターとQR
 
@@ -188,16 +187,14 @@ FAX送信ジョブ投入
 - 各業者カードに `FAX送信`
 - 画面全体に `未送信を一斉FAX`
 - FAX番号未登録の業者は送信不可として残す
-- ボタン押下後にFAXソフト上でFAX番号入力や送信ボタン操作を求めない設計を本命とする
-
-一斉送信は業者単位で成功 / 失敗 / 結果不明を独立管理する。
-途中で1社失敗しても他社の送信は継続する。
-成功した業者だけSQLiteを発注済みに進め、失敗 / 結果不明は未送信として残す。
-結果不明時は無条件再送を促さず、FAXキュー確認を要求する。
+- 一斉送信は業者単位で成功 / 失敗 / 結果不明を独立管理
+- 成功した業者だけSQLiteを発注済みに進める
+- 失敗 / 結果不明は未送信として残す
+- 結果不明時は無条件再送しない
 
 ## 自動FAX送信実装（2026-09-07）
 
-Draft PR #7では最初の自動送信エンジンとしてWindows Fax Service COM APIを実装する。
+Draft PR #7では最初の自動送信エンジンとしてWindows Fax Service COM APIを実装した。
 
 ### 送信エンジン
 
@@ -230,151 +227,142 @@ Draft PR #7では最初の自動送信エンジンとしてWindows Fax Service C
 
 1ページに収まらない場合は内容を黙って切らず、送信前にエラーとする。
 
-### 履歴
+### 成功履歴
 
 FAX送信成功時点を「実際の発注」とみなし、SQLiteへ保存する。
-履歴では以下を保持する。
 
 - 送信日時
-- 発注先ID
-- 発注先名スナップショット
-- 送信先FAX番号スナップショット
-- FAX送信エンジン名
-- FAXジョブID
-- 対象となった元の発注依頼ID
-- 商品ID
-- 商品名スナップショット
-- 数量
-- 発注単位
+- 発注先ID / 名スナップショット
+- FAX番号スナップショット
+- transport
+- transport job ID
+- 元発注依頼ID
+- 商品ID / 名スナップショット
+- 数量 / 発注単位
 
-商品名・発注先・FAX番号が後日変更されても、過去に実際に何をどこへ送ったかが変わらないよう送信時点の値を保存する。
-`fax_line_requests` により、集約後も元のQR発注依頼との対応を保持する。
-
-物品側正式schemaにもFAX履歴用として以下を追加した。
-
-- `fax_documents.vendor_name_snapshot`
-- `fax_documents.fax_number_snapshot`
-- `fax_documents.transport`
-- `fax_documents.transport_job_id`
-- additive migration version 4
-
+`fax_line_requests` により、集約後も元QR発注依頼との対応を保持する。
+物品側schemaはadditive migration version 4で `vendor_name_snapshot`, `fax_number_snapshot`, `transport`, `transport_job_id` を追加済み。
 既存DBは削除・再作成しない。
 
-### 納品管理
+## FAX診断ログ（2026-09-07）
 
-納品済み / 未納品の管理は今回の運用対象から外す。
-そのため `発注中` や `納品待ち` をスマホへ表示しない。
-旧schemaや旧Webに納品状態が存在していても、新しいPySide6日常運用では納品管理を必須工程にしない。
+実運用PCでCodexを使えないため、送信失敗時も持ち帰って解析できる永続診断を実装済み。
 
-## FAX環境調査結果
+既定保存先:
 
-2026-09-07、Codexを利用できる開発PCで読取調査を実施。
+`%USERPROFILE%\Documents\ShizenTenyou\FaxDiagnostics`
 
-- Microsoft Shared Fax Driver / `Fax` キューあり
-- Windows Fax and Scan / FaxComEx COM登録あり
-- Kyocera TASKalfa 3554ci(J) KXは通常印刷ドライバとして存在
-- 京セラFAX専用ドライバは開発PCでは検出されなかった
-- Windows FAX COM自体はFAX番号指定・ジョブ投入・状態取得が可能
-- 開発PCのWindows FAX経路が実運用の京セラ複合機へ実際に送信できることは未確認
-- 実運用PCにはCodexがないため、実運用PCの詳細な読取調査は行えない
+環境変数 `SUPPLY_FAX_LOG_DIR` で上書き可能。
 
-ユーザーが実運用PCで実送信テストを担当する。
-その結果に基づき、Windows FAX COMをそのまま正式送信エンジンとするか、別送信アダプタへ差し替えるか決定する。
+保存物:
 
-## 現行物品ドメイン設計 / 旧Web実装
+- 1試行ごとの `fax_attempt_*.log` JSON Lines
+- `fax_attempts.sqlite3`
+  - `fax_attempts`: 1試行1行の要約
+  - `fax_attempt_events`: COM接続、宛先設定、submit、job状態、Archive確認、結果の時系列
 
-`qr-supply-ordering-system` のFlask版は物品ドメイン・schema・既存仕様の参照として維持する。
+主な記録:
 
-- Flask / SQLite / HTML / CSS / JavaScript
-- SQLiteはアプリ経由のみ（WAL、外部キー、トランザクション）
-- 旧QRは `/order-item/<item_id>` URL
-- 旧依頼状態: 発注依頼 / FAX準備済み / 発注済み / 納品済み / 取消
-- `/admin/requests` は旧Web版の日常業務入口
-- 商品 / 発注先 / 依頼詳細 / 取消 / 履歴 / QRラベル / 発注表取込を実装済み
-- 旧WebのFAX画面はプレースホルダー
+- PC名
+- transport
+- 宛先名 / FAX番号
+- 帳票パス
+- job ID
+- COM初期化 / FaxServer接続
+- Recipients.Add
+- ConnectedSubmit
+- job status / status code / ExtendedStatus
+- Archive確認
+- success / failed / unknown / cancelled
+- 例外内容
 
-旧Flaskをスマホ向け本番ホストとして常時公開する方針にはしない。
+診断ログの書込み失敗はFAX処理そのものを止めない。
+診断SQLiteは業務SQLiteと独立し、診断結果だけで発注状態を変更しない。
 
 ## 実機確認済み
 
-2026-09-06、beverage PR #7のWindows確認で以下を確認済み。
+### UI / QR
+
+2026-09-06〜07:
 
 - `飲料在庫・発注` / `物品発注依頼処理` の2タブ
-- ライト / ダークテーマ
-- 既存飲料UIのレイアウト
-- 正式兄弟repoの `qr_supply.sqlite3` 自動検出
-- 取消データの実読込
+- 正式兄弟repoの物品SQLite自動検出
 - 状態絞り込み / 検索 / 再読込
-- DB未接続でもアプリ起動継続
-
-2026-09-07、物品QR発注のGoogle経路も実機確認済み。
-
-- Apps Scriptを物品QR発注用Web Appとして独立デプロイ
-- 既存飲料スマホ棚卸と同じSpreadsheet ID / Bridge secretを使用
-- `setupSupplyOrderSheets()` 正常完了
-- `supply_qr_items` / `supply_qr_requests` の2シート作成
+- Apps Script独立デプロイ
 - PCから商品マスタ3件をGoogleへ同期
-- iPhoneを4G/5GでQR読取
-- 商品名・数量・`発注する` のスマホ画面を確認
-- スマホから1件発注し、PCの `今すぐ取込` で発注依頼一覧へ1件追加
-- 再度 `今すぐ取込` を実行しても2件目は作成されず、`request_token` の冪等性を実機確認
+- iPhone 4G/5GでQR読取・発注
+- PC取込
+- 同一 `request_token` 再取込で重複なし
 
-途中でWeb App公開範囲不足による401が出たが、公開設定修正後は解消。
-その後の一時的な `Google bridge returned an invalid response` は再現せず、Codexの最小通信調査で `/exec` POSTが302経由で `script.googleusercontent.com/macros/echo` に到達し、最終200 / `application/json; charset=utf-8` でdoPostのJSONが返ることを確認した。コード修正は不要だった。
+QR受付ゲートは完了。
+
+### 開発PC FAX
+
+2026-09-07、開発PCで以下を実機確認済み。
+
+- Windows標準 `Fax` / `Microsoft Shared Fax Driver` / FaxComEx COM存在
+- COM生成 / `Connect("")`
+- OutgoingQueue / OutgoingArchiveアクセス
+- アプリから `0558-52-1234` を渡して実ジョブ投入
+- job ID `201dd3e6e74f54a`
+- 状態 `pending + NO_LINE`（status code 33）
+- 回線未確保のため手動キャンセル
+- キュー0件
+- `fax_attempt_*.log` 永続保存成功
+- 診断DB `fax_attempts.sqlite3` 永続保存成功
+- attempt ID 1
+- `started → COM初期化 → server接続 → document設定 → recipient追加 → submitted → pending/no_line → unknown → COM終了` を記録
+- キャンセル後にジョブが消えたため最終診断は安全側の `unknown`
+- `fax_documents` 成功履歴は0件
+- 対象依頼ID 2は `requested` / 1ケースのまま
+
+この結果により、**送信経路が成立しないPCでも成功誤判定せず、発注済みに進めず、原因解析ログを持ち帰れることを実機確認済み。**
 
 ## 自動テスト
 
-beverage Draft PR #7 最新HEAD `8e6785426e091e29a05e4c929bf68624d121b3cf` でGitHub Actions `Python migration tests` run #166 成功。
+GitHub Actions Windows runnerで最新版成功。
 
-- Windows Server 2025 runner
 - Python 3.13.15
-- pywin32 311導入成功
-- compileall: success
-- pytest: **60 passed / 1 skipped**
-- Windows FAX COMへFAX番号を渡すテスト
-- FAXジョブの成功 / 失敗判定テスト
-- 業者別集約
-- FAX成功履歴と元依頼紐付け
-- FAX番号 / transport / job IDスナップショット
-- FAX成功日時からスマホ最終発注日時を導出
-- 既存QR発注の冪等性
+- pywin32 311
+- compileall success
+- pytest **61 passed / 1 skipped**
+- FAX番号受け渡し
+- success / failed判定
+- `no_line → timeout → unknown`
+- 診断log生成
+- 診断SQLite / イベント履歴
+- 成功履歴 / job ID / スマホ最終発注日時
+- QR冪等性
 
-## QR実機ゲート結果
-
-QR受付の実機ゲートは完了。
-GitHub CIの自動テストと合わせ、QR読取からSQLite登録までの主要経路と二重登録防止を確認済み。
-
-- `RUN_DEV.cmd` 正常起動
-- QR発注UIの5項目表示
-- Apps Scriptデプロイ
-- Web App URL設定
-- 商品同期
-- QRラベル生成
-- iPhone 4G/5G読取
-- 1件発注
-- PC取込
-- 同一依頼の再取込で重複なし
-
-以後、Codexへ同じQR経路の重いpytestや全面再検証を繰り返し依頼しない。
+重い全面テストを同じ条件で繰り返さない。
 
 ## 次の実機ゲート
 
-次はFAX実送信確認。
-実運用PCにCodexはないため、ユーザーが操作確認を担当する。
+次は、**日常的にFAX送信を行っている実運用PCでの個別実送信確認**。
 
-1. `development-management`、`qr-supply-ordering-system`、`beverage-inventory-ordering-system` の正式ローカルを最新へfast-forward
-2. beverage `feature/unified-ordering-flow` を最新HEADへ合わせる
-3. Python依存関係へ `pywin32` を反映する
-4. DEV起動し、物品タブに業者別FAXカードと `FAX送信` / `未送信を一斉FAX` が表示されることを確認
-5. ユーザーが指定する安全なテスト送信先で、まず1社の `FAX送信` を実行
-6. 実際にFAXが届くことを確認
-7. アプリ側が成功として確定し、対象依頼だけ `発注済み` になることを確認
-8. FAX送信履歴にFAX番号・ジョブID・送信日時が残ることを確認
-9. スマホQRの `前回発注` が送信成功日時へ更新されることを確認
-10. 個別送信が通った後にだけ、一斉FAXを複数業者で確認する
+開発PCでテスト版EXEを作成し、実運用PCの既存環境やデータを汚さない専用テストbundleとして持ち込む。
 
-実FAX送信で失敗 / 結果不明になった場合は、再送を連打せず表示されたジョブIDとWindows FAXキューの状態を確認する。
-Windows FAX COM経路が実運用複合機へ接続できない場合は、`FaxSender` 境界を維持したまま送信アダプタだけ差し替える。
+推奨bundle:
+
+- PyInstaller onedir `BeverageInventory` 一式
+- 開発用物品DBからSQLite backup APIで作成した専用 `qr_supply_fax_test.sqlite3`
+- `QR_SUPPLY_DB_PATH` をそのテストDBへ向ける専用起動CMD
+- `SUPPLY_FAX_LOG_DIR` をbundle内 `FaxDiagnostics` へ向ける
+- source HEAD / EXE SHA-256 / 操作手順を記したテキスト
+
+実運用PCではインストールや既存DB置換をせずbundleから起動する。
+
+1. サンプル商店 / `0558-52-1234` / トイレットペーパー1ケースを確認
+2. 個別 `FAX送信` を1回だけ押す
+3. 一斉FAXは使わない
+4. 実際の着信を確認
+5. 成功なら `COMPLETED` / Archive、job ID、成功履歴、対象依頼 `ordered` を確認
+6. 失敗 / unknownなら再送せずbundle内 `FaxDiagnostics` を開発PCへ持ち帰る
+7. 個別成功後にのみ一斉FAX検証へ進む
+
+Windows FAX COMが実運用PCの実送信経路につながらない場合はtransportだけ差し替える。
+
+PR #7はDraftのまま維持する。merge / 本番配布 / tagは別判断。
 
 ## 経緯
 
@@ -382,5 +370,5 @@ Windows FAX COM経路が実運用複合機へ接続できない場合は、`FaxS
 2026-09-06、別アプリ間遷移ではなく「飲料PySide6を母艦に、物品発注依頼処理を同じウィンドウ内へ再構成する」方針へ変更した。
 同日、館内Wi-Fiを利用できない運用条件を再確認し、QRスマホ受付はローカルFlask直結ではなくGoogle Apps Script / Sheetsを一時HUBとする方式に確定した。
 2026-09-07、Apps Script独立デプロイからiPhone 4G/5G発注、PC取込、`request_token` 再取込まで実機確認し、QR受付ゲートを完了した。
-同日、FAXは業者別自動集約 + 個別送信 / 一斉送信 + 送信履歴とし、納品管理は行わない方針を決定。スマホには継続状態ではなくFAX送信成功時点の `最終発注日時` を表示する方針とした。
-同日、ユーザー方針によりFAX番号コピー方式を本命とせず、アプリ内ボタンだけで完結する自動送信ベースで実装する方針へ更新。Windows FAX COMを最初の送信エンジンとして実装し、GitHub CIを通過した。実運用PCでの実FAX送信だけを次の実機ゲートとする。
+同日、FAXは業者別自動集約 + 個別送信 / 一斉送信 + 成功履歴とし、納品管理は行わない方針を決定。スマホにはFAX送信成功時点の `最終発注日時` を表示する方針とした。
+同日、自動送信ベースのWindows FAX COM transportを実装し、開発PCで実job投入まで確認。開発PCはNO_LINEだったが、永続診断ログと安全側のunknown判定、業務DB非更新まで実機確認した。次の本命ゲートは実運用PCの実FAX送信。
