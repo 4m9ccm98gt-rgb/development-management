@@ -4,9 +4,27 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 
 ## 優先順位
 
+**工程①〜⑤の担当、③実機投入の停止条件、④⑤のユーザー既定担当、Codex利用条件は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を最優先する。**
+
 この文書は **開始時の読み込み、調査範囲、REUSE_MAP、テスト範囲、反復上限、Codex引き継ぎ、CI代替条件** の上限を定める。`AI_STARTUP.md`、`AI_OPERATING_MANUAL.md`、`DEVELOPMENT_RULES.md` 等の広い表現より、このティア別上限を優先する。
 
+担当判断は **安全性 / Codexクレジット / ユーザーが安全にワンクリック・通常GUIで実施できるか** の3軸で行う。ユーザーが安全にできる④実機確認・⑤build/deploy/updateを、単に「ChatGPTから触れない実機作業」という理由でCodexへ回さない。
+
 ただし、正式ソース・Git状態確認、秘密情報保護、実運用データ保護、本番反映制限、ユーザーが明示したフェーズ境界は弱めない。
+
+## 0. 工程と担当
+
+標準工程は次の5段階。
+
+1. **①設計**: ChatGPT
+2. **②開発・作成**: ChatGPT + GitHub + GitHub Actions
+3. **③実機投入**: Codexまたはユーザー。candidate同期とSHA確認だけ
+4. **④実機確認**: ユーザー
+5. **⑤ビルド・配布・確認**: ユーザーの正式ワンクリック経路
+
+③をCodexへ渡した場合は `HEAD SHA == candidate SHA`、想定branch、dirty treeを確認して停止する。③ではアプリ起動、GUI / Computer-Use、機能確認、実紙、追加テスト、candidate再レビュー、再調査、build、deployをしない。
+
+Codexは③の明示同期、または④/⑤でユーザーが再現した具体的なWindows障害の調査に限定する。無症状の「念のため実機確認」には使わない。
 
 ## 1. 変更ティア
 
@@ -33,6 +51,7 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 
 ### 全ティア共通
 
+- `OPERATING_CONTRACT.md` の工程担当
 - 対象 repo / branch / HEAD SHA / dirty tree
 - この文書
 - 対象 README または `projects/*.md` の今回に必要な箇所
@@ -49,7 +68,7 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 
 固定で長文書を全読みしない。原則として次だけ読む。
 
-- `AI_OPERATING_MANUAL.md`: **`スコープ変更時の確認`、`Git運用`、`フェーズ規律（調査／設計／実装／検証）`**。実機・Codex分業が今回に必要な場合だけ `Codexへ引き継ぐ条件`。
+- `AI_OPERATING_MANUAL.md`: **`スコープ変更時の確認`、`Git運用`、`フェーズ規律（調査／設計／実装／検証）`**。Windows障害調査が今回に必要な場合だけCodex条件。
 - `DEVELOPMENT_RULES.md`: **`開発環境と検証`、`Git管理と情報保護`** と、変更対象に一致する1つのdomain節（`EXEビルド標準` / `配布先更新の標準` / `俺伝の正式リリース標準` 等）。`既存資産の横断利用` は§3が発火した場合だけ読む。
 - 変更する契約・形式の producer / consumer、読み書き両側。
 - 金額・在庫・印刷・DB・共有フォルダ等では、今回に該当する安全ルール/設計判断だけ追加する。
@@ -58,7 +77,7 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 
 - `AI_STARTUP.md` のフル開始チェーンを適用し、repo横断・既存資産・設計判断・移行経路を確認する。
 
-同一セッション/branchで確認済みの文書は、HEAD・文書・前提が変わらない限り再ロードしない。
+同一セッション/branchで確認済みの長文書は、HEAD・文書・前提が変わらない限り再ロードしない。ただし**「次工程・担当・Codex指示」の判断では、`OPERATING_CONTRACT.md` の短い工程ゲートだけは毎回照合する。**
 
 ## 3. REUSE_MAP / 横断調査
 
@@ -76,17 +95,17 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 - **T0**: 構文/import確認または当該ファイルの最小テスト。full禁止。
 - **T1**: targeted testのみ。例 `pytest -k <対象> -q --tb=short -p no:cacheprovider`。full禁止。
 - **T2**: targeted + blast-radiusで名指しした regression。**regression ≠ full suite**。
-- **T3**: automated full regression + 必要な dry-run / 実環境確認。CIで代替できる automated regression をCodexローカルで重複しない。
+- **T3**: automated full regression + 必要な dry-run。CIで代替できる automated regression をCodexローカルで重複しない。
 
 ### T2と automated regression CI
 
 - §9の表で現在branchを automated regression CI がカバーしている場合、Codexはローカルで同じ automated full regression を回さない。push / PR後のCIを回帰ゲートとする。
-- **T2/T3でCIをローカルfullの代替に使った場合、対象candidate SHAのCI greenを実際に確認するまで作業完了として報告しない。** `CI確認予定` は途中状態でありterminal completionではない。
+- **T2/T3でCIをローカルfullの代替に使った場合、対象candidate SHAのCI greenを実際に確認するまで②開発・作成を完了として報告しない。** `CI確認予定` は途中状態でありterminal completionではない。
 - T2/T3は原則branch / PR上のcandidateでCIを通す。ユーザーがdirect-mainを明示した場合や既存運用がdirect-mainの場合でも、push後の同一SHA green確認は省略しない。
-- 実プリンター、実共有サーバー、live IMAP、外部サイト、実HDD、実OCR、実LAN等はCIとは別の確認レベル。今回のblast-radiusが触れる場合だけ Windows実機で確認し、CI成功を実機確認済みとは扱わない。
-- **今回のblast-radiusがCIでskipされるtest、または§9の未カバー領域に触れる場合、その領域のtargeted local / real checkはCI-covered branchでも省略しない。**
+- 実プリンター、実共有サーバー、live IMAP、外部サイト、実HDD、実OCR、実LAN、GUI/Tk等はCIとは別の確認レベル。今回のblast-radiusが触れる場合は**まず④ユーザー実機確認として残す。** CI成功を実機確認済みとは扱わない。
+- **今回のblast-radiusがCIでskipされるtest、または§9の未カバー領域に触れる場合、その領域の確認はCI-covered branchでも省略しない。ただし既定担当は④ユーザーであり、Codex利用の自動トリガではない。ユーザーが実施できない、または④/⑤で具体症状が出た場合だけCodex候補とする。**
 - CIが automated regression をカバーしないbranchでは、修正ループ中にfullを回さない。
-- 金額・在庫・価格・帳票・印刷・DB・共有フォルダ・HDD同期に触れるT2だけ、CI未整備branchでは最終チェックポイントでローカルfullを1回許可する。
+- 金額・在庫・価格・帳票・印刷・DB・共有フォルダ・HDD同期に触れるT2だけ、CI未整備branchでは最終チェックポイントでローカルfullを1回許可する。このローカルfullを誰が実行するかは能力と工程で決め、ユーザーの安全なワンクリック経路がある場合はCodexへ戻さない。
 - そのfullで回帰が出た場合、修正後に**もう1回だけ**fullを許可する（合計2回まで）。2回目でもgreenにならなければ報告へ移る。
 
 成功ログはサマリ1行に圧縮し、FAILED行・短いtracebackだけを残す。その他の禁止事項は§8。
@@ -99,39 +118,49 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 - 原因仮説を立て直した場合はカウンタをリセットしてよいが、仮説を細分化して無限に続けない。
 - 上限到達前は、安全な依頼範囲内で細かい許可待ちを挟まず進める。
 
-## 6. 確立した事実・green baseline
+## 6. 確立した事実・green baseline・Codex引き継ぎ
 
 ChatGPT→Codex / 別sessionの引き継ぎには次を含める。
 
 ```text
+【工程】③ 実機投入のみ / ⑥ Windows障害調査
 【変更ティア】 T0 / T1 / T2 / T3
-【対象】 repo / branch / commit
+【対象】 repo / branch / candidate SHA
 【確立した事実】 根本原因 + 根拠 / 関係ファイル地図 / 確認済み事項
 【棄却した仮説】 確認内容 + 棄却理由
 【greenベースライン】 CIまたはテスト結果 + SHA + 日付
-【Codexで回すテスト】 targeted / regression の具体対象
-【Codexで回さないもの】 再調査 / 不要full / 通常EXE build等
-【残作業】 Windows・実機・ローカル依存で未確認のものだけ
+【Codexで行う作業】 今回必要な作業だけ
+【Codexで回すテスト】 ⑥で本当に必要な場合だけ具体対象。③では原則なし
+【Codexで行わない】 アプリ起動 / GUI操作 / 機能確認 / 実紙印刷 / 追加テスト / full regression / candidate再レビュー / 再調査 / 通常EXE build / 通常deploy
+【停止条件】 ③なら HEAD SHA == candidate SHA を確認した時点
+【変更禁止】 本番反映禁止、main変更禁止等
+【症状】 ⑥の場合のみ必須
+【残作業】 ④ユーザー確認 / ⑤ユーザー操作 / ⑥障害調査の残り
+【報告】 branch / HEAD / dirty tree / 結果 / error / 未確認事項
 ```
 
-- `【確立した事実】` が現在HEADでも有効なら理由なく再導出しない。ただし**修正前のtargeted再現が、引き継ぎに記載された原因・挙動を支持しない場合、その事実だけをsuspectとして必要範囲を再調査する。** この再調査は§5の同一仮説反復には数えない。
+- ③同期では、candidateへ同期してSHA一致を確認したら停止する。targeted testや実機起動を追加しない。
+- ⑥Windows障害調査は、④/⑤でユーザーが再現した具体症状を前提とする。症状のない「念のため実機確認」を⑥にしない。
+- `【確立した事実】` が現在HEADでも有効なら理由なく再導出しない。ただし**⑥で報告された症状が、引き継ぎに記載された原因・挙動を支持しない場合、その事実だけをsuspectとして必要範囲を再調査する。**
 - baseline SHA と現在HEADが異なる場合、`git diff <baseline>..HEAD` の変更が今回のtouched files + 直接依存/消費者、またはblast-radiusに**触れなければ baseline は有効**。
 - 触れている場合は影響moduleだけ targeted で再確認し、baseline鮮度のためだけにfullを回さない。
-- **baselineが有効でも、自分が今回変更した箇所の§4 targeted testは必ず実行する。** baselineは他領域の再検証を省略する根拠であり、自分の変更を未テストにする根拠ではない。
+- **baselineが有効でも、自分が今回②で変更した箇所の§4 targeted testは必ず実行する。** baselineは他領域の再検証を省略する根拠であり、自分の変更を未テストにする根拠ではない。
 - baselineが無く、CIにも直近greenが無い場合だけ、最初のgreen確立として§4のティア相当テストを1回行う。
 - 長期化するT2/T3だけ必要に応じて `INVESTIGATION.md` 等へ固定する。T0/T1で台帳を毎回作らない。
 
 ## 7. 常に残す安全弁
 
 - 正式 repo / branch / HEAD SHA / dirty tree
+- 工程①〜⑤ + 担当
 - ティア + blast-radius
-- 変更箇所の targeted test
+- ②変更箇所の targeted test
 - T2以上の金額・在庫・印刷・共有フォルダ・HDD・DB等のデータ保全
 - build/deploy/release変更のdry-runまたは非破壊確認
 - commit/push前のdiffレビュー
 - 秘密情報・実運用データ・不要生成物の混入確認
 - 実機未確認を「確認済み」にしない
 - 本番反映・tag・merge等の既存承認ルール
+- ③と④を混同しない
 
 ## 8. 禁止する無駄
 
@@ -142,7 +171,11 @@ ChatGPT→Codex / 別sessionの引き継ぎには次を含める。
 - passログ全文を会話へ貼る
 - ChatGPT側で確立済みの根本原因を理由なく再導出する
 - 通常EXE build / 通常配布更新をCodexへ戻す
-- CI代替を使ったT2/T3を、candidate SHAのCI結果未確認のまま完了扱いする
+- **③同期タスクでアプリ起動 / GUI / Computer-Use / 機能確認 / 実紙 / 追加テスト / candidate再レビュー / 再調査を行う**
+- **④ユーザー実機確認を、ユーザーが実施可能なのにCodexへ代行させる**
+- **⑤ワンクリックbuild / deploy / updateをCodexへ代行させる**
+- 無症状の「念のため実機確認」をCodexへ依頼する
+- CI代替を使ったT2/T3を、candidate SHAのCI結果未確認のまま②完了扱いする
 
 ## 9. automated regression CI カバレッジ
 
@@ -152,13 +185,13 @@ agentは原則この表を正とし、毎回 `.github/workflows` を総当たり
 
 | repo / branch | automated regression CI | 検出方式 | workflow / scope | CI未カバー・追加確認 |
 |---|---|---|---|---|
-| `next-day-setup / main` | あり | pytest自動収集 | `.github/workflows/tests.yml` / deterministic pytest set | CIでskipされるGUI/Tk領域、実印刷、共有先は変更時にlocal/real確認 |
-| `beverage-inventory-ordering-system / python-desktop-migration` | あり | pytest自動収集 | `.github/workflows/python-migration-tests.yml` / Python migration pytest | 実プリンター、共有サーバー、2PC等は別ゲート |
+| `next-day-setup / main` | あり | pytest自動収集 | `.github/workflows/tests.yml` / deterministic pytest set | CIでskipされるGUI/Tk領域、実印刷、共有先は変更時に**④ユーザー確認** |
+| `beverage-inventory-ordering-system / python-desktop-migration` | あり | pytest自動収集 | `.github/workflows/python-migration-tests.yml` / Python migration pytest | 実プリンター、共有サーバー、2PC等は④/⑤。具体症状時だけ⑥ |
 | `beverage-inventory-ordering-system / main` | なし | — | `standards.yml` のみ | §4のCI未整備分岐 |
-| `food-cost-calculation-system / main` | あり | pytest自動収集 | `.github/workflows/tests.yml` / Windows PowerShell 5.1 formal validation dry-run内で pytest + compileall + diff check + release script safety | **real Nuitka standalone/MSVC build、実Tesseract OCR、実HDD/利用PCは未カバー**。`tools/release/**`・build flags・dependency/build変更は正式手動build + launch確認がrelease前に必要 |
-| `inventory-reconciliation-system / main` | あり | **列挙 + drift guard** | `.github/workflows/tests.yml` / deterministic unittest 3 modules + local shift-holiday regression | live IMAP / Outlook/Thunderbird / browser / external-site / scheduled-task orchestration / warning mail送信は必要時の実機確認。新しいdeterministic test fileを追加してdrift guardが赤になったら同一変更でworkflow列挙へ追加する |
-| `qr-supply-ordering-system / main` | あり | pytest自動収集 | `.github/workflows/tests.yml` / repository deterministic pytest set | 実LAN、camera/QR scan、Windows firewall、populated production DB migration、multi-host運用は別確認。DB migration/schema変更はtargeted migration dry-runを追加する |
-| `menu-sheet-generator / main` | あり | **列挙 + drift guard** | `.github/workflows/tests.yml` / main app Release build + PMS CSV aggregation + GDI pre-spool harnesses | GDI pre-spoolはlayout/renderingまで。spooler/driver/紙/物理出力は未カバー。`GdiDirectPrintService.Print`、printer interaction、paper handling変更はrelease前に実プリンター確認が必要 |
+| `food-cost-calculation-system / main` | あり | pytest自動収集 | `.github/workflows/tests.yml` / Windows PowerShell 5.1 formal validation dry-run内で pytest + compileall + diff check + release script safety | **real Nuitka standalone/MSVC build、実Tesseract OCR、実HDD/利用PCは未カバー**。release前の正式手動build + launchは⑤ユーザー。障害時のみ⑥ |
+| `inventory-reconciliation-system / main` | あり | **列挙 + drift guard** | `.github/workflows/tests.yml` / deterministic unittest 3 modules + local shift-holiday regression | live IMAP / Outlook/Thunderbird / browser / external-site / scheduled-task orchestration / warning mail送信は必要時に④ユーザー確認。障害時のみ⑥ |
+| `qr-supply-ordering-system / main` | あり | pytest自動収集 | `.github/workflows/tests.yml` / repository deterministic pytest set | 実LAN、camera/QR scan、Windows firewall、populated production DB migration、multi-host運用は④/⑤。DB migration/schema変更はtargeted migration dry-runを追加 |
+| `menu-sheet-generator / main` | あり | **列挙 + drift guard** | `.github/workflows/tests.yml` / main app Release build + PMS CSV aggregation + GDI pre-spool harnesses | GDI pre-spoolはlayout/renderingまで。spooler/driver/紙/物理出力は④ユーザー実プリンター確認。障害時のみ⑥ |
 
 列挙型CIでは、drift guardが「新しいdeterministic test / harnessをworkflowへ追加し忘れた」状態をgreenにしないことを必須とする。guardがない列挙CIは automated regression CI「あり」と扱わない。
 
@@ -168,13 +201,16 @@ agentは原則この表を正とし、毎回 `.github/workflows` を総当たり
 
 長いログではなく、次だけを簡潔に報告する。
 
+- 現在工程 / 担当
 - 変更ティア / 変更内容
 - targeted / regression結果
 - **T2/T3でCI代替を使った場合: candidate SHA + CI green確認済み結果**
+- ③を実施した場合: branch / HEAD SHA / dirty tree、SHA一致で停止したこと
+- ④/⑤でユーザーが確認する項目
 - 実機未確認 / CI未カバー領域
 - branch / commit SHA
 - 本番反映の有無
 
-`CI確認予定`、`CI実行中` は途中報告には使えるが、CI代替を使ったT2/T3のterminal completionには使わない。
+`CI確認予定`、`CI実行中` は途中報告には使えるが、CI代替を使ったT2/T3の②terminal completionには使わない。
 
-目的は品質を落とすことではない。**事故防止に効く確認を残し、安心感だけの重複確認を削る。**
+目的は品質を落とすことではない。**事故防止に効く確認を残し、ユーザーが安全にできる工程はユーザーへ残し、安心感だけの重複確認と高コストなCodex実機代行を削る。**
