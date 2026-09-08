@@ -2,60 +2,97 @@
 
 ## この文書の位置づけ
 
-- 作業をエージェント名（ChatGPT / Codex / Claude Code）で割り当てるのではなく、そのセッションが実際に持つ「能力」で判定する。
-- 既存の設計判断「ChatGPTをGitHub側の第一実装担当とし、Codexを実機作業へ優先配分する」「ソース起動を標準とし、EXEは手動ビルド、配布更新もワンクリック化する」の意図はそのまま維持する。本文書はその判定基準を、エージェントの種類が変わっても壊れない形に置き換える。
-- 記述が競合する場合、[AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) / [AGENTS.md](AGENTS.md) / [AI_STARTUP.md](AI_STARTUP.md) のエージェント名ベースの担当記述より、本文書を優先する。旧記述は将来ポインタへ整理する。
+- 作業をエージェント名（ChatGPT / Codex / Claude Code）だけで割り当てず、そのセッションやユーザーが実際に持つ「能力」で判定する。
+- **工程担当・③実機投入の停止条件・④⑤のユーザー既定担当・Codex利用条件は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を最優先する。**
+- 既存の設計判断「ChatGPTをGitHub側の第一実装担当とし、ソース起動を標準とし、EXEは手動ビルド、配布更新もワンクリック化する」の意図は維持する。
+- 記述が競合する場合、担当・工程は `OPERATING_CONTRACT.md`、能力定義は本文書、開始文書・テスト予算は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を優先する。
 
 ## 背景（なぜ能力ベースにするか）
 
-- 1つのセッションが複数の能力を同時に持つことがある。例：Windows実機上のClaude Codeは、GitHub書き込みも実機操作も同時にできる。エージェント名ベースだと、この場合の担当が決まらない。
-- 「ChatGPTがGitHubを更新 → Codexが実機で実装」を成立させるには、実機側が作業前に `git pull`、作業後に `git push` する必要がある。この同期を誰がやるか明文化されておらず、ローカルとGitHubがずれてハンドオフが切れた実例がある（2026-09-02、`DEVELOPMENT_RULES.md` / `REUSE_MAP.md` がローカル未コミットのまま `main` が遅延）。
+- 1つのセッションが複数の能力を同時に持つことがある。例：Windows実機上のClaude Codeは、GitHub書き込みも実機操作も同時にできる。
+- しかし「能力を持つ」ことと「その能力を有料AIに使わせるべき」は別問題。**実機の前にいるユーザーも `windows-real` / `real-peripherals` / `shared-server` の能力保有者として扱い、安全なワンクリック操作はユーザーを既定担当とする。**
+- GitHub candidateを正式ローカルへ同期する③と、起動・GUI・実紙等の④を分離しないと、同期だけの依頼が高コストなComputer-Useへ膨張する。
 - 新しいツールが増えても判定ルールが陳腐化しないようにする。
 
 ## 能力の定義
 
-| 能力 | 意味 | 典型的に持つセッション |
+| 能力 | 意味 | 典型的に持つ主体 |
 |---|---|---|
-| `github-rw` | 対象GitHubリポジトリの読み書き（ブランチ、commit、push、PR） | GitHub連携ChatGPT、`gh` / `git` を持つClaude Code、一部のCodex |
-| `sandbox-exec` | 隔離環境でのコード実行（構文確認、単体テスト、`compileall`、lint） | Codexクラウド、Claude Code、GitHub Actions |
-| `windows-real` | 実Windows機の操作：`C:\Users\suisy\Documents\Development\repos` 配下の正式ソース、実 `.venv`、実GUI、実ファイルシステム | 実機上のCodex、実機上のClaude Code |
-| `real-peripherals` | 実プリンター、外付けHDD等の物理機器 | 実機の前にいる人、対応環境のCodex |
-| `shared-server` | 共有配布サーバーへの書き込み、複数PC同時試験 | 対象ネットワーク上のセッション、実機の前にいる人 |
+| `github-rw` | 対象GitHubリポジトリの読み書き（ブランチ、commit、push、PR） | GitHub連携ChatGPT、`gh` / `git` を持つ実機AI |
+| `sandbox-exec` | 隔離環境でのコード実行（構文確認、単体テスト、`compileall`、lint） | GitHub Actions、Codexクラウド、実行環境を持つAI |
+| `windows-real` | 実Windows機の操作：正式ローカルrepo、実 `.venv`、実GUI、実ファイルシステム | **実機の前にいるユーザー**、実機上のCodex / Claude Code等 |
+| `real-peripherals` | 実プリンター、外付けHDD等の物理機器 | **実機の前にいるユーザー**、対応環境の実機AI |
+| `shared-server` | 共有配布サーバーへのアクセス、複数PC試験 | **対象ネットワークのユーザー**、対象ネットワーク上の実機AI |
 
-各セッションは作業開始時に「自分がどの能力を持つか」を確認し、タスクが要求する能力と照合する。持たない能力が必要になったら、その部分だけを持つ側へ引き継ぐ。
+各主体は必要能力を持つか確認する。ただし、能力だけで担当を決めず、`OPERATING_CONTRACT.md` の **安全性 / Codexクレジット / ユーザー操作可能性** の3軸を先に適用する。
 
-## 作業種別 → 必要能力
+## 作業種別 → 必要能力と既定担当
 
-| 作業 | 必要能力 | 補足 |
+| 作業 | 必要能力 | 既定担当 / 境界 |
 |---|---|---|
-| コード調査、設計、仕様整理 | 読み取りのみ（能力不問） | |
-| GitHub上の実装・テスト追加・ブランチ・commit・push・PR | `github-rw` | 設計文脈を持つ側が一貫して担当する |
-| 単体テスト / `compileall` / lint 実行 | `sandbox-exec` | |
-| Pythonソース版のWindows実機起動・実GUI確認 | `windows-real` | |
-| 正式EXEビルド（`BUILD_*_CLICK_ME.cmd`） | `windows-real`（ユーザーのワンクリック） | 通常はCodexのタスクにしない |
-| 配布更新（`UPDATE_SHARED_FOLDER.cmd` / HDD更新） | `windows-real` ＋ `shared-server` または `real-peripherals` | 通常はユーザーのワンクリック |
-| 実プリンター確認 | `real-peripherals` | |
-| 共有サーバー上での複数PC同時更新試験 | `shared-server` | |
+| ① 設計、コード調査、仕様整理 | GitHub読み取り等 | ChatGPT |
+| ② GitHub上の実装・テスト追加・ブランチ・commit・push・PR | `github-rw` | ChatGPT + GitHub Actions |
+| ② 単体テスト / `compileall` / lint | `sandbox-exec` | GitHub Actions / ChatGPT側で可能な実行環境 |
+| **③ candidate同期** | `windows-real` | Codexまたはユーザー。**起動・確認なし。HEAD SHA一致で停止** |
+| **④ Pythonソース版の実機起動・GUI・機能確認** | `windows-real` | **ユーザー** |
+| **④ 実プリンター / 実紙確認** | `real-peripherals` | **ユーザー** |
+| **⑤ 正式EXEビルド（`BUILD_*_CLICK_ME.cmd`）** | `windows-real` | **ユーザーのワンクリック**。通常はCodexタスクにしない |
+| **⑤ 配布更新（`UPDATE_SHARED_FOLDER.cmd` / HDD更新等）** | `windows-real` + `shared-server` または `real-peripherals` | **ユーザーのワンクリック** |
+| ⑥ Windows障害調査 | 症状に応じた `windows-real` 等 | ④/⑤で具体症状が出た場合だけCodex |
+| 2台同時などユーザー1人では物理的に成立しない試験 | `shared-server` 等 | 必要能力を持つ実機AIを例外利用可 |
 
-## 正式ローカルリポジトリの同期規約（必須）
+## ③正式ローカルリポジトリへのcandidate同期規約
 
-`windows-real` を持つセッションが `Development\repos` 配下の正式ソースに触れる場合：
+③を行う主体が `Development\repos` 配下の正式ソースに触れる場合：
 
-- **作業前**：対象リポジトリで `git fetch` し、想定ブランチであること・意図しない未コミット変更が無いことを確認する。他者の未コミット変更は保護する。behind がある場合は `git pull --ff-only`（競合したら停止して報告する）。
-- **作業後**：意図した変更を `git commit` + `git push` する。push しない場合は、引き継ぎ文と管理文書に「未コミットで残す理由」を明記する。
-- **「編集したが push していない」は未完了工程として扱う。** GitHub連携のみのセッション（例：ChatGPT）からは見えず、消えたように見える。
-- `github-rw` のみで `windows-real` を持たないセッションは、自分の push が既存のローカルcloneへ届いている保証が無い。次に `windows-real` を持つセッションが pull する。
+1. 対象repoが正式パスであることを確認する。
+2. 想定branchを確認する。
+3. dirty treeを確認し、既存の未コミット変更があれば保護する。意図不明なら停止して報告する。
+4. `git fetch` を行う。
+5. 必要なら `git pull --ff-only` / checkout / switch 等で指定candidateへ同期する。競合したら停止して報告する。
+6. `git rev-parse HEAD` で **HEAD SHA == candidate SHA** を確認する。
+7. branch / HEAD / dirty tree / 実施結果を報告して**停止する**。
 
-## Claude Code（実機上）の位置づけ
+③では次を行わない：
 
-- 実機上のClaude Codeは通常 `github-rw` ＋ `sandbox-exec` ＋ `windows-real` を同時に持つ。1タスクを調査から実装・実機確認まで通しで担当でき、`real-peripherals` / `shared-server` だけを引き継げばよい。
-- この場合も同期規約は同じ。着手前に pull、完了時に commit + push する。
+- アプリ起動
+- GUI / Computer-Use
+- 機能確認
+- 実紙 / プリンター確認
+- 追加テスト / full regression
+- candidate再レビュー / 根本原因再調査
+- build / deploy / UPD
+
+`github-rw` のみで `windows-real` を持たないセッションは、自分のpushが既存のローカルcloneへ届いている保証が無い。次の③で同期する。
+
+## ④/⑤ユーザー操作の扱い
+
+ユーザーは `windows-real` の正式な能力保有者です。次はAIへ押し戻さずユーザー既定とします。
+
+- `RUN_DEV.cmd` 等の起動
+- 通常GUI確認
+- 修正箇所の機能確認
+- 実紙確認
+- `BUILD_*_CLICK_ME.cmd`
+- `UPDATE_*_CLICK_ME.cmd` / `UPDATE_SHARED_FOLDER.cmd` 等の正式ワンクリック更新
+
+ユーザーに任せないもの：長い手打ちPowerShell/Git、conflict解消、force push、履歴書き換え、`.git`内部操作、複数repo横断同期判断、実運用DB/認証情報/実データの直接編集、共有先への手動 `robocopy`。
+
+## Codexの位置づけ
+
+Codexは「実機確認担当」ではなく、次の2用途へ限定する。
+
+1. 明示された③candidate同期
+2. ④/⑤でユーザーが再現した具体的なWindows障害の調査
+
+無症状の「念のため実機確認」、ユーザーが安全に実施できる④/⑤の代行には使わない。
+
+## Claude Code等の実機AIの位置づけ
+
+実機AIが `github-rw` + `sandbox-exec` + `windows-real` を同時に持っていても、**能力があるから①〜⑤を通しで担当させる、とはしない。** `OPERATING_CONTRACT.md` の工程分離を維持する。
+
+③同期タスクならHEAD一致で停止する。⑥障害調査なら具体症状の範囲だけ調査する。
 
 ## 軽量レーン（小規模修正）
 
-1ファイルに閉じ、ビルド・配布・業務データ・複数リポジトリ・アーキテクチャに影響しない変更は、確認文書を絞ってよい：
-
-- [AGENTS.md](AGENTS.md)、[AI_MEMORY.md](AI_MEMORY.md)（「ユーザー特性・作業スタイル」を含む）、対象の `projects/*.md` を読む
-- 作業して、[DAILY_LOG.md](DAILY_LOG.md) に記録する
-
-ビルド・配布・業務データ・複数リポジトリ・アーキテクチャに関わる変更は、[AI_STARTUP.md](AI_STARTUP.md) の完全な確認順序に従う。
+T0/T1の文書・調査範囲は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を正とする。担当判定はティアに関係なく [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を適用する。
