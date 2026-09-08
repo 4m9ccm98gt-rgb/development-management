@@ -2,128 +2,150 @@
 
 ## 正式な知識ベース
 
-- チャットだけに存在する決定事項を作らない。
-- 運用・設計・ルール・重要な判断は `development-management` に必ず記録する。
-- チャットの内容を唯一の情報源にしない。
 - GitHub上の `development-management` を開発の正式な知識ベースとする。
-- 判断の理由は `docs/decisions.md`、進行状況は `PROJECT_STATUS.md`、日々の作業は `DAILY_LOG.md` に反映する。
-- 読み込み・調査・テストの範囲は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) のティア別上限を優先する。
+- チャットだけに重要な決定事項を残さない。
+- 工程①〜⑤と担当は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を正とする。
+- 読み込み・調査・テスト範囲は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) を正とする。
+- 能力定義は [CAPABILITIES.md](CAPABILITIES.md) を正とする。
+- 判断の理由は `docs/decisions.md`、進行状況は `PROJECT_STATUS.md`、再発防止は `LESSONS_LEARNED.md` に残す。
 
 ## ソースと作業場所
 
-- 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下のみとする。
-- 旧フォルダは参照専用とし、新規開発、修正、ビルド、コミットに使用しない。
-- 新しいチャットや別Codex環境では、最初に `AGENT_EFFICIENCY_POLICY.md` で変更ティアを決め、そのティアで必要な `development-management` 文書だけ確認する。
-- 作業開始時に対象リポジトリのブランチ、HEAD SHA、未コミット変更を確認する。
+- 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下のみ。
+- 旧フォルダは参照専用。新規開発・修正・ビルド・commitに使わない。
+- 作業開始時に対象repo / branch / HEAD SHA / dirty treeを確認する。
+- ③実機投入ではcandidateへ同期するだけで、新規編集を始めない。
 
-## ChatGPT / Codex 分業
+## 5工程の担当
 
-- ChatGPTがGitHubへ直接アクセスできる場合、GitHub上で完結する調査、設計、実装、テスト追加、ブランチ作成、commit、push、PR作成、レビューは原則としてChatGPT側で行う。
-- Codexは、Windows実機、正式ローカルリポジトリ、ローカル専用ファイル、実プリンター、共有サーバー、実機GUIなど、ChatGPTが直接扱えない環境の作業を担当する。
-- CodexへEXEビルドを通常作業として依頼しない。EXE化はクレジット消費が大きいため、手動ワンクリックビルドを標準とする。
-- 同じGitHub作業をChatGPTとCodexで重複実施しない。Codexクレジットは実機・ローカル依存作業へ優先して使う。
-- ChatGPTからCodexへ渡すときは、`AGENT_EFFICIENCY_POLICY.md` §6 の引き継ぎ形式（変更ティア、対象commit、確立した事実、棄却仮説、green baseline、回す/回さないテスト、残作業）を使う。
-- Codexは、引き継がれたGitHub実装や現在HEADで有効な確立済み事実を理由なく作り直し・再導出しない。追加修正が必要な場合は差分理由を明示する。
-- 本番共有フォルダへの反映、実運用データへの書き込み、実プリンター出力などは、安全確認後に実施する。
+| 工程 | 既定担当 | 境界 |
+|---|---|---|
+| ① 設計 | ChatGPT | 方針・受入条件・tier |
+| ② 開発・作成 | ChatGPT + GitHub + GitHub Actions | 実装・targeted/regression・必要なCI green |
+| ③ 実機投入 | Codexまたはユーザー | candidate同期、branch/HEAD/dirty確認、SHA一致で停止 |
+| ④ 実機確認 | ユーザー | RUN_DEV / GUI / 機能 / 実紙等 |
+| ⑤ ビルド・配布・確認 | ユーザー | 正式ワンクリックbuild / update / deploy |
+
+Codexは③または、④/⑤で具体的なWindows障害が出た場合の⑥調査だけに使用する。
+
+### ③実機投入で禁止
+
+- アプリ起動
+- GUI / Computer-Use
+- 機能確認
+- 実紙印刷 / printer操作
+- 追加テスト / full regression
+- candidate再レビュー / 根本原因再調査
+- build
+- deploy / UPD
+
+`HEAD SHA == candidate SHA` を確認したら報告して停止する。
+
+## ChatGPT / Codex / ユーザー分業
+
+- ChatGPTがGitHubへ直接アクセスできる場合、GitHub上で完結する調査、設計、実装、テスト追加、branch、commit、push、PR、レビューはChatGPT側で行う。
+- ユーザーは④実機確認と⑤正式ワンクリックbuild/deployの既定担当。
+- Codexは通常の実機確認担当ではない。③candidate同期か、具体症状付きのWindows障害調査へ限定する。
+- 同じGitHub作業をChatGPTとCodexで重複しない。
+- CI未カバーだからという理由だけでCodexを発火させない。まず④ユーザー確認へ渡す。
+- Codex指示は `OPERATING_CONTRACT.md` §7 の形式を使い、`【工程】` と `【Codexで行わない】` を必須にする。
+
+## ユーザー操作の基準
+
+ユーザーへ任せる標準操作:
+
+- `RUN_DEV.cmd` 等のダブルクリック起動
+- 通常GUI確認
+- 修正箇所の機能確認
+- 実紙確認
+- `BUILD_*_CLICK_ME.cmd` 等の正式ワンクリックbuild
+- `UPDATE_*` / `UPDATE_SHARED_FOLDER.cmd` / `UPDATE_HDD_CLICK_ME.cmd` 等の正式ワンクリックupdate
+
+ユーザーへ標準で任せない操作:
+
+- 長いPowerShell/Gitの手打ち
+- conflict解消
+- force push / 履歴書き換え
+- `.git` 内部操作
+- 複数repo横断同期判断
+- 実運用DB / 認証情報 / 実データの直接編集
+- 共有フォルダへの手動 `robocopy`
 
 ## Python / Windowsアプリの標準実行方式
 
-- Pythonで実装するWindowsアプリは、開発時にEXEを作らなくても正式ローカルから直接起動できる状態を必ず維持する。
-- 原則としてリポジトリ内に、ユーザーがダブルクリックで開発版を起動できる `RUN_DEV.cmd` または同等のワンクリック起動手順を用意する。
-- `RUN_DEV.cmd` はリポジトリ直下またはアプリの明確なルートに置き、`.venv` を使用して正式ソースから起動する。
-- 日常の開発確認、UI確認、機能確認ではPythonソース版を優先し、EXE化を毎回の確認工程にしない。
-- EXE固有の挙動を確認する必要がある場合のみ、手動ビルドを行う。
+- 開発時にEXEを作らなくても正式ローカルから起動できる状態を維持する。
+- 原則 `RUN_DEV.cmd` または同等のワンクリック起動手順を用意する。
+- repo内 `.venv` を正式開発環境とする。
+- 日常のUI・機能確認はPythonソース版を優先する。
+- EXE固有確認が必要な場合のみ⑤で正式buildする。
 
 ## EXEビルド標準
 
-- EXEが必要なWindowsアプリには、ユーザーがCodexを使わず手動で実行できるワンクリックビルドを必ず用意する。
-- 標準名は `BUILD_EXE_CLICK_ME.cmd` とする。既存プロジェクトに確立済み名称がある場合は互換性を優先してよい。
-- ビルドスクリプトは、可能な限り `.venv` 確認または作成、依存確認、テスト、旧build/distの整理、EXE作成、成果物存在確認まで自動化する。
-- ビルド完了時は、可能な範囲でEXEパス、更新日時、サイズ、ビルド元commit SHA、SHA-256を確認・表示できるようにする。
-- ビルド出力、キャッシュ、実行時データはGit管理しない。
-- CodexにEXEビルドをさせるのは、手動ビルドが失敗し、Windows固有原因の調査が必要な場合など例外時のみとする。
-- PyInstaller、Nuitka等の方式はプロジェクトごとに実績を比較して選ぶが、「Codexがビルドすること」は標準フローに含めない。
+- EXEが必要なWindowsアプリにはユーザー用ワンクリックbuildを用意する。
+- 標準名は `BUILD_EXE_CLICK_ME.cmd`。既存正式名称がある場合は互換性を優先する。
+- build scriptは可能な限り `.venv`、依存、必要テスト、旧build/dist整理、成果物存在、commit SHA、SHA-256等を自動確認する。
+- build出力・cache・runtime dataはGit管理しない。
+- **⑤buildはユーザー既定。** Codexを使うのは正式ワンクリックbuildが具体的エラーで失敗し、Windows固有原因の調査が必要な場合だけ。
 
-## 配布先更新の標準
+## 配布先更新標準
 
-- 共有フォルダ等へ配布するWindowsアプリには、配布先更新用のスクリプトを必ず用意する。
-- 標準構成は `update_shared_folder.ps1` と、そのワンクリックラッパー `UPDATE_SHARED_FOLDER.cmd` とする。
-- ユーザーは必要なときに `UPDATE_SHARED_FOLDER.cmd` を手動実行できる状態にする。
-- 更新スクリプトは、配布物と業務データ・実運用設定を明確に分離する。
-- 共有フォルダ全体へ単純な `robocopy /MIR` を使用しない。業務データを消さない設計を優先する。
-- `_internal` 等のランタイム領域は必要に応じて完全同期し、古いDLL・ライブラリを残さない。
-- 更新前後に業務データが保持されていることを確認する。
-- 配布先パスは、実運用値をGitへ直書きする必要があるかを検討し、秘密情報・個別環境情報は可能な限り設定分離する。
-- 新規配布アプリでは、ビルドスクリプトだけ作って配布更新スクリプトを後回しにしない。開発初期から「起動」「ビルド」「配布更新」の3経路を揃える。
+- 配布Windowsアプリには安全なupdate scriptを用意する。
+- 標準は `update_shared_folder.ps1` + `UPDATE_SHARED_FOLDER.cmd`。既存正式経路があればそれを使う。
+- **⑤配布更新はユーザー既定。**
+- 配布物と業務データ・実運用設定を分離する。
+- 共有フォルダ全体への単純 `robocopy /MIR` を使わない。
+- `_internal` 等のruntime領域は必要に応じて完全同期する。
+- 更新前後に業務データ保持を確認する。
+- update scriptが具体的に失敗した場合だけCodexで原因調査する。
 
 ## 俺伝の正式リリース標準
 
-俺伝の通常リリースは、Codexへ毎回ビルドやHDDコピーを依頼せず、開発・配布担当者が次の順序で行う。
+俺伝は次をユーザーが実行する。
 
-1. 実装と必要な検証を完了する。
-2. 変更をcommitし、GitHubへpushする。
-3. 正規repo直下の `BUILD_俺伝_CLICK_ME.cmd` をダブルクリックする。
-4. 新しく生成されたリリースの `俺伝.exe` を起動し、実画面を確認する。
-5. 問題がなければ `UPDATE_HDD_CLICK_ME.cmd` をダブルクリックする。
-6. 利用PCでHDD内の `FoodCostCalculation\Updater\俺伝更新.exe` を起動する。
-7. 更新後の俺伝を起動し、業務データ保持と主要画面を確認する。
-8. Windowsの安全な取り外し操作でHDDを取り外す。
+1. ②実装・CI確認完了
+2. 必要なら③candidate同期
+3. `BUILD_俺伝_CLICK_ME.cmd`
+4. 新しい `俺伝.exe` を起動して④/⑤確認
+5. `UPDATE_HDD_CLICK_ME.cmd`
+6. 利用PCで `FoodCostCalculation\Updater\俺伝更新.exe`
+7. 更新後の主要画面・業務データ保持を確認
+8. HDDを安全に取り外す
 
-`BUILD_俺伝_CLICK_ME.cmd` はdirty working treeを正式ビルドしない。`UPDATE_HDD_CLICK_ME.cmd` は既存同名リリースを上書きせず、Updaterの `updater_settings.json` を保持する。Codexは、これらの手動スクリプトが失敗した場合の原因調査や、EXE固有問題の検証が必要な例外時だけ使用する。
+Codexはこれらが具体的に失敗した場合のWindows障害調査だけに使う。
 
 ## 既存資産の横断利用
 
-この節は**新しい方式の導入・既存方式の置換など、[AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) §3 の発火条件がある場合だけ適用する**。既存機構の局所修正では横断調査しない。
+この節は `AGENT_EFFICIENCY_POLICY.md` §3 の発火条件がある場合だけ適用する。
 
-- 新しい方式を設計・調査する場合は、対象プロジェクト内の既存方式を確認したうえで `REUSE_MAP.md` を入口に類似実装・運用実績を確認する。
-- 探索順序は「対象プロジェクト内の既存方式 → `REUSE_MAP.md` / `projects/*.md` → 類似プロジェクトの正式ソース → 新方式の調査」とする。
-- 対象リポジトリ内に手順が存在しないことだけを理由に、ビルド、配布、PMS/CSV取得、Google Sheets連携、印刷、DB、Windows自動実行、UIテーマ等をゼロから再設計しない。
-- Windows EXE化では、必要な場合に `next-day-setup` の既存ビルド・配布方式を比較し、PySide6では `food-cost-calculation-system` のNuitka実績も比較する。
-- 帳票・印刷、PMS/CSV、Google Sheets等の既存方式比較も、§3の発火条件がある場合だけ行う。
-- 既存方式を流用できない場合は、フレームワーク、依存関係、ライセンス、運用要件等の差異を明示してから新方式へ進む。
-- 別プロジェクトでも再利用できる方式や教訓を新たに確立した場合は、プロジェクト固有文書だけでなく `REUSE_MAP.md` に入口を追記する。
+- 新方式導入・既存方式置換・T3等では、対象repo内既存方式 → `REUSE_MAP.md` / `projects/*.md` → 類似正式ソースの順で確認する。
+- 既存機構の局所修正、表示調整、条件変更では横断調査しない。
+- 既存方式を流用できない場合は差異を明示して新方式へ進む。
+- 再利用可能な新しい方式・教訓は `REUSE_MAP.md` に入口を追記する。
 
 ## 開発環境と検証
 
-- 各プロジェクトはリポジトリ直下の `.venv` を使用する。
-- 実装後は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) のティア相当の構文確認・targeted/regression/CI確認を行ってからコミットする。
-- ChatGPT環境で実機確認できない項目は「未確認」と明示し、必要に応じてCodexまたはWindows実機で確認する。GitHub上の自動テスト成功を実機確認済みとして扱わない。
-- EXEビルドは日常検証の必須条件にしない。ソース起動で確認できる範囲とEXE固有確認を分ける。
-- タグは安定版にのみ作成する。実運用未確認の変更へ安定版タグを付けない。
-- コード変更時は、将来の判断に使う仕様・運用・設計変更がある場合に該当プロジェクトのREADME / `projects/*.md` / `PROJECT_STATUS.md` / `CHANGELOG.md` を必要範囲だけ更新する。T0/T1で無関係な文書を形式更新しない。
-- 生成するPowerShellスクリプトは、利用環境に合わせWindows PowerShell 5.1互換の構文・文字コードとする。
+- 実装後は `AGENT_EFFICIENCY_POLICY.md` のtier相当構文/targeted/regression/CI確認を行う。
+- GitHub Actions成功をWindows実機・EXE・共有版・printer確認済みとは扱わない。
+- CI未カバー領域はまず④ユーザー確認として残す。
+- EXE buildを日常検証の必須条件にしない。
+- tagは安定版にのみ作る。実運用未確認の変更へ安定版tagを付けない。
+- 生成PowerShellは対象環境に合わせWindows PowerShell 5.1互換の構文・文字コードを考慮する。
 
 ## Git管理と情報保護
 
-- 秘密情報、認証情報、実運用設定、顧客データ、業務データ、実行結果、キャッシュをGit管理しない。
-- 設定例を共有する場合はダミー値を使った `*.example.*` とし、秘密情報を含めない。
-- 未コミット変更はGitHubから確認できないため、作業中であることと確認状況を管理文書に明記する。
+- 秘密情報、認証情報、実運用設定、顧客データ、業務データ、実行結果、cacheをGit管理しない。
+- 設定例はダミー値の `*.example.*` とする。
+- 未commit変更はGitHub側から見えないため、③でdirty treeを必ず確認し既存変更を保護する。
+- force push、履歴書き換え、本番tag/mergeは通常工程に含めない。
 
-## ビルドと共有版更新
+## 本番反映
 
-- 共有版更新は専用スクリプト `update_shared_folder.ps1`、通常はラッパーの `UPDATE_SHARED_FOLDER.cmd` を使用する。
-- `next-day-setup` の配布物 `dist\DinnerSystem\_internal` は完全同期し、古いランタイムやライブラリを残さない。
-- 業務データ保護のため、共有フォルダ全体へ単純な `robocopy /MIR` を使用しない。
-- 配布物と業務データを分離し、更新前後に業務データが保持されていることを確認する。
-- 新規Windowsアプリのビルド方式が未確立の場合は、NDS等の既存配布実績を確認してからビルドツールを選定する。
-- ただし、ビルドツールの選定と「誰がビルドするか」は別問題とする。標準運用ではユーザーのワンクリック手動ビルドを優先し、Codexビルドは例外とする。
+- 本番共有フォルダ、実運用DB、実プリンター送信、実HDD更新等は、それぞれ正式手順と承認境界に従う。
+- 「⑤ユーザー担当」は本番反映を無条件に許可する意味ではない。ユーザーが明示的にその更新を行う工程に進んだ場合だけ正式ワンクリック経路を使う。
+- AIは未確認の本番操作を完了済みと表現しない。
 
-# GitHubプロジェクト初期確認ルール
+## 記録
 
-読み込み・調査範囲は [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) のティア別上限に従う。**T0/T1では今回の変更に無関係な項目を機械的な必須ゲートにしない。**
+仕様・運用・設計変更など将来の判断に使う内容だけREADME / `projects/*.md` / `PROJECT_STATUS.md` / `docs/decisions.md` / `LESSONS_LEARNED.md` / `CHANGELOG.md` へ必要範囲を反映する。
 
-新規チャットで GitHub リポジトリをプロジェクトとして開いた場合は、ティアに応じて次を適用する。
-
-- GitHub から取得した内容だけを使用する。
-- 既存・旧運用のローカルフォルダは参照しない。
-- 最初はコードを変更せず、必要範囲の現状確認を行う。
-- 今回の変更に必要なファイルが揃っていることを確認する。
-- Python/Windowsアプリのソース起動・手動EXE build・配布更新3経路は、今回の変更に関係する場合に確認する。
-- ChatGPTから直接実行できる種類のアプリは、ティア相当の起動またはテストを確認する。
-- Windows実機、プリンター、共有サーバーなどChatGPTから確認できない項目は未確認としてCodexへ引き継ぐ。
-- EXEが必要な確認では、まず既存の手動ビルド手順をユーザーが使える状態か確認し、Codex実行を前提にしない。
-- ブラウザアプリを直接確認できる場合は、今回の変更に関係するコンソールエラーも確認する。
-- 確認できた GitHub 上の状態を正本（Single Source of Truth）とする。
-- 問題が見つかり、依頼スコープや安全条件を大きく変える必要がある場合は、原因と対応案を報告してユーザーの指示を待つ。
-
-初期確認中は、依存関係の導入やアプリ起動に伴う通常の生成物を除き、リポジトリのコード・設定・文書を変更しない。生成物が発生した場合は、確認結果とともに報告する。
+T0/T1で無関係な文書を形式更新しない。
