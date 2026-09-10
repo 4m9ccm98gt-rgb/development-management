@@ -4,11 +4,11 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 
 ## 優先順位
 
-**工程①〜⑤の担当、③実機投入の停止条件、④⑤のユーザー既定担当、Codex利用条件は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を最優先する。**
+**工程①〜⑤の担当、③candidate同期の停止条件、④⑤のユーザー既定担当、⑥Codex利用条件は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を最優先する。**
 
 この文書は **開始時の読み込み、調査範囲、REUSE_MAP、テスト範囲、反復上限、Codex引き継ぎ、CI代替条件** の上限を定める。`AI_STARTUP.md`、`AI_OPERATING_MANUAL.md`、`DEVELOPMENT_RULES.md` 等の広い表現より、このティア別上限を優先する。
 
-担当判断は **安全性 / Codexクレジット / ユーザーが安全にワンクリック・通常GUIで実施できるか** の3軸で行う。ユーザーが安全にできる④実機確認・⑤build/deploy/updateを、単に「ChatGPTから触れない実機作業」という理由でCodexへ回さない。
+担当判断は **安全性 / Codexクレジット / ユーザーが安全にワンクリック・通常GUIで実施できるか** の3軸で行う。ユーザーが安全にできる③candidate同期・④実機確認・⑤build/deploy/updateを、単に「ChatGPTから触れない実機作業」という理由でCodexへ回さない。
 
 ただし、正式ソース・Git状態確認、秘密情報保護、実運用データ保護、本番反映制限、ユーザーが明示したフェーズ境界は弱めない。
 
@@ -18,13 +18,13 @@ AI / coding agent の品質・安全性を維持しながら、不要な再調�
 
 1. **①設計**: ChatGPT
 2. **②開発・作成**: ChatGPT + GitHub + GitHub Actions
-3. **③実機投入**: Codexまたはユーザー。candidate同期とSHA確認だけ
+3. **③candidate同期**: ユーザー。`SYNC_CLICK_ME.cmd` でcandidate同期とSHA確認だけ
 4. **④実機確認**: ユーザー
 5. **⑤ビルド・配布・確認**: ユーザーの正式ワンクリック経路
 
-③をCodexへ渡した場合は `HEAD SHA == candidate SHA`、想定branch、dirty treeを確認して停止する。③ではアプリ起動、GUI / Computer-Use、機能確認、実紙、追加テスト、candidate再レビュー、再調査、build、deployをしない。
+③は `HEAD SHA == origin SHA == candidate SHA`、想定branch、tracked cleanを確認して停止する。③ではアプリ起動、GUI / Computer-Use、機能確認、実紙、追加テスト、candidate再レビュー、再調査、build、deployをしない。
 
-Codexは③の明示同期、または④/⑤でユーザーが再現した具体的なWindows障害の調査に限定する。無症状の「念のため実機確認」には使わない。
+Codex等の実機AIは、③④⑤でユーザーが再現した具体的なWindows障害の⑥調査に限定する。通常同期や無症状の「念のため実機確認」には使わない。
 
 ## 1. 変更ティア
 
@@ -68,8 +68,8 @@ Codexは③の明示同期、または④/⑤でユーザーが再現した具�
 
 固定で長文書を全読みしない。原則として次だけ読む。
 
-- `AI_OPERATING_MANUAL.md`: **`スコープ変更時の確認`、`Git運用`、`フェーズ規律（調査／設計／実装／検証）`**。Windows障害調査が今回に必要な場合だけCodex条件。
-- `DEVELOPMENT_RULES.md`: **`開発環境と検証`、`Git管理と情報保護`** と、変更対象に一致する1つのdomain節（`EXEビルド標準` / `配布先更新の標準` / `俺伝の正式リリース標準` 等）。`既存資産の横断利用` は§3が発火した場合だけ読む。
+- `AI_OPERATING_MANUAL.md`: **`スコープ変更時の確認`、`Git運用`、`フェーズ規律（調査／設計／実装／検証）`**。Windows障害調査が今回に必要な場合だけ⑥条件。
+- `DEVELOPMENT_RULES.md`: **`開発環境と検証`、`Git管理と情報保護`** と、変更対象に一致する1つのdomain節（`candidate同期標準` / `EXEビルド標準` / `配布先更新標準` 等）。`既存資産の横断利用` は§3が発火した場合だけ読む。
 - 変更する契約・形式の producer / consumer、読み書き両側。
 - 金額・在庫・印刷・DB・共有フォルダ等では、今回に該当する安全ルール/設計判断だけ追加する。
 
@@ -103,7 +103,7 @@ Codexは③の明示同期、または④/⑤でユーザーが再現した具�
 - **T2/T3でCIをローカルfullの代替に使った場合、対象candidate SHAのCI greenを実際に確認するまで②開発・作成を完了として報告しない。** `CI確認予定` は途中状態でありterminal completionではない。
 - T2/T3は原則branch / PR上のcandidateでCIを通す。ユーザーがdirect-mainを明示した場合や既存運用がdirect-mainの場合でも、push後の同一SHA green確認は省略しない。
 - 実プリンター、実共有サーバー、live IMAP、外部サイト、実HDD、実OCR、実LAN、GUI/Tk等はCIとは別の確認レベル。今回のblast-radiusが触れる場合は**まず④ユーザー実機確認として残す。** CI成功を実機確認済みとは扱わない。
-- **今回のblast-radiusがCIでskipされるtest、または§9の未カバー領域に触れる場合、その領域の確認はCI-covered branchでも省略しない。ただし既定担当は④ユーザーであり、Codex利用の自動トリガではない。ユーザーが実施できない、または④/⑤で具体症状が出た場合だけCodex候補とする。**
+- **今回のblast-radiusがCIでskipされるtest、または§9の未カバー領域に触れる場合、その領域の確認はCI-covered branchでも省略しない。ただし既定担当は④ユーザーであり、Codex利用の自動トリガではない。ユーザーが実施できない、または③④⑤で具体症状が出た場合だけ⑥候補とする。**
 - CIが automated regression をカバーしないbranchでは、修正ループ中にfullを回さない。
 - 金額・在庫・価格・帳票・印刷・DB・共有フォルダ・HDD同期に触れるT2だけ、CI未整備branchでは最終チェックポイントでローカルfullを1回許可する。このローカルfullを誰が実行するかは能力と工程で決め、ユーザーの安全なワンクリック経路がある場合はCodexへ戻さない。
 - そのfullで回帰が出た場合、修正後に**もう1回だけ**fullを許可する（合計2回まで）。2回目でもgreenにならなければ報告へ移る。
@@ -120,27 +120,26 @@ Codexは③の明示同期、または④/⑤でユーザーが再現した具�
 
 ## 6. 確立した事実・green baseline・Codex引き継ぎ
 
-ChatGPT→Codex / 別sessionの引き継ぎには次を含める。
+ChatGPT→Codex / 別sessionの⑥引き継ぎには次を含める。
 
 ```text
-【工程】③ 実機投入のみ / ⑥ Windows障害調査
+【工程】⑥ Windows障害調査
 【変更ティア】 T0 / T1 / T2 / T3
-【対象】 repo / branch / candidate SHA
+【対象】 repo / branch / HEAD SHA / candidate SHA
+【症状】 ユーザーが再現した具体的エラー・挙動
 【確立した事実】 根本原因 + 根拠 / 関係ファイル地図 / 確認済み事項
 【棄却した仮説】 確認内容 + 棄却理由
 【greenベースライン】 CIまたはテスト結果 + SHA + 日付
-【Codexで行う作業】 今回必要な作業だけ
-【Codexで回すテスト】 ⑥で本当に必要な場合だけ具体対象。③では原則なし
-【Codexで行わない】 アプリ起動 / GUI操作 / 機能確認 / 実紙印刷 / 追加テスト / full regression / candidate再レビュー / 再調査 / 通常EXE build / 通常deploy
-【停止条件】 ③なら HEAD SHA == candidate SHA を確認した時点
+【Codexで行う作業】 症状の切り分けに必要な作業だけ
+【Codexで回すテスト】 ⑥で本当に必要な場合だけ具体対象
+【Codexで行わない】 症状と無関係な再実装 / full regression / 通常EXE build / 通常deploy / scope拡大
 【変更禁止】 本番反映禁止、main変更禁止等
-【症状】 ⑥の場合のみ必須
-【残作業】 ④ユーザー確認 / ⑤ユーザー操作 / ⑥障害調査の残り
-【報告】 branch / HEAD / dirty tree / 結果 / error / 未確認事項
+【残作業】 ユーザー側の④確認 / ⑤操作 / 障害調査後の次アクション
+【報告】 確認した事実 / 原因候補 / 必要な次アクション / 未確認事項
 ```
 
-- ③同期では、candidateへ同期してSHA一致を確認したら停止する。targeted testや実機起動を追加しない。
-- ⑥Windows障害調査は、④/⑤でユーザーが再現した具体症状を前提とする。症状のない「念のため実機確認」を⑥にしない。
+- ③candidate同期はユーザーの `SYNC_CLICK_ME.cmd` で行い、candidateへ同期してSHA一致を確認したら停止する。targeted testや実機起動を追加しない。
+- ⑥Windows障害調査は、③④⑤でユーザーが再現した具体症状を前提とする。症状のない「念のため実機確認」を⑥にしない。
 - `【確立した事実】` が現在HEADでも有効なら理由なく再導出しない。ただし**⑥で報告された症状が、引き継ぎに記載された原因・挙動を支持しない場合、その事実だけをsuspectとして必要範囲を再調査する。**
 - baseline SHA と現在HEADが異なる場合、`git diff <baseline>..HEAD` の変更が今回のtouched files + 直接依存/消費者、またはblast-radiusに**触れなければ baseline は有効**。
 - 触れている場合は影響moduleだけ targeted で再確認し、baseline鮮度のためだけにfullを回さない。
@@ -170,7 +169,7 @@ ChatGPT→Codex / 別sessionの引き継ぎには次を含める。
 - コード/設定/依存変更なしで同じテストを安心のために再実行する
 - passログ全文を会話へ貼る
 - ChatGPT側で確立済みの根本原因を理由なく再導出する
-- 通常EXE build / 通常配布更新をCodexへ戻す
+- 通常candidate同期 / 通常EXE build / 通常配布更新をCodexへ戻す
 - **③同期タスクでアプリ起動 / GUI / Computer-Use / 機能確認 / 実紙 / 追加テスト / candidate再レビュー / 再調査を行う**
 - **④ユーザー実機確認を、ユーザーが実施可能なのにCodexへ代行させる**
 - **⑤ワンクリックbuild / deploy / updateをCodexへ代行させる**
@@ -205,7 +204,7 @@ agentは原則この表を正とし、毎回 `.github/workflows` を総当たり
 - 変更ティア / 変更内容
 - targeted / regression結果
 - **T2/T3でCI代替を使った場合: candidate SHA + CI green確認済み結果**
-- ③を実施した場合: branch / HEAD SHA / dirty tree、SHA一致で停止したこと
+- ③をユーザーが実施した場合: `SYNC_RESULT.txt` の branch / HEAD SHA / origin SHA / tracked clean / match
 - ④/⑤でユーザーが確認する項目
 - 実機未確認 / CI未カバー領域
 - branch / commit SHA

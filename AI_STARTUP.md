@@ -21,8 +21,6 @@ T0/T1では本ファイルの残りを読まなくてよい。
 
 を基本上限とする。
 
-`PROJECT_STATUS.md`、`VERSION_MATRIX.md`、`SYSTEM_OVERVIEW.md`、`docs/decisions.md`、`LESSONS_LEARNED.md`、REUSE_MAPを理由なく全読みしない。
-
 ## T2
 
 原則次だけ追加する。
@@ -53,28 +51,20 @@ T0/T1では本ファイルの残りを読まなくてよい。
 
 退役前整備の運用文書は必要時だけ参照する。
 
-- `docs/operator_runbook.md`
-- `docs/build_deploy_paths.md`
-- `docs/dev_doctor.md`
-- `docs/backup_restore.md`
-- `docs/git_external_data_inventory.md`
-- `docs/pc_repo_audit.md`
-- `docs/ci_action_versioning.md`
-
 ## 標準工程
 
 ```text
 ① 設計                ChatGPT
 ② 開発・作成          ChatGPT + GitHub + GitHub Actions
-③ 実機投入            Codexまたはユーザー。candidate同期とSHA確認で停止
+③ candidate同期       ユーザー。SYNC_CLICK_ME.cmdで同期しSHA一致で停止
 ④ 実機確認            ユーザー
-⑤ ビルド・配布・確認  ユーザーの正式ワンクリック経路
-⑥ Windows障害調査     ④/⑤で具体症状が出た場合だけCodex
+⑤ build/deploy/update ユーザーの正式ワンクリック経路
+⑥ Windows障害調査     ③④⑤で具体症状が出た場合だけCodex等の実機AI
 ```
 
 ### ③の停止条件
 
-`HEAD SHA == candidate SHA`、想定branch、dirty treeを確認して報告したら停止。
+`SYNC_CLICK_ME.cmd` で想定branch、tracked clean、`HEAD SHA == origin SHA == candidate SHA` を確認して報告したら停止。
 
 ③では以下を禁止する。
 
@@ -86,8 +76,11 @@ T0/T1では本ファイルの残りを読まなくてよい。
 - candidate再レビュー / 再調査
 - build / deploy / UPD
 
+同期対象branchはrepoごとに明示し、`origin/HEAD` やdefault branchから推測しない。
+
 ## Windowsアプリ標準
 
+- candidate同期は `SYNC_CLICK_ME.cmd` からユーザーが実施できる。
 - 開発版は `RUN_DEV.cmd` 等からユーザーが起動できる。
 - EXEは `BUILD_*_CLICK_ME.cmd` 等でユーザーがワンクリックbuildできる。
 - 配布更新は `UPDATE_*` / `UPDATE_SHARED_FOLDER.cmd` 等でユーザーがワンクリック実行できる。
@@ -101,8 +94,9 @@ T0/T1では本ファイルの残りを読まなくてよい。
 - repo / branch / HEAD / dirty tree
 - ChatGPTでGitHub側を完結できるか
 - CIカバレッジ
+- ③のcandidate branch / candidate SHA
 - ④/⑤でユーザーが安全に確認できる範囲
-- Codexが必要なら③か、具体症状付き⑥か
+- Codexが必要なら具体症状付き⑥か
 
 ## 禁止事項
 
@@ -112,22 +106,19 @@ T0/T1では本ファイルの残りを読まなくてよい。
 - CI greenだけで実機確認済みと扱う
 - ChatGPTとCodexでGitHub実装を二重化
 - ③同期タスクでアプリ起動 / GUI / 実機確認 / 追加テストへ進む
-- ユーザーが安全にできる④/⑤をCodexへ代行させる
+- ユーザーが安全にできる③④⑤をCodexへ代行させる
 - 無症状の「念のため実機確認」をCodexへ依頼
-- T0/T1で開始文書一式・repo全体・他repoを全読み
 - targeted failure診断にfull suiteを使う
 
 ## 新しいChatGPT会話へ常駐させる短い契約
 
-ChatGPTのCustom Instructions / Project Instructions等へ置く場合は、次の短文を使用する。
-
 ```text
 開発作業では development-management/OPERATING_CONTRACT.md を工程担当の正本とする。
-①設計=ChatGPT、②開発=ChatGPT+GitHub+CI、③実機投入=candidate同期とSHA確認だけ、④実機確認=ユーザー、⑤build/deploy=ユーザーの正式ワンクリック操作。
-Codexは③同期または、④/⑤でユーザーが再現した具体的Windows障害の調査だけに使う。
-③ではHEAD SHA==candidate SHAを確認したら停止。アプリ起動、GUI、機能確認、実紙、追加テスト、再調査、build、deployは禁止。
+①設計=ChatGPT、②開発=ChatGPT+GitHub+CI、③candidate同期=ユーザーのSYNC_CLICK_ME、④実機確認=ユーザー、⑤build/deploy=ユーザーの正式ワンクリック操作。
+③は想定branch / tracked clean / HEAD SHA==candidate SHAを確認したら停止。アプリ起動、GUI、機能確認、実紙、追加テスト、再調査、build、deployは禁止。
+Codexは③④⑤でユーザーが再現した具体的Windows障害の⑥調査だけに使う。
 CI未カバーの実機確認はまずユーザーへ渡す。
-ユーザーが安全にRUN_DEV / *_CLICK_ME / UPDATE_*を実行できる場合、Codexに代行させない。
+ユーザーが安全にSYNC_CLICK_ME / RUN_DEV / *_CLICK_ME / UPDATE_*を実行できる場合、Codexに代行させない。
 Codex指示前に毎回、現在工程とOPERATING_CONTRACTを照合する。
 調査・テスト量はAGENT_EFFICIENCY_POLICYのT0〜T3に従う。
 ```
@@ -141,5 +132,3 @@ Codex指示前に毎回、現在工程とOPERATING_CONTRACTを照合する。
 - 再発防止: `LESSONS_LEARNED.md`
 - project固有: `projects/*.md`
 - 変更履歴: `CHANGELOG.md`
-
-T0/T1で無関係な管理文書を形式更新しない。

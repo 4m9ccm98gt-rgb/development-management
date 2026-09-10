@@ -14,22 +14,24 @@
 - 正式ソースは `C:\Users\suisy\Documents\Development\repos` 配下のみ。
 - 旧フォルダは参照専用。新規開発・修正・ビルド・commitに使わない。
 - 作業開始時に対象repo / branch / HEAD SHA / dirty treeを確認する。
-- ③実機投入ではcandidateへ同期するだけで、新規編集を始めない。
+- ③candidate同期ではcandidateへ同期するだけで、新規編集を始めない。
 
 ## 5工程の担当
 
 | 工程 | 既定担当 | 境界 |
 |---|---|---|
 | ① 設計 | ChatGPT | 方針・受入条件・tier |
-| ② 開発・作成 | ChatGPT + GitHub + GitHub Actions | 実装・targeted/regression・必要なCI green |
-| ③ 実機投入 | Codexまたはユーザー | candidate同期、branch/HEAD/dirty確認、SHA一致で停止 |
-| ④ 実機確認 | ユーザー | RUN_DEV / GUI / 機能 / 実紙等 |
-| ⑤ ビルド・配布・確認 | ユーザー | 正式ワンクリックbuild / update / deploy |
+| ② 開発・作成 | ChatGPT + GitHub + GitHub Actions | 実装・targeted/regression・candidate SHAのCI green |
+| ③ candidate同期 | **ユーザー** | `SYNC_CLICK_ME.cmd`、想定branch / tracked clean / SHA一致で停止 |
+| ④ 実機確認 | **ユーザー** | RUN_DEV / GUI / 機能 / 実紙等 |
+| ⑤ ビルド・配布・確認 | **ユーザー** | 正式ワンクリックbuild / update / deploy |
 
-Codexは③または、④/⑤で具体的なWindows障害が出た場合の⑥調査だけに使用する。
+Codex等の実機AIは、③④⑤でユーザーが再現した具体的なWindows障害があり、GitHub / CI / ユーザー報告だけでは切り分けられない場合の⑥調査だけに使用する。
 
-### ③実機投入で禁止
+### ③candidate同期で禁止
 
+- 自動branch switch
+- stash / reset / rebase / force
 - アプリ起動
 - GUI / Computer-Use
 - 機能確認
@@ -39,21 +41,22 @@ Codexは③または、④/⑤で具体的なWindows障害が出た場合の⑥�
 - build
 - deploy / UPD
 
-`HEAD SHA == candidate SHA` を確認したら報告して停止する。
+`HEAD SHA == origin SHA == candidate SHA` と tracked cleanを確認したら報告して停止する。
 
 ## ChatGPT / Codex / ユーザー分業
 
 - ChatGPTがGitHubへ直接アクセスできる場合、GitHub上で完結する調査、設計、実装、テスト追加、branch、commit、push、PR、レビューはChatGPT側で行う。
-- ユーザーは④実機確認と⑤正式ワンクリックbuild/deployの既定担当。
-- Codexは通常の実機確認担当ではない。③candidate同期か、具体症状付きのWindows障害調査へ限定する。
+- ユーザーは③candidate同期、④実機確認、⑤正式ワンクリックbuild/deployの既定担当。
+- Codexは通常の実機確認担当でも通常同期担当でもない。具体症状付きの⑥Windows障害調査へ限定する。
 - 同じGitHub作業をChatGPTとCodexで重複しない。
 - CI未カバーだからという理由だけでCodexを発火させない。まず④ユーザー確認へ渡す。
-- Codex指示は `OPERATING_CONTRACT.md` §7 の形式を使い、`【工程】` と `【Codexで行わない】` を必須にする。
+- Codex指示は `OPERATING_CONTRACT.md` §7 の形式を使い、`【工程】⑥` と `【症状】` を必須にする。
 
 ## ユーザー操作の基準
 
 ユーザーへ任せる標準操作:
 
+- `SYNC_CLICK_ME.cmd` によるcandidate同期
 - `RUN_DEV.cmd` 等のダブルクリック起動
 - 通常GUI確認
 - 修正箇所の機能確認
@@ -70,6 +73,17 @@ Codexは③または、④/⑤で具体的なWindows障害が出た場合の⑥�
 - 複数repo横断同期判断
 - 実運用DB / 認証情報 / 実データの直接編集
 - 共有フォルダへの手動 `robocopy`
+
+## candidate同期標準
+
+- repoごとに `SYNC_CLICK_ME.cmd` または同等の正式ワンクリック同期経路を用意する。
+- 同期対象branchはrepoごとに明示設定する。`origin/HEAD` やdefault branchから推測しない。
+- ChatGPTは②完了時にcandidate branch / candidate SHAをユーザーへ示す。
+- スクリプトは expected repo / expected branch / tracked dirty / detached HEAD / local ahead / SHA不一致を検査する。
+- 同期は `git fetch --prune` → `git merge --ff-only` のみ。危険状態では自動修復せず停止する。
+- untracked fileは警告に留め、変更しない。
+- 成功条件は `HEAD == origin/<candidate-branch> == candidate SHA` かつ tracked clean。
+- 結果は `SYNC_RESULT.txt` に保存する。
 
 ## Python / Windowsアプリの標準実行方式
 
@@ -103,7 +117,7 @@ Codexは③または、④/⑤で具体的なWindows障害が出た場合の⑥�
 俺伝は次をユーザーが実行する。
 
 1. ②実装・CI確認完了
-2. 必要なら③candidate同期
+2. ③ `SYNC_CLICK_ME.cmd` でcandidate同期
 3. `BUILD_俺伝_CLICK_ME.cmd`
 4. 新しい `俺伝.exe` を起動して④/⑤確認
 5. `UPDATE_HDD_CLICK_ME.cmd`
@@ -135,8 +149,8 @@ Codexはこれらが具体的に失敗した場合のWindows障害調査だけ�
 
 - 秘密情報、認証情報、実運用設定、顧客データ、業務データ、実行結果、cacheをGit管理しない。
 - 設定例はダミー値の `*.example.*` とする。
-- 未commit変更はGitHub側から見えないため、③でdirty treeを必ず確認し既存変更を保護する。
-- force push、履歴書き換え、本番tag/mergeは通常工程に含めない。
+- 未commit変更はGitHub側から見えないため、③でtracked dirtyを必ず確認し既存変更を保護する。
+- force push、履歴書き換え、本番tagは通常工程に含めない。
 
 ## 本番反映
 
