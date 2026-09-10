@@ -57,6 +57,7 @@ jobs:
             throw "dirty-tree reason was not recorded"
           }
           git checkout -- .\AI_MEMORY.md
+          if ($LASTEXITCODE -ne 0) { throw "failed to restore dirty-tree fixture" }
 
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
             -ExpectedRepo "wrong-owner/wrong-repo" `
@@ -67,3 +68,5 @@ jobs:
           if ($result -notmatch "Wrong repository") {
             throw "wrong-repo reason was not recorded"
           }
+
+          exit 0
