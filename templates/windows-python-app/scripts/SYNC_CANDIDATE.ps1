@@ -10,8 +10,16 @@ $ErrorActionPreference = "Stop"
 function Run-Git {
     param([string[]]$GitArgs)
 
-    $output = & git -C $script:RepoRoot @GitArgs 2>&1
-    $code = $LASTEXITCODE
+    $oldPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & git -C $script:RepoRoot @GitArgs 2>&1
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldPreference
+    }
+
     $items = @($output | ForEach-Object { $_.ToString() })
     if ($code -ne 0) {
         throw "git $($GitArgs -join ' ') failed with exit code $code`n$($items -join [Environment]::NewLine)"
