@@ -1,97 +1,64 @@
 param(
-    [Parameter(Mandatory = $false)]
     [string]$ExpectedSha = "",
-
-    [Parameter(Mandatory = $true)]
-    [string]$ExpectedRepo,
-
-    [Parameter(Mandatory = $true)]
-    [string]$TargetBranch
+    [Parameter(Mandatory = $true)][string]$ExpectedRepo,
+    [Parameter(Mandatory = $true)][string]$TargetBranch
 )
 
 Set-StrictMode -Version 2.0
+$ErrorActionPreference = "Stop"
 
-function Invoke-Git {
-    param([string[]]$Arguments)
+function Run-Git {
+    param([string[]]$GitArgs)
 
-    $oldPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = "Continue"
-        $output = & git -C $script:RepoRoot @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
+    $output = & git -C $script:RepoRoot @GitArgs 2>&1
+    $code = $LASTEXITCODE
+    $items = @($output | ForEach-Object { $_.ToString() })
+    if ($code -ne 0) {
+        throw "git $($GitArgs -join ' ') failed with exit code $code`n$($items -join [Environment]::NewLine)"
     }
-    finally {
-        $ErrorActionPreference = $oldPreference
-    }
-
-    if ($exitCode -ne 0) {
-        $text = ($output | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
-        throw "git $($Arguments -join ' ') failed with exit code $exitCode`n$text"
-    }
-
-    return @($output | ForEach-Object { $_.ToString() })
+    return $items
 }
 
-function Get-RepoSlug {
-    param([string]$RemoteUrl)
-
-    $match = [regex]::Match($RemoteUrl.Trim(), 'github\.com[:/](?<slug>[^/]+/[^/]+?)(?:\.git)?$')
-    if (-not $match.Success) {
-        return ""
-    }
-
-    return $match.Groups['slug'].Value.TrimEnd('/')
-}
-
-function Write-Result {
+function Write-SyncResult {
     param(
         [string]$State,
         [string]$Reason,
-        [string]$Branch = "",
-        [string]$LocalHead = "",
-        [string]$OriginHead = "",
-        [string]$Expected = "",
-        [string]$Match = "NO",
-        [string]$TrackedDirty = "UNKNOWN",
-        [int]$UntrackedCount = 0,
-        [int]$Ahead = -1,
-        [int]$Behind = -1
+        [string]$Branch,
+        [string]$LocalHead,
+        [string]$OriginHead,
+        [string]$Expected,
+        [string]$Match,
+        [string]$TrackedDirty,
+        [int]$UntrackedCount,
+        [int]$Ahead,
+        [int]$Behind
     )
 
     $lines = @(
-        "state: $State",
-        "reason: $Reason",
-        "repo: $ExpectedRepo",
-        "branch: $Branch",
-        "local HEAD: $LocalHead",
-        "origin HEAD: $OriginHead",
-        "expected SHA: $Expected",
-        "match: $Match",
-        "tracked dirty: $TrackedDirty",
-        "untracked count: $UntrackedCount",
-        "ahead: $Ahead",
+        "state: $State"
+        "reason: $Reason"
+        "repo: $ExpectedRepo"
+        "branch: $Branch"
+        "local HEAD: $LocalHead"
+        "origin HEAD: $OriginHead"
+        "expected SHA: $Expected"
+        "match: $Match"
+        "tracked dirty: $TrackedDirty"
+        "untracked count: $UntrackedCount"
+        "ahead: $Ahead"
         "behind: $Behind"
     )
-
     $lines | Set-Content -LiteralPath $script:ResultPath -Encoding ASCII
     $lines | ForEach-Object { Write-Host $_ }
 }
 
-$ErrorActionPreference = "Stop"
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-try {
-    $probe = & git -C $scriptDir rev-parse --show-toplevel 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "This script is not inside a Git working tree."
-    }
-    $script:RepoRoot = ($probe | Select-Object -First 1).ToString().Trim()
-}
-catch {
-    Write-Host "ERROR: $($_.Exception.Message)"
+$probe = & git -C $PSScriptRoot rev-parse --show-toplevel 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: This script is not inside a Git working tree."
     exit 2
 }
 
+$script:RepoRoot = ($probe | Select-Object -First 1).ToString().Trim()
 $script:ResultPath = Join-Path $script:RepoRoot "SYNC_RESULT.txt"
 
 $branch = ""
@@ -104,21 +71,19 @@ $ahead = -1
 $behind = -1
 
 try {
-    $inside = (Invoke-Git @("rev-parse", "--is-inside-work-tree") | Select-Object -First 1).Trim()
-    if ($inside -ne "true") {
-        throw "Not inside a Git working tree."
-    }
+    $inside = (Run-Git @("rev-parse", "--is-inside-work-tree") | Select-Object -First 1).Trim()
+    if ($inside -ne "true") { throw "Not inside a Git working tree." }
 
-    $originUrl = (Invoke-Git @("remote", "get-url", "origin") | Select-Object -First 1).Trim()
-    $actualRepo = Get-RepoSlug $originUrl
-    if ([string]::IsNullOrWhiteSpace($actualRepo)) {
+    $originUrl = (Run-Git @("remote", "get-url", "origin") | Select-Object -First 1).Trim()
+    if ($originUrl -notmatch 'github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$') {
         throw "origin is not a recognized github.com repository URL: $originUrl"
     }
+    $actualRepo = $Matches[1]
     if (-not $actualRepo.Equals($ExpectedRepo, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Wrong repository. Expected $ExpectedRepo but origin is $actualRepo."
     }
 
-    $branch = (Invoke-Git @("branch", "--show-current") | Select-Object -First 1).Trim()
+    $branch = (Run-Git @("branch", "--show-current") | Select-Object -First 1).Trim()
     if ([string]::IsNullOrWhiteSpace($branch)) {
         throw "Detached HEAD detected. No automatic switch will be performed."
     }
@@ -126,15 +91,14 @@ try {
         throw "Wrong branch. Expected $TargetBranch but current branch is $branch. No automatic switch will be performed."
     }
 
-    $trackedLines = @(Invoke-Git @("status", "--porcelain", "--untracked-files=no") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    if ($trackedLines.Count -gt 0) {
+    $tracked = @(Run-Git @("status", "--porcelain", "--untracked-files=no") | Where-Object { $_ })
+    if ($tracked.Count -gt 0) {
         $trackedDirty = "YES"
         throw "Tracked working-tree changes exist. Nothing was changed."
     }
     $trackedDirty = "NO"
 
-    $allStatus = @(Invoke-Git @("status", "--porcelain", "--untracked-files=all") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $untracked = @($allStatus | Where-Object { $_ -like "?? *" -and $_ -ne "?? SYNC_RESULT.txt" })
+    $untracked = @(Run-Git @("status", "--porcelain", "--untracked-files=all") | Where-Object { $_ -like "?? *" })
     $untrackedCount = $untracked.Count
     if ($untrackedCount -gt 0) {
         Write-Host "WARNING: $untrackedCount untracked item(s) exist. They will not be modified."
@@ -149,59 +113,49 @@ try {
     }
 
     Write-Host "Fetching origin/$TargetBranch ..."
-    [void](Invoke-Git @("fetch", "--prune", "origin", $TargetBranch))
+    [void](Run-Git @("fetch", "--prune", "origin", $TargetBranch))
 
     $originRef = "refs/remotes/origin/$TargetBranch"
-    $originHead = (Invoke-Git @("rev-parse", $originRef) | Select-Object -First 1).Trim()
-    $resolvedExpected = (Invoke-Git @("rev-parse", "$ExpectedSha^{commit}") | Select-Object -First 1).Trim()
-
+    $originHead = (Run-Git @("rev-parse", $originRef) | Select-Object -First 1).Trim()
+    $resolvedExpected = (Run-Git @("rev-parse", "$ExpectedSha^{commit}") | Select-Object -First 1).Trim()
     if ($originHead -ne $resolvedExpected) {
         throw "origin/$TargetBranch is $originHead, not the expected candidate $resolvedExpected. Refusing to sync a different commit."
     }
 
-    $localHead = (Invoke-Git @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
-    $ahead = [int]((Invoke-Git @("rev-list", "--count", "$originHead..HEAD") | Select-Object -First 1).Trim())
-    $behind = [int]((Invoke-Git @("rev-list", "--count", "HEAD..$originHead") | Select-Object -First 1).Trim())
-
+    $localHead = (Run-Git @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
+    $ahead = [int]((Run-Git @("rev-list", "--count", "$originHead..HEAD") | Select-Object -First 1).Trim())
+    $behind = [int]((Run-Git @("rev-list", "--count", "HEAD..$originHead") | Select-Object -First 1).Trim())
     if ($ahead -gt 0) {
-        throw "Local branch is ahead of origin/$TargetBranch by $ahead commit(s). Refusing to overwrite or rewrite local work."
+        throw "Local branch is ahead of origin/$TargetBranch by $ahead commit(s). Refusing to rewrite local work."
     }
 
     if ($behind -gt 0) {
         Write-Host "Fast-forwarding to the verified candidate ..."
-        [void](Invoke-Git @("merge", "--ff-only", $originRef))
+        [void](Run-Git @("merge", "--ff-only", $originRef))
     }
 
-    $localHead = (Invoke-Git @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
-    $originHead = (Invoke-Git @("rev-parse", $originRef) | Select-Object -First 1).Trim()
-    $ahead = [int]((Invoke-Git @("rev-list", "--count", "$originHead..HEAD") | Select-Object -First 1).Trim())
-    $behind = [int]((Invoke-Git @("rev-list", "--count", "HEAD..$originHead") | Select-Object -First 1).Trim())
+    $localHead = (Run-Git @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
+    $originHead = (Run-Git @("rev-parse", $originRef) | Select-Object -First 1).Trim()
+    $ahead = [int]((Run-Git @("rev-list", "--count", "$originHead..HEAD") | Select-Object -First 1).Trim())
+    $behind = [int]((Run-Git @("rev-list", "--count", "HEAD..$originHead") | Select-Object -First 1).Trim())
+    $tracked = @(Run-Git @("status", "--porcelain", "--untracked-files=no") | Where-Object { $_ })
+    $trackedDirty = if ($tracked.Count -gt 0) { "YES" } else { "NO" }
 
-    $trackedLines = @(Invoke-Git @("status", "--porcelain", "--untracked-files=no") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $trackedDirty = if ($trackedLines.Count -gt 0) { "YES" } else { "NO" }
-
-    if ($trackedDirty -ne "NO") {
-        throw "Tracked working tree became dirty after sync."
-    }
+    if ($trackedDirty -ne "NO") { throw "Tracked working tree became dirty after sync." }
     if ($localHead -ne $resolvedExpected -or $originHead -ne $resolvedExpected) {
         throw "Post-sync SHA verification failed."
     }
 
-    Write-Result -State "SUCCESS" -Reason "candidate synchronized and verified" -Branch $branch -LocalHead $localHead -OriginHead $originHead -Expected $resolvedExpected -Match "YES" -TrackedDirty $trackedDirty -UntrackedCount $untrackedCount -Ahead $ahead -Behind $behind
+    Write-SyncResult "SUCCESS" "candidate synchronized and verified" $branch $localHead $originHead $resolvedExpected "YES" $trackedDirty $untrackedCount $ahead $behind
     exit 0
 }
 catch {
     $reason = $_.Exception.Message
     try {
-        if (-not [string]::IsNullOrWhiteSpace($script:RepoRoot)) {
-            if ([string]::IsNullOrWhiteSpace($localHead)) {
-                $localHead = (Invoke-Git @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
-            }
-        }
+        if (-not $localHead) { $localHead = (Run-Git @("rev-parse", "HEAD") | Select-Object -First 1).Trim() }
     }
-    catch {
-    }
+    catch { }
 
-    Write-Result -State "STOPPED" -Reason $reason -Branch $branch -LocalHead $localHead -OriginHead $originHead -Expected $resolvedExpected -Match "NO" -TrackedDirty $trackedDirty -UntrackedCount $untrackedCount -Ahead $ahead -Behind $behind
+    Write-SyncResult "STOPPED" $reason $branch $localHead $originHead $resolvedExpected "NO" $trackedDirty $untrackedCount $ahead $behind
     exit 1
 }
