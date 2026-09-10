@@ -18,59 +18,42 @@
 
 | 工程 | 既定担当 | 完了条件 |
 |---|---|---|
-| ① 設計 | ChatGPT | 方針・受入条件・変更ティアを確定。実装前ならここで止まる |
-| ② 開発・作成 | ChatGPT + GitHub + GitHub Actions | GitHub上の実装、tier相当targeted/regression、必要ならcandidate SHAのCI green確認 |
-| ③ 実機投入 | Codex またはユーザー | 正式ローカルrepoをcandidateへ同期し、branch / HEAD SHA / dirty treeを確認して**停止** |
-| ④ 実機確認 | **ユーザー** | `RUN_DEV.cmd` 等で起動、GUI操作、機能確認、実紙確認などを実施し結果を報告 |
-| ⑤ ビルド・配布・確認 | **ユーザー** | 既存 `*_CLICK_ME.cmd` / `UPDATE_*.cmd` 等のワンクリック経路を実行し結果を確認 |
+| ① 設計 | ChatGPT | 方針・受入条件・変更ティアを確定 |
+| ② 開発・作成 | ChatGPT + GitHub + GitHub Actions | GitHub上で実装・PR・必要なテストを完了し、**candidate branchの採用SHAについてCI greenを確認**してcandidate SHAを記録 |
+| ③ candidate同期 | **ユーザー** | `SYNC_CLICK_ME.cmd` を実行し、想定branch / tracked clean / `HEAD SHA == candidate SHA` を確認して**停止** |
+| ④ 実機確認 | **ユーザー** | `RUN_DEV.cmd` 等で起動、GUI、機能、実紙など必要な実機確認を行い結果を報告 |
+| ⑤ build / deploy / update | **ユーザー** | 既存 `*_CLICK_ME.cmd` / `UPDATE_*.cmd` 等の正式ワンクリック経路を実行し結果を確認 |
 
-④/⑤で具体的な失敗症状が出た場合だけ、例外工程としてCodexのWindows障害調査へ進みます。
+通常フローではAIは①②まで。③④⑤をCodexへ代行させません。
 
-## 3. 工程③「実機投入」の厳格な停止条件
+## 3. 工程③の境界
 
-③をCodexへ渡した場合、行ってよいのは原則次だけです。
+③は「GitHubで確定したcandidateを正式ローカルrepoへ安全に置く」工程です。
 
-- 正式repo確認
-- 想定branch確認
-- dirty tree確認と既存変更保護
-- `git fetch`
-- 必要な `git pull --ff-only` / checkout / switch 等によるcandidate同期
-- `HEAD SHA == candidate SHA` の確認
-- 結果報告
+- 同期対象branchはrepoごとに**明示設定**する。`origin/HEAD` や現在のdefault branchから推測しない。
+- ChatGPTは②完了時にcandidate SHAを明示する。
+- ユーザーは `SYNC_CLICK_ME.cmd` を実行し、必要ならcandidate SHAを貼り付ける。
+- スクリプトは expected repo / expected branch / tracked dirty / local ahead / detached HEAD / SHA不一致を検出したら**自動修復せず停止**する。
+- 同期は `git fetch --prune` と `git merge --ff-only` のみを使用する。`reset --hard` / rebase / force / stash自動実行はしない。
+- `HEAD SHA == candidate SHA`、origin SHA一致、tracked cleanを確認したら③完了として停止する。
+- 結果は `SYNC_RESULT.txt` に保存する。
+- `.venv`、業務データ、ローカル設定、Git管理外データは変更しない。
 
-**HEAD SHA一致を確認したら必ず停止します。**
-
-③では次を行いません。
-
-- アプリ起動
-- GUI / Computer-Use
-- 機能確認
-- 実紙印刷
-- 実プリンター操作
-- 追加テスト
-- full regression
-- candidateの再レビュー
-- 根本原因の再調査
-- build
-- deploy / UPD
-- 本番反映
-
-③の目的は「GitHub candidateを実機へ正しく置くこと」であり、「candidateを実機で検証すること」ではありません。
+③ではアプリ起動、GUI、機能確認、実紙、追加テスト、candidate再レビュー、再調査、build、deploy、UPD、本番反映を行いません。
 
 ## 4. 工程④「実機確認」はユーザー既定
 
-ユーザーが通常担当するもの:
+ユーザーが通常担当します。
 
 - `RUN_DEV.cmd` 等のワンクリック起動
-- GUIを開く・見る・通常操作する
-- 修正箇所を確認する
-- 実紙印刷を行う
+- GUI表示・通常操作・修正箇所の確認
+- 実紙・実プリンター確認
 - 実データを壊さない範囲の実機確認
-- 画面表示・症状・エラーをChatGPTへ報告する
+- 画面表示・症状・エラーのChatGPTへの報告
 
-「CIでは確認できない」「Windows実機が必要」は、Codex利用の自動トリガではありません。まずユーザーの④で確認します。
+「CIでは確認できない」「Windows実機が必要」「GUIを見たい」は、単独ではCodex利用のトリガにしません。
 
-## 5. 工程⑤「ビルド・配布・確認」はユーザー既定
+## 5. 工程⑤「build / deploy / update」はユーザー既定
 
 既存の安全なワンクリック経路がある場合、ユーザーが実行します。
 
@@ -82,60 +65,52 @@
 - `UPDATE_HDD_CLICK_ME.cmd`
 - その他、対象repoで正式化されたワンクリックbuild / deploy / update手順
 
-長いPowerShell/Gitの手打ち、conflict解消、force push、履歴書き換え、`.git` 内部操作、実運用DBや秘密情報の直接編集、共有フォルダへの手動 `robocopy` はユーザー標準操作にしません。
+長いPowerShell/Gitの手打ち、conflict解消、force push、履歴書き換え、`.git`内部操作、実運用DBや秘密情報の直接編集、共有フォルダへの手動 `robocopy` はユーザー標準操作にしません。
 
-## 6. Codexを使う条件
+## 6. 例外工程⑥「Windows障害調査」
 
-Codexは通常の実機確認担当ではなく、**ユーザー操作だけでは解決しないWindows実機トラブルの調査担当**です。
+Codex等の実機AIを使うのは、③④⑤で**ユーザーが再現した具体的な失敗症状**があり、GitHub / CI / ユーザー報告だけでは切り分けられない場合だけです。
 
-原則として次の場合だけ使用します。
+典型例:
 
-- ③candidate同期をCodexへ明示的に任せる場合
-- ④/⑤でユーザーが具体的な失敗症状を再現した場合
-- 起動しない
+- `SYNC_CLICK_ME.cmd` が conflict / detached HEAD / local ahead / Git異常などで停止し、ユーザー操作だけでは解決できない
+- アプリが起動しない
 - `*_CLICK_ME.cmd` が具体的な行・エラーで停止する
 - Windows固有エラー
 - printer / driver / shared folder / HDD / 外部Windowsアプリの異常
-- GitHub・CI・ユーザー報告だけでは原因を切り分けられない実機状態の調査
-- 2台同時など、ユーザー1人では物理的に成立しない試験
+- ユーザー1人では物理的に成立しない複数PC試験
 
-**無症状の「念のため実機確認」はCodexへ依頼しません。**
+無症状の「念のため実機確認」、通常の同期、通常のGUI確認、通常build、通常deployにはCodexを使いません。
 
-## 7. Codexへ渡す指示の必須形式
-
-Codex指示は必ず `【工程】` から始めます。
+## 7. ⑥へ渡す必須形式
 
 ```text
-【工程】③ 実機投入のみ / ⑥ Windows障害調査
+【工程】⑥ Windows障害調査
 【変更ティア】T0 / T1 / T2 / T3
-【対象】repo / branch / candidate SHA
+【症状】ユーザーが再現した具体的エラー・挙動
+【対象】repo / branch / HEAD SHA / candidate SHA
 【確立した事実】確認済み事項
 【green baseline】CI / test + SHA
-【Codexで行う】今回必要な作業だけ
-【Codexで行わない】アプリ起動 / GUI操作 / 機能確認 / 実紙印刷 / 追加テスト / full regression / candidate再レビュー / 再調査 / 通常build / 通常deploy
-【停止条件】③なら HEAD SHA == candidate SHA を確認した時点
-【報告】branch / HEAD / dirty tree / 実施結果 / エラーのみ
+【調査範囲】その症状の切り分けに限定
+【Codexで行わない】症状と無関係な再実装 / full regression / 通常build / 通常deploy / scope拡大
+【報告】確認した事実 / 原因候補 / 必要な次アクション / 未確認事項
 ```
 
-⑥障害調査では、`【症状】` を必須とします。症状のない⑥は開始しません。
+症状のない⑥は開始しません。
 
 ## 8. ChatGPTの毎ターン継続ゲート
 
-通常のChatGPT会話ではrepo内 `AGENTS.md` やMemoryが自動発火する前提を置きません。
+ソフトウェア開発について「次に何をするか」「誰に渡すか」「Codexへ何を指示するか」を回答する直前に、毎回この契約を照合します。
 
-ソフトウェア開発について「次に何をするか」「誰に渡すか」「Codexへ何を指示するか」を回答する直前に、ChatGPTは最低限この契約を照合します。
+> 今は①〜⑤のどこか。通常フローでAIが担当するのは①②まで。③はユーザーの `SYNC_CLICK_ME.cmd`、④⑤はユーザー。Codexへ渡すなら具体症状付き⑥か。ワンクリックで安全にできる作業を有料AIへ戻していないか。
 
-セルフチェック:
-
-> この次工程は①〜⑤のどこか。Codex指示なら③同期のみ、または具体症状付き⑥か。④/⑤をCodexへ渡していないか。ユーザーが安全にワンクリックでできる作業を有料AIへ戻していないか。
-
-同一チャットで過去にDevelopmentを読んでいても、この工程担当チェックは省略しません。
+同一チャットで過去に確認済みでも、この工程担当チェックは省略しません。
 
 ## 9. 他文書との関係
 
-- T0〜T3、読み込み予算、テスト範囲、反復上限、CI baselineは `AGENT_EFFICIENCY_POLICY.md` を維持します。
-- 詳細な運用・Git・フェーズ規律は `AI_OPERATING_MANUAL.md` を維持します。
-- 能力定義は `CAPABILITIES.md` を維持します。
-- ただし、**①〜⑤の担当、ユーザー既定操作、③の停止条件、Codex利用条件は本文書が最優先**です。
+- T0〜T3、読み込み予算、テスト範囲、反復上限、CI baselineは `AGENT_EFFICIENCY_POLICY.md`。
+- 詳細運用・Git・フェーズ規律は `AI_OPERATING_MANUAL.md`。
+- 能力定義は `CAPABILITIES.md`。
+- **①〜⑤の担当、③の完了条件、⑥の発火条件は本書を最優先**します。
 
-この契約の目的は「AIにできることを最大化する」ことではありません。**安全を落とさず、ユーザーが安全にできる工程はユーザーへ残し、Codexを本当に実機AIが必要な場面だけに限定すること**です。
+この契約の目的は「AIにできることを最大化する」ことではありません。安全を落とさず、ユーザーが安全にできる工程はユーザーへ残し、Codexを本当に実機AIが必要な障害調査だけに限定することです。
