@@ -1,4 +1,4 @@
-name: Dev standards (self, warning-only)
+name: Dev standards (self)
 
 on:
   push:
@@ -15,7 +15,55 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # このリポジトリ自身を、同梱の共通アクションで点検する（dogfood）。
       - uses: ./.github/actions/check-standards
         with:
           strict: "false"
+
+  sync-candidate-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate SYNC_CANDIDATE success and fail-safe guards
+        shell: powershell
+        run: |
+          $branch = if ($env:GITHUB_HEAD_REF) { $env:GITHUB_HEAD_REF } else { $env:GITHUB_REF_NAME }
+          git fetch origin $branch
+          if ($LASTEXITCODE -ne 0) { throw "git fetch failed" }
+          git switch -C $branch "origin/$branch"
+          if ($LASTEXITCODE -ne 0) { throw "git switch failed" }
+          $sha = (git rev-parse HEAD).Trim()
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
+            -ExpectedRepo "4m9ccm98gt-rgb/development-management" `
+            -TargetBranch $branch `
+            -ExpectedSha $sha
+          if ($LASTEXITCODE -ne 0) { throw "success path failed" }
+          $result = Get-Content .\SYNC_RESULT.txt -Raw
+          if ($result -notmatch "state: SUCCESS" -or $result -notmatch "match: YES") {
+            throw "success result was not recorded"
+          }
+
+          Add-Content .\AI_MEMORY.md "# sync-contract-dirty-test"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
+            -ExpectedRepo "4m9ccm98gt-rgb/development-management" `
+            -TargetBranch $branch `
+            -ExpectedSha $sha
+          if ($LASTEXITCODE -eq 0) { throw "dirty-tree guard did not stop" }
+          $result = Get-Content .\SYNC_RESULT.txt -Raw
+          if ($result -notmatch "Tracked working-tree changes exist") {
+            throw "dirty-tree reason was not recorded"
+          }
+          git checkout -- .\AI_MEMORY.md
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
+            -ExpectedRepo "wrong-owner/wrong-repo" `
+            -TargetBranch $branch `
+            -ExpectedSha $sha
+          if ($LASTEXITCODE -eq 0) { throw "wrong-repo guard did not stop" }
+          $result = Get-Content .\SYNC_RESULT.txt -Raw
+          if ($result -notmatch "Wrong repository") {
+            throw "wrong-repo reason was not recorded"
+          }
