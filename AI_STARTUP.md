@@ -4,7 +4,7 @@
 
 ## 最優先
 
-1. **[OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)** で工程①〜⑤、担当、③停止条件、④⑤ユーザー既定、Codex利用条件を確認する。
+1. **[OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)** で工程①〜⑤、担当、③停止条件、④⑤ユーザー既定、Codex利用条件、Codex User Overrideを確認する。
 2. [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) で変更ティア T0〜T3 と読み込み・テスト予算を決める。
 3. 対象repo / branch / HEAD SHA / dirty treeを確認する。
 
@@ -59,8 +59,20 @@ T0/T1では本ファイルの残りを読まなくてよい。
 ③ candidate同期       ユーザー。SYNC_CLICK_ME.cmdで同期しSHA一致で停止
 ④ 実機確認            ユーザー
 ⑤ build/deploy/update ユーザーの正式ワンクリック経路
-⑥ Windows障害調査     ③④⑤で具体症状が出た場合だけCodex等の実機AI
+⑥ Windows障害調査     通常フローでは③④⑤で具体症状が出た場合だけCodex等の実機AI
+
+Codex User Override      ユーザーが明示した指定作業に限り、①〜⑤もCodexへ委任可
 ```
+
+### Codex User Override
+
+ユーザーが「Codexに渡して」「Codexでやって」等、Codex利用を明示した場合は、通常の担当制限より [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) §2.1 を優先する。
+
+- 指定された作業に限り、①〜⑤の設計・開発・同期導線整備・candidate同期・実機確認・build / deploy / update等もCodexへ渡してよい。
+- 「通常はCodexを⑥だけに使う」ことを理由に明示指示を拒否しない。
+- overrideを別作業・別工程へ自動拡張しない。
+- candidate SHA、CI、③停止条件、④⑤の完了条件、正式ワンクリック操作、本番反映・承認ルールは維持する。
+- ③をCodexへ渡してもSHA一致確認で停止し、④へ自動進行しない。④・⑤もユーザーが明示した工程だけ実施する。
 
 ### ③の停止条件
 
@@ -84,8 +96,9 @@ T0/T1では本ファイルの残りを読まなくてよい。
 - 開発版は `RUN_DEV.cmd` 等からユーザーが起動できる。
 - EXEは `BUILD_*_CLICK_ME.cmd` 等でユーザーがワンクリックbuildできる。
 - 配布更新は `UPDATE_*` / `UPDATE_SHARED_FOLDER.cmd` 等でユーザーがワンクリック実行できる。
-- CI未カバーのGUI・実紙・実HDD・実LAN等は、まず④/⑤ユーザー確認へ渡す。
-- Codexはワンクリック操作の代行ではなく、具体的な失敗症状のWindows障害調査に使う。
+- CI未カバーのGUI・実紙・実HDD・実LAN等は、通常フローではまず④/⑤ユーザー確認へ渡す。
+- 通常フローのCodexはワンクリック操作の代行ではなく、具体的な失敗症状のWindows障害調査に使う。
+- **ユーザーがCodex利用を明示した場合はCodex User Overrideを適用し、指定範囲では上記の通常担当を上書きしてよい。**
 
 ## 作業前チェック
 
@@ -96,7 +109,8 @@ T0/T1では本ファイルの残りを読まなくてよい。
 - CIカバレッジ
 - ③のcandidate branch / candidate SHA
 - ④/⑤でユーザーが安全に確認できる範囲
-- Codexが必要なら具体症状付き⑥か
+- **ユーザーがCodex利用を明示したか。明示ありならCodex User Overrideの対象範囲はどこか**
+- 明示なしでCodexが必要なら具体症状付き⑥か
 
 ## 禁止事項
 
@@ -106,8 +120,9 @@ T0/T1では本ファイルの残りを読まなくてよい。
 - CI greenだけで実機確認済みと扱う
 - ChatGPTとCodexでGitHub実装を二重化
 - ③同期タスクでアプリ起動 / GUI / 実機確認 / 追加テストへ進む
-- ユーザーが安全にできる③④⑤をCodexへ代行させる
-- 無症状の「念のため実機確認」をCodexへ依頼
+- **Codex User Overrideが明示されていないのに**ユーザーが安全にできる③④⑤をCodexへ代行させる
+- **Codex User Overrideが明示されていないのに**無症状の「念のため実機確認」をCodexへ依頼
+- Codex User Overrideで指定された範囲を超えて、次工程・別作業へ自動進行する
 - targeted failure診断にfull suiteを使う
 
 ## 新しいChatGPT会話へ常駐させる短い契約
@@ -116,9 +131,10 @@ T0/T1では本ファイルの残りを読まなくてよい。
 開発作業では development-management/OPERATING_CONTRACT.md を工程担当の正本とする。
 ①設計=ChatGPT、②開発=ChatGPT+GitHub+CI、③candidate同期=ユーザーのSYNC_CLICK_ME、④実機確認=ユーザー、⑤build/deploy=ユーザーの正式ワンクリック操作。
 ③は想定branch / tracked clean / HEAD SHA==candidate SHAを確認したら停止。アプリ起動、GUI、機能確認、実紙、追加テスト、再調査、build、deployは禁止。
-Codexは③④⑤でユーザーが再現した具体的Windows障害の⑥調査だけに使う。
-CI未カバーの実機確認はまずユーザーへ渡す。
-ユーザーが安全にSYNC_CLICK_ME / RUN_DEV / *_CLICK_ME / UPDATE_*を実行できる場合、Codexに代行させない。
+通常、Codexは③④⑤でユーザーが再現した具体的Windows障害の⑥調査だけに使う。CI未カバーの実機確認はまずユーザーへ渡す。
+ユーザーが安全にSYNC_CLICK_ME / RUN_DEV / *_CLICK_ME / UPDATE_*を実行できる場合、通常はCodexに代行させない。
+ただし、ユーザーが「Codexに渡して」「Codexでやって」等と明示した場合、その指定作業に限り通常のCodex利用制限を上書きする。①〜⑤に属する設計・開発・同期導線整備・candidate同期・実機確認・build/deploy等もCodexへ渡せる。
+Codex利用時もcandidate SHA、CI、③停止条件、④⑤の完了条件・正式操作・承認条件は維持し、指定された工程を超えて自動進行しない。
 Codex指示前に毎回、現在工程とOPERATING_CONTRACTを照合する。
 調査・テスト量はAGENT_EFFICIENCY_POLICYのT0〜T3に従う。
 ```
