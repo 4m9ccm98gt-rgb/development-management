@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -71,6 +72,20 @@ class DiscoveryTests(unittest.TestCase):
             found = discover_entrypoints(root, "web")
             self.assertTrue(found.release.ready)
             self.assertEqual(found.release_label, "DEPLOY")
+
+    def test_git_repo_ignores_untracked_command_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            tracked = root / "BUILD_SAFE_CLICK_ME.cmd"
+            tracked.write_text("tracked", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", tracked.name], check=True)
+            untracked = root / "BUILD_EXE_CLICK_ME.cmd"
+            untracked.write_text("untracked", encoding="utf-8")
+
+            found = discover_entrypoints(root, "desktop")
+            self.assertTrue(found.build.ready)
+            self.assertEqual(found.build.path, tracked)
 
 
 class ValidationTests(unittest.TestCase):

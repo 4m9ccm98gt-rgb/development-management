@@ -129,14 +129,45 @@ def parse_github_repo(remote_url: str) -> str:
     return match.group(1) if match else ""
 
 
+def _filesystem_scripts(repo_root: Path) -> list[Path]:
+    return [path for path in repo_root.rglob("*") if path.is_file()]
+
+
+def _tracked_files(repo_root: Path) -> list[Path] | None:
+    """Return tracked files for a Git repo; None means this is not a Git repo.
+
+    Discovery in real repositories must never promote an untracked command file
+    to a formal lifecycle entrypoint.
+    """
+    if not (repo_root / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-z"],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if proc.returncode != 0:
+        return []
+    items = proc.stdout.decode("utf-8", errors="replace").split("\0")
+    return [repo_root / item for item in items if item]
+
+
 def _iter_scripts(repo_root: Path, max_depth: int = 3) -> list[Path]:
     if not repo_root.is_dir():
         return []
+    source = _tracked_files(repo_root)
+    candidates = source if source is not None else _filesystem_scripts(repo_root)
     found: list[Path] = []
-    for path in repo_root.rglob("*"):
+    for path in candidates:
         if not path.is_file() or path.suffix.lower() not in SCRIPT_SUFFIXES:
             continue
-        rel = path.relative_to(repo_root)
+        try:
+            rel = path.relative_to(repo_root)
+        except ValueError:
+            continue
         if len(rel.parts) - 1 > max_depth:
             continue
         if any(part in SKIP_DIR_NAMES for part in rel.parts):

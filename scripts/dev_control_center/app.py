@@ -247,7 +247,7 @@ class App(ttk.Frame):
         command = ["cmd.exe", "/c", "call", str(path), *args]
         try:
             flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            process = subprocess.Popen(command, cwd=repo_root, creationflags=flags)
+            process = subprocess.Popen(command, cwd=path.parent, creationflags=flags)
         except OSError as exc:
             messagebox.showerror("起動失敗", str(exc))
             return
