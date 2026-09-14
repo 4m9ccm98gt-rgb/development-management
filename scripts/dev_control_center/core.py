@@ -68,6 +68,8 @@ class PullRequestInfo:
     number: int
     title: str
     head_branch: str
+    head_sha: str
+    base_branch: str
     is_draft: bool
     url: str
 
@@ -75,14 +77,22 @@ class PullRequestInfo:
 @dataclass(frozen=True)
 class GitHubState:
     branch_sha: str = ""
+    ci_sha: str = ""
+    ci_target: str = ""
     ci_state: str = "UNKNOWN"
     check_count: int = 0
     latest_pr: PullRequestInfo | None = None
+    candidate_blocked_by_pr: bool = False
     error: str = ""
 
     @property
     def candidate_ready(self) -> bool:
-        return bool(self.branch_sha) and self.ci_state == "GREEN" and not self.error
+        return (
+            bool(self.branch_sha)
+            and self.ci_state == "GREEN"
+            and not self.candidate_blocked_by_pr
+            and not self.error
+        )
 
 
 @dataclass(frozen=True)
@@ -282,7 +292,7 @@ def _latest_open_pr(full_name: str) -> PullRequestInfo | None:
         "--repo", full_name,
         "--state", "open",
         "--limit", "1",
-        "--json", "number,title,headRefName,isDraft,url",
+        "--json", "number,title,headRefName,headRefOid,baseRefName,isDraft,url",
     ])
     if not isinstance(payload, list) or not payload:
         return None
@@ -293,13 +303,25 @@ def _latest_open_pr(full_name: str) -> PullRequestInfo | None:
         number=int(item.get("number", 0) or 0),
         title=str(item.get("title", "") or ""),
         head_branch=str(item.get("headRefName", "") or ""),
+        head_sha=str(item.get("headRefOid", "") or ""),
+        base_branch=str(item.get("baseRefName", "") or ""),
         is_draft=bool(item.get("isDraft")),
         url=str(item.get("url", "") or ""),
     )
 
 
+def _ci_for_sha(full_name: str, sha: str) -> tuple[str, int]:
+    check_runs = _run_gh_json([
+        "api", f"repos/{full_name}/commits/{sha}/check-runs?per_page=100",
+    ])
+    combined_status = _run_gh_json([
+        "api", f"repos/{full_name}/commits/{sha}/status",
+    ])
+    return summarize_ci_state(check_runs, combined_status)
+
+
 def fetch_github_state(definition: RepoDefinition) -> GitHubState:
-    """Fetch expected-branch HEAD, CI rollup and latest open PR via GitHub CLI."""
+    """Fetch expected-branch HEAD, active PR-head CI and latest open PR via GitHub CLI."""
     try:
         branch_name = quote(definition.branch, safe="")
         branch_payload = _run_gh_json([
@@ -312,22 +334,36 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
         if not candidate_sha_is_valid(branch_sha):
             raise RuntimeError(f"expected branch '{definition.branch}' has no usable HEAD SHA")
 
-        check_runs = _run_gh_json([
-            "api", f"repos/{definition.full_name}/commits/{branch_sha}/check-runs?per_page=100",
-        ])
-        combined_status = _run_gh_json([
-            "api", f"repos/{definition.full_name}/commits/{branch_sha}/status",
-        ])
-        ci_state, check_count = summarize_ci_state(check_runs, combined_status)
         try:
             latest_pr = _latest_open_pr(definition.full_name)
         except RuntimeError:
             latest_pr = None
+
+        relevant_pr = (
+            latest_pr
+            if latest_pr
+            and latest_pr.base_branch == definition.branch
+            and candidate_sha_is_valid(latest_pr.head_sha)
+            else None
+        )
+        if relevant_pr:
+            ci_sha = relevant_pr.head_sha
+            ci_target = f"PR #{relevant_pr.number}"
+            candidate_blocked_by_pr = True
+        else:
+            ci_sha = branch_sha
+            ci_target = definition.branch
+            candidate_blocked_by_pr = False
+
+        ci_state, check_count = _ci_for_sha(definition.full_name, ci_sha)
         return GitHubState(
             branch_sha=branch_sha,
+            ci_sha=ci_sha,
+            ci_target=ci_target,
             ci_state=ci_state,
             check_count=check_count,
             latest_pr=latest_pr,
+            candidate_blocked_by_pr=candidate_blocked_by_pr,
         )
     except RuntimeError as exc:
         return GitHubState(error=str(exc))
