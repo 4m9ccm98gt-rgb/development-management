@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from scripts.dev_control_center.core import (
+    GitHubState,
     RemoteRepo,
     RepoDefinition,
     build_new_repo_setup_prompt,
@@ -75,6 +76,28 @@ class CiSummaryTests(unittest.TestCase):
         )
         self.assertEqual(state, "NO CHECKS")
         self.assertEqual(count, 0)
+
+    def test_open_pr_blocks_candidate_even_when_pr_ci_is_green(self):
+        state = GitHubState(
+            branch_sha="a" * 40,
+            ci_sha="b" * 40,
+            ci_target="PR #12",
+            ci_state="GREEN",
+            check_count=3,
+            candidate_blocked_by_pr=True,
+        )
+        self.assertFalse(state.candidate_ready)
+
+    def test_merged_branch_green_can_be_candidate(self):
+        state = GitHubState(
+            branch_sha="a" * 40,
+            ci_sha="a" * 40,
+            ci_target="main",
+            ci_state="GREEN",
+            check_count=3,
+            candidate_blocked_by_pr=False,
+        )
+        self.assertTrue(state.candidate_ready)
 
 
 class PromptTests(unittest.TestCase):
