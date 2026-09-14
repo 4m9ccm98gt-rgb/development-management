@@ -1,0 +1,8 @@
+[branches]
+beverage-inventory-ordering-system = "main"
+call-reception-assistant = "main"
+food-cost-calculation-system = "main"
+inventory-reconciliation-system = "main"
+menu-sheet-generator = "main"
+next-day-setup = "main"
+qr-supply-ordering-system = "main"

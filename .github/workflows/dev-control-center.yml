@@ -1,0 +1,23 @@
+name: Dev Control Center
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  control-center:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -p "test_dev_control_center.py" -v
+      - name: Compile
+        run: python -m compileall scripts/dev_control_center DEV_CONTROL_CENTER.pyw
+      - name: Registry self-check
+        run: python -m scripts.dev_control_center.app --self-check
