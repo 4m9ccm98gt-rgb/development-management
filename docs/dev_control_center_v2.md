@@ -19,14 +19,15 @@ v2 は、初版の「各repoの正式入口を一画面から起動する発射�
 選択repoについてGitHub CLI (`gh`) から次を取得します。
 
 - 明示されたexpected branchのHEAD SHA
-- そのSHAのcheck runs / commit statusの集約
 - 最新のopen PR
+- 開発中PRがexpected branch向けなら、そのPR head SHAのcheck runs / commit status
+- 該当PRがなければ、expected branch HEADのcheck runs / commit status
 
-expected branch HEADのCIが `GREEN` の場合だけ、そのSHAをcandidate欄へ自動入力します。
+開発中PRがある間は、そのPR headのCI状態を表示して `PENDING` / `FAILED` を見つけやすくします。PR headが `GREEN` でも、まだexpected branchへmergeされていないためcandidate SHAは自動確定しません。
+
+PRが閉じてexpected branchへ反映された後、expected branch HEADのCIが `GREEN` の場合だけ、そのSHAをcandidate欄へ自動入力します。
 
 `PENDING` / `FAILED` / `NO CHECKS` ではcandidateを自動確定しません。手入力済みcandidateは自動値と同じ場合を除いて上書きしません。
-
-> v2初回ではCI集約のcandidate判定対象はexpected branch HEADです。open PRは同画面へ表示します。PR headの詳細check表示は使用感を見て次の改善候補とします。
 
 ### 3. GitHubに作られた新規repoを検出する
 
@@ -67,6 +68,7 @@ STARTUP SET → PR / CI → ③ SYNC → ④ RUN_DEV → ⑤ BUILD → ⑤ UPDAT
 ```
 
 - GitHub表示・candidate自動入力は②と③の間の探索コストを減らすだけで、③〜⑤を自動連続実行しない
+- 開発中PRがある間はPR headのCIを表示し、candidate自動確定はmerge後までブロックする
 - ③は正式SYNC入口へcandidate SHAを渡すだけ
 - ④はユーザー実機確認
 - ⑤は正式ワンクリックbuild / update / deploy
@@ -86,6 +88,8 @@ v2専用の `.github/workflows/dev-control-center-v2.yml` で次を確認しま�
 - GitHub未登録repoのフィルタ
 - GitHub repo一覧JSONの解釈
 - CI状態の GREEN / PENDING / FAILED / NO CHECKS
+- open PR中のcandidate自動確定ブロック
+- merge後branch greenのcandidate確定
 - STARTUP SET / 新規repoセットアップ指示
 - Control Center呼び出し向け `SYNC_CLICK_ME.cmd --no-pause` 契約
 - `scripts/dev_control_center` と両ランチャーのcompile
