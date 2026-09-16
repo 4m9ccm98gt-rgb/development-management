@@ -228,7 +228,10 @@ class App(ttk.Frame):
             return
         repo_root = REPOS_ROOT / self.current.name
         self.repo_state = inspect_repo(repo_root, self.current)
-        self.entrypoints = discover_entrypoints(repo_root, self.current.repo_type)
+        self.entrypoints = discover_entrypoints(
+            repo_root, self.current.repo_type,
+            application_implemented=self.current.application_implemented,
+        )
         state = self.repo_state
         entries = self.entrypoints
         self.title_var.set(self.current.name)
