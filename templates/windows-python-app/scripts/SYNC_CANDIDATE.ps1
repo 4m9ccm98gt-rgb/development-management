@@ -101,7 +101,7 @@ try {
     if ($inside -ne "true") { throw "Not inside a Git working tree." }
 
     $originUrl = (Run-Git @("remote", "get-url", "origin") | Select-Object -First 1).Trim()
-    if ($originUrl -notmatch 'github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$') {
+    if ($originUrl -notmatch '^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?$') {
         throw "origin is not a recognized github.com repository URL: $originUrl"
     }
     $actualRepo = $Matches[1]
@@ -131,6 +131,7 @@ try {
     }
 
     if ([string]::IsNullOrWhiteSpace($ExpectedSha)) {
+        if ($NoPause) { throw "Expected SHA is required in non-interactive mode." }
         $ExpectedSha = Read-Host "Paste expected candidate SHA"
     }
     $ExpectedSha = $ExpectedSha.Trim()
