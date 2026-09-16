@@ -1,133 +1,108 @@
 # Operating Contract
 
-この文書は、通常のChatGPTチャットを含む全開発セッションで常時適用する最小契約です。
+この文書は、Development運用で常時適用する最小契約です。
 
-**担当・工程・実機AI利用条件については、この文書を `AGENTS.md`、`AGENT_EFFICIENCY_POLICY.md`、`AI_OPERATING_MANUAL.md`、`CAPABILITIES.md`、`DEVELOPMENT_RULES.md`、`AI_STARTUP.md` より優先します。**
+目的は、**実装品質を保ちながら、ChatGPT / Codex / Claude / GitHub Actions の利用制限で開発全体を止めないこと**です。
 
-## 1. 判断軸
+## 1. 絶対に残す安全条件
 
-担当は次の3軸で決めます。
+- ユーザー実機確認前に本番配布しない。
+- 実機確認でNGになったcandidateを本番へ進めない。
+- ユーザーが確認したcandidateを完全SHAで特定できるようにする。
+- 最終的に **confirmed SHA == pushed SHA == BUILD対象SHA** を成立させる。
+- candidate確認開始時と正式BUILD時は tracked clean を確認する。
+- 本番データ、秘密情報、ローカル設定、共有先を不用意に変更しない。
+- force push / 履歴破壊 / 無断rebaseで承認済みSHAを置き換えない。
+- ユーザーが Codex / Claude 等の特定エージェントを指定した場合、その指定作業では指定エージェントを維持する。
 
-1. **安全性**: 誤操作・データ損失・本番影響を安全に抑えられるか。
-2. **実機AIクレジット**: Codex / Claude 等の実機AIを使う価値が消費量に見合うか。
-3. **ユーザー操作可能性**: 既存のワンクリック経路や単純なGUI操作で、ユーザーが安全・簡単に実施できるか。
+## 2. A — ChatGPT fast path
 
-ユーザーが安全にワンクリックまたは通常GUI操作で実施できる工程を、単に「ChatGPTから触れない実機作業だから」という理由でCodex / Claude 等の実機AIへ回しません。
-
-## 2. 標準5工程
-
-| 工程 | 既定担当 | 完了条件 |
-|---|---|---|
-| ① 設計 | ChatGPT | 方針・受入条件・変更ティアを確定 |
-| ② 開発・作成 | ChatGPT + GitHub + GitHub Actions | GitHub上で実装・PR・必要なテストを完了し、**candidate branchの採用SHAについてCI greenを確認**してcandidate SHAを記録 |
-| ③ candidate同期 | **ユーザー** | `SYNC_CLICK_ME.cmd` を実行し、想定branch / tracked clean / `HEAD SHA == candidate SHA` を確認して**停止** |
-| ④ 実機確認 | **ユーザー** | `RUN_DEV.cmd` 等で起動、GUI、機能、実紙など必要な実機確認を行い結果を報告 |
-| ⑤ build / deploy / update | **ユーザー** | 既存 `*_CLICK_ME.cmd` / `UPDATE_*.cmd` 等の正式ワンクリック経路を実行し結果を確認 |
-
-通常フローではAIは①②まで。③④⑤を実機AIへ代行させません。
-
-### 2.1 実機AI User Override
-
-ただし、**ユーザーが「Codexに渡して」「Claudeでやって」「実機AIにやらせて」等、Codex / Claude 等の実機AI利用を明示した場合は、その指定作業に限って上記の通常担当・通常の実機AI利用制限を上書きします。**
-
-- 明示された範囲では、①〜⑤に属する設計、開発、同期導線整備、candidate同期、実機確認、build / deploy / update等も実機AIへ渡してよい。
-- 「通常は③〜⑤を実機AIへ代行させない」「実機AIは⑥だけ」という標準ルールを理由に、ユーザーの明示指示を拒否しない。
-- **ユーザーが Codex / Claude 等の特定エージェントを名指しした場合、その指定エージェントを維持する。AI側の都合で ChatGPT や別エージェントへ勝手に置換しない。**
-- **指定エージェントへの直接連携・実行手段が現在のチャットに無い場合も、「連携が無いのでChatGPTが代わりに実装する」と自動代行しない。指定エージェントへ渡せる完成済みの引き継ぎ指示文を作成し、handoff地点で停止する。**
-- 指定エージェントが利用できないことを理由に別担当へ変更する必要がある場合は、ユーザーが明示的に再指定したときだけ担当を変更する。
-- overrideは**ユーザーが明示した作業・範囲だけ**に有効。別作業や次工程へ自動で拡張しない。
-- 対象範囲が不明確な場合だけ確認する。明確な場合は、通常ルールを再確認するためだけの確認質問を挟まない。
-- 実機AIを使っても、candidate SHA、CI、③candidate同期の停止条件、④実機確認の完了条件、⑤build / deploy / updateの正式操作、本番反映や承認ルールは維持する。
-- ③を実機AIへ渡す場合も、`HEAD SHA == candidate SHA`、origin SHA一致、tracked cleanを確認したら**必ず停止**し、④以降へ自動進行しない。
-- ④・⑤を実機AIへ渡す場合も、ユーザーが明示した工程だけを実施し、次工程へ自動進行しない。
-
-このoverrideは、ユーザーが「クレジット消費を気にせずCodex / Claude 等の実機AIを使いたい」等の理由で明示的に選択できる逃げ道です。AI側の判断で自動発火させません。
-
-## 3. 工程③の境界
-
-③は「GitHubで確定したcandidateを正式ローカルrepoへ安全に置く」工程です。
-
-- 同期対象branchはrepoごとに**明示設定**する。`origin/HEAD` や現在のdefault branchから推測しない。
-- ChatGPTは②完了時にcandidate SHAを明示する。
-- ユーザーは `SYNC_CLICK_ME.cmd` を実行し、必要ならcandidate SHAを貼り付ける。
-- スクリプトは expected repo / expected branch / tracked dirty / local ahead / detached HEAD / SHA不一致を検出したら**自動修復せず停止**する。
-- 同期は `git fetch --prune` と `git merge --ff-only` のみを使用する。`reset --hard` / rebase / force / stash自動実行はしない。
-- `HEAD SHA == candidate SHA`、origin SHA一致、tracked cleanを確認したら③完了として停止する。
-- 結果は `SYNC_RESULT.txt` に保存する。
-- `.venv`、業務データ、ローカル設定、Git管理外データは変更しない。
-
-③ではアプリ起動、GUI、機能確認、実紙、追加テスト、candidate再レビュー、再調査、build、deploy、UPD、本番反映を行いません。
-
-## 4. 工程④「実機確認」はユーザー既定
-
-ユーザーが通常担当します。
-
-- `RUN_DEV.cmd` 等のワンクリック起動
-- GUI表示・通常操作・修正箇所の確認
-- 実紙・実プリンター確認
-- 実データを壊さない範囲の実機確認
-- 画面表示・症状・エラーのChatGPTへの報告
-
-「CIでは確認できない」「Windows実機が必要」「GUIを見たい」は、単独では実機AI利用のトリガにしません。
-
-## 5. 工程⑤「build / deploy / update」はユーザー既定
-
-既存の安全なワンクリック経路がある場合、ユーザーが実行します。
-
-例:
-
-- `BUILD_EXE_CLICK_ME.cmd`
-- `BUILD_RELEASE.cmd`
-- `UPDATE_SHARED_FOLDER.cmd`
-- `UPDATE_HDD_CLICK_ME.cmd`
-- その他、対象repoで正式化されたワンクリックbuild / deploy / update手順
-
-長いPowerShell/Gitの手打ち、conflict解消、force push、履歴書き換え、`.git`内部操作、実運用DBや秘密情報の直接編集、共有フォルダへの手動 `robocopy` はユーザー標準操作にしません。
-
-## 6. 例外工程⑥「Windows障害調査」
-
-**実機AI User Overrideが明示されていない通常フローでは**、Codex / Claude 等の実機AIを使うのは、③④⑤で**ユーザーが再現した具体的な失敗症状**があり、GitHub / CI / ユーザー報告だけでは切り分けられない場合だけです。
-
-典型例:
-
-- `SYNC_CLICK_ME.cmd` が conflict / detached HEAD / local ahead / Git異常などで停止し、ユーザー操作だけでは解決できない
-- アプリが起動しない
-- `*_CLICK_ME.cmd` が具体的な行・エラーで停止する
-- Windows固有エラー
-- printer / driver / shared folder / HDD / 外部Windowsアプリの異常
-- ユーザー1人では物理的に成立しない複数PC試験
-
-無症状の「念のため実機確認」、通常の同期、通常のGUI確認、通常build、通常deployには実機AIを使いません。**ただし、ユーザーが実機AI利用を明示した場合は §2.1 を優先します。**
-
-## 7. ⑥へ渡す必須形式
+通常の開発はこの経路を第一候補とします。
 
 ```text
-【工程】⑥ Windows障害調査
-【変更ティア】T0 / T1 / T2 / T3
-【症状】ユーザーが再現した具体的エラー・挙動
-【対象】repo / branch / HEAD SHA / candidate SHA
-【確立した事実】確認済み事項
-【green baseline】CI / test + SHA
-【調査範囲】その症状の切り分けに限定
-【実機AIで行わない】症状と無関係な再実装 / full regression / 通常build / 通常deploy / scope拡大
-【報告】確認した事実 / 原因候補 / 必要な次アクション / 未確認事項
+仕様・要望
+→ ChatGPTがGitHub上で既存コードを調査
+→ 実装 + 必要なテスト追加
+→ 利用可能な自動検証
+→ GitHub candidate SHA確定
+→ ユーザーが正式同期入口でローカルへ反映
+→ ユーザー実機確認
+→ OKなら正式BUILD / 配布
 ```
 
-症状のない⑥は開始しません。実機AI User Overrideによる①〜⑤の委任は⑥とは別扱いで、ユーザーが指定した工程・範囲をそのまま引き継ぎます。
+- GitHub Actionsは**補助検証**です。Actions greenをcandidate完了の必須条件にしません。
+- Actionsが利用不能でも、実行できる検証結果と未実施項目を明示すれば開発を継続できます。
+- 自動テストを実行できる環境が無い場合、実行していないテストを「確認済み」と扱いません。
+- 軽い修正なら、実機NG後もAで修正を続けて構いません。
+- GitHub→同期→実機確認の往復が面倒、またはWindowsローカルでの連続デバッグが適切とユーザーが判断したらBへ切り替えます。
 
-## 8. ChatGPTの毎ターン継続ゲート
+## 3. B — Debug escape path
 
-ソフトウェア開発について「次に何をするか」「誰に渡すか」「実機AIへ何を指示するか」を回答する直前に、毎回この契約を照合します。
+ユーザーが「Codexでやって」「Claudeに渡して」等と明示した場合、その指定エージェントがWindowsローカルrepoでデバッグを完結させる経路です。
 
-> まずユーザーがCodex / Claude 等の実機AI利用を明示したか、さらに特定エージェントを名指ししたか確認する。明示されていれば§2.1の範囲でその指示と指定エージェントを優先し、工程の完了条件・停止条件は維持する。指定エージェントへの直接連携が無くてもChatGPTへ自動代行せず、handoff指示文を作って停止する。明示されていなければ、今は①〜⑤のどこか、通常フローでAIが担当するのは①②まで、③はユーザーの `SYNC_CLICK_ME.cmd`、④⑤はユーザー。通常フローで実機AIへ渡すなら具体症状付き⑥か。ワンクリックで安全にできる作業を有料AIへ戻していないか。
+```text
+B開始時に local HEAD / expected origin / branch を確認
+→ ローカルworking treeで調査・実装・targeted test・必要なregression・デバッグ
+→ 自動テスト上で完成
+→ local candidate commit
+→ tracked clean + candidate SHA確認 + 差分レビュー
+→ ユーザーがそのlocal candidateを実機確認
+→ NGならローカル修正へ戻る
+→ OKなら同じcandidate SHAをfast-forwardでpush
+→ confirmed SHA == pushed SHA を確認
+→ 正式BUILD / 配布
+```
 
-同一チャットで過去に確認済みでも、この工程担当チェックは省略しません。
+### B開始時
 
-## 9. 他文書との関係
+- `git fetch` 後、作業開始の土台が想定originと一致していることを確認する。
+- origin側が想定外に進んでいる場合は、forceで押し切らず停止する。
+- 本番データ・秘密情報・Git管理外業務データは開発対象に混ぜない。
 
-- T0〜T3、読み込み予算、テスト範囲、反復上限、CI baselineは `AGENT_EFFICIENCY_POLICY.md`。
-- 詳細運用・Git・フェーズ規律は `AI_OPERATING_MANUAL.md`。
-- 能力定義は `CAPABILITIES.md`。
-- **①〜⑤の担当、③の完了条件、⑥の発火条件、実機AI User Overrideは本書を最優先**します。
+### Bのデバッグ中
 
-この契約の目的は「AIにできることを最大化する」ことではありません。通常は安全を落とさず、ユーザーが安全にできる工程はユーザーへ残し、Codex / Claude 等の実機AIを本当に実機AIが必要な障害調査だけに限定します。**ただし、ユーザーが明示的に実機AIを選んだ作業では、その意思と指定エージェントを優先し、工程の安全条件を保ったまま指定範囲を実機AIへ委任します。**
+- 修正ごとのpush、GitHub Actions待ち、GitHub→Windowsの再同期は必須にしない。
+- working treeで修正とテストを繰り返してよい。
+- 復旧目的の途中local commitは許可するが、毎反復のcommitを義務化しない。
+
+### local candidate確定時
+
+- candidate commit後に tracked clean を確認する。
+- 直前の既知良好SHAからcandidateまでの**実差分を一度レビュー**する。`diff --stat`だけでなく、一時デバッグコード、仮パス、閾値変更、不要ファイル等が残っていないかを見る。
+- ユーザー実機確認の対象SHAを明示する。
+
+### ユーザーOK後
+
+- OK後にamend / rebase / squash等でcandidate SHAを変更しない。
+- pushはfast-forward前提。remoteが動いていたら停止して再評価する。
+- push後、pushed SHAがユーザー承認SHAと一致することを確認する。
+
+## 4. 実機確認とBUILD
+
+- ユーザー実機確認はcandidateの業務上の正しさ、GUI、実紙、LAN、外部サービス等を確認する最終安全境界です。
+- 正式BUILD前に **HEAD == confirmed SHA** と tracked clean を確認します。
+- Nuitka / PyInstaller / .NET/WPF等、BUILDで配布実体が変わるアプリは、完成binaryを配布前に少なくとも起動確認し、変更内容に応じて該当機能を確認します。
+- ソース実行と配布binaryの確認を同一視しません。
+
+## 5. GitHub Actions
+
+- Actionsは独立環境の補助検証として利用できます。
+- Actionsの利用制限・待ち時間だけを理由に通常開発を停止しません。
+- ローカルで同等の決定的テストを完了しているBでは、同じテストのActions再実行を完了条件にしません。
+- Actions自体、依存関係、共通CI基盤等を変更した場合は、その変更に必要なActions確認を行います。
+
+## 6. 読み込み・判断コスト
+
+- T0〜T3の必須分類は使用しません。
+- 毎ターンこの契約を再読・再報告する必要はありません。
+- この契約を明示的に再確認する主な境界は、**A→B切替、candidate確定、push、BUILD、deploy / update、本番反映**です。
+- 調査は依頼と変更に必要な範囲を読むことを原則とし、理由のない全repo・全文書読み込みや同一テストの重複実行を行いません。
+
+## 7. 他文書との関係
+
+- 本書がDevelopment運用の正本です。
+- `AGENT_EFFICIENCY_POLICY.md` は旧運用の履歴・参考資料であり、必読ポリシーではありません。
+- `AI_STARTUP.md` / `AI_OPERATING_MANUAL.md` / `STARTUP_HANDOFF_POLICY.md` / `AGENTS.md` は本書を上書きしません。
+- 詳細文書と本書が競合する場合は本書を優先します。
+
+運用の安全性は、工程数やAIの確認回数ではなく、**確認対象のSHA、必要な検証、ユーザー実機確認、BUILD対象の一致**で担保します。
