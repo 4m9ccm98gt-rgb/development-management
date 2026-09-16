@@ -6,3 +6,8 @@ inventory-reconciliation-system = "main"
 menu-sheet-generator = "main"
 next-day-setup = "main"
 qr-supply-ordering-system = "main"
+
+# Keep the app visible; RUN remains MISSING until the application is implemented.
+# Remove this entry when implementation and distribution become applicable.
+[unimplemented]
+call-reception-assistant = "Application source is not implemented; SYNC-only setup approved."

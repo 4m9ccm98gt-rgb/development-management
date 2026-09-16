@@ -29,6 +29,10 @@ Control Centerの `Bデバッグ指示` は、選択repo・ローカルパス・
 
 ## SETUP / 標準化
 
+2026-09-16の初回横断整備結果は [DCC初回セットアップ記録](dcc_initial_setup_20260916.md) を参照してください。local candidateの入口検証と、expected branchへの正式反映・ユーザー実機確認は別の状態として記録しています。
+
+既存の `UPDATE.cmd` / `DEPLOY.cmd` も正式入口として認識します。service / webでBUILD入口がない場合はソース配布として `N/A` を表示します。アプリ未実装の例外は `dev_control_center_repos.toml` の `[unimplemented]` に理由を記録し、RUNはMISSINGのまま、未実装で不要なBUILD・配布だけN/Aにします。実装時はこの例外を削除します。
+
 `SETUP / 標準化` は、単なるChatGPTセッション開始ボタンではありません。選択repoを Development Control Center の正式ライフサイクルへ載せるためのbootstrap / 監査指示を現在のChatGPTへコピーします。
 
 Control Centerがローカルrepoから検出した次の状態を指示へ埋め込みます。

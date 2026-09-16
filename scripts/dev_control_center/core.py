@@ -22,7 +22,7 @@ SKIP_DIR_NAMES = {
 }
 SCRIPT_SUFFIXES = {".cmd", ".bat"}
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", re.IGNORECASE)
+GITHUB_REMOTE_RE = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?$", re.IGNORECASE)
 CI_SUCCESS_CONCLUSIONS = {"success", "neutral", "skipped"}
 
 
@@ -36,6 +36,7 @@ class RepoDefinition:
     repo_type: str
     branch: str
     owner: str = DEFAULT_OWNER
+    application_implemented: bool = True
 
     @property
     def full_name(self) -> str:
@@ -147,7 +148,9 @@ def load_repo_definitions(
     with types_path.open("rb") as f:
         types = tomllib.load(f).get("types", {})
     with branches_path.open("rb") as f:
-        branches = tomllib.load(f).get("branches", {})
+        registry = tomllib.load(f)
+        branches = registry.get("branches", {})
+        unimplemented = registry.get("unimplemented", {})
 
     definitions: list[RepoDefinition] = []
     for name, repo_type in sorted(types.items()):
@@ -157,7 +160,7 @@ def load_repo_definitions(
             raise ControlCenterConfigError(
                 f"{name}: explicit candidate branch is missing from {branches_path.name}"
             )
-        definitions.append(RepoDefinition(str(name), repo_type, branch, owner))
+        definitions.append(RepoDefinition(str(name), repo_type, branch, owner, name not in unimplemented))
     return definitions
 
 
@@ -519,7 +522,7 @@ def _regex(pattern: str) -> Callable[[str], bool]:
     return lambda name: bool(rx.fullmatch(name))
 
 
-def discover_entrypoints(repo_root: Path, repo_type: str) -> RepoEntrypoints:
+def discover_entrypoints(repo_root: Path, repo_type: str, *, application_implemented: bool = True) -> RepoEntrypoints:
     """Conservatively find formal user-facing lifecycle entrypoints."""
     scripts = _iter_scripts(repo_root)
     sync = _choose(repo_root, scripts, [
@@ -537,11 +540,15 @@ def discover_entrypoints(repo_root: Path, repo_type: str) -> RepoEntrypoints:
         _regex(r"BUILD.*CLICK_ME\.(?:CMD|BAT)"),
     ])
 
+    if repo_type in {"web", "service"} and build.state == "MISSING":
+        build = EntryPointChoice("N/A")
+
     if repo_type == "desktop":
         release_label = "UPDATE"
         release = _choose(repo_root, scripts, [
             _exact("UPDATE_SHARED_FOLDER.cmd"),
             _exact("UPDATE_HDD_CLICK_ME.cmd"),
+            _exact("UPDATE.cmd"),
             _regex(r"UPDATE.*CLICK_ME\.(?:CMD|BAT)"),
             _regex(r"UPDATE_[A-Z0-9_]+\.(?:CMD|BAT)"),
         ])
@@ -549,6 +556,7 @@ def discover_entrypoints(repo_root: Path, repo_type: str) -> RepoEntrypoints:
         release_label = "DEPLOY"
         release = _choose(repo_root, scripts, [
             _exact("DEPLOY_CLICK_ME.cmd"),
+            _exact("DEPLOY.cmd"),
             _regex(r"DEPLOY.*CLICK_ME\.(?:CMD|BAT)"),
         ])
     elif repo_type == "service":
@@ -562,6 +570,11 @@ def discover_entrypoints(repo_root: Path, repo_type: str) -> RepoEntrypoints:
     else:
         release_label = "N/A"
         release = EntryPointChoice("N/A")
+    if not application_implemented:
+        if build.state == "MISSING":
+            build = EntryPointChoice("N/A")
+        if release.state == "MISSING":
+            release = EntryPointChoice("N/A")
     return RepoEntrypoints(sync, run, build, release, release_label)
 
 
