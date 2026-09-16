@@ -37,7 +37,9 @@ main用SYNCだけでなく、`templates/windows-python-app/scripts/SYNC_CANDIDAT
 
 ## Actionsと未確認事項
 
-Actionsは支払いまたは利用上限の理由でジョブ開始前に停止。FAILURE表示はCI内テスト失敗を示さない。ユーザー指示に従いgreen待ちは行っていない。前工程のローカル検証を補助根拠として記録し、未実行を実行済みとは扱わない。
+アプリ側7repoのDCC PRは、Actionsが支払いまたは利用上限の理由でジョブ開始前に停止。FAILURE表示はCI内テスト失敗を示さない。ユーザー指示に従いgreen待ちは行っていない。前工程のローカル検証を補助根拠として記録し、未実行を実行済みとは扱わない。
+
+一方、development-managementの[PR #14](https://github.com/4m9ccm98gt-rgb/development-management/pull/14)と[PR #15](https://github.com/4m9ccm98gt-rgb/development-management/pull/15)は実際にActionsが実行され、control-center / standards / sync-candidate-contractの全チェックSUCCESSを確認した（2026-09-16 21:04 JST以降の最終確認）。アプリ側の未実行と管理repo側の成功を区別する。PR #15のmerge SHAは `d91f951e7ed678372f3ee3c99f81556d1ae2ce1f`。このCI結果の記録訂正は文書のみであり、機能変更はない。
 
 全repo共通でユーザー実機確認・実紙・LAN・外部サービス・配布物の動作・本番配布は未実施。本番データ、共有先、秘密情報、ローカル専用設定は本タスクで変更していない。call-receptionのアプリ本体は未実装、利用者向けランチャーは対象外。
 
