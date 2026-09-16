@@ -2,13 +2,23 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts.dev_control_center.core import (
     ControlCenterConfigError,
+    GitHubState,
+    RemoteRepo,
+    RepoDefinition,
     active_repo_definitions,
+    build_debug_handoff_prompt,
+    build_new_repo_setup_prompt,
+    build_startup_prompt,
     candidate_sha_is_valid,
     discover_entrypoints,
+    list_github_repositories,
     parse_github_repo,
+    summarize_ci_state,
+    unmanaged_github_repositories,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -89,9 +99,9 @@ class DiscoveryTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
-    def test_candidate_sha_validation(self):
-        self.assertTrue(candidate_sha_is_valid("abcdef1"))
+    def test_candidate_sha_requires_full_sha(self):
         self.assertTrue(candidate_sha_is_valid("a" * 40))
+        self.assertFalse(candidate_sha_is_valid("abcdef1"))
         self.assertFalse(candidate_sha_is_valid("xyz1234"))
         self.assertFalse(candidate_sha_is_valid("abc"))
 
@@ -100,6 +110,114 @@ class ValidationTests(unittest.TestCase):
             parse_github_repo("https://github.com/example/demo.git"),
             "example/demo",
         )
+
+
+class GitHubDiscoveryTests(unittest.TestCase):
+    def test_unmanaged_filters_managed_archived_and_forks(self):
+        repos = [
+            RemoteRepo("managed"),
+            RemoteRepo("new-app", default_branch="main"),
+            RemoteRepo("old-app", is_archived=True),
+            RemoteRepo("forked", is_fork=True),
+        ]
+        result = unmanaged_github_repositories({"managed"}, repos)
+        self.assertEqual([item.name for item in result], ["new-app"])
+
+    @patch("scripts.dev_control_center.core._run_gh_json")
+    def test_repo_list_parses_default_branch(self, run_json):
+        run_json.return_value = [
+            {
+                "name": "new-app",
+                "isArchived": False,
+                "isFork": False,
+                "defaultBranchRef": {"name": "main"},
+            }
+        ]
+        result = list_github_repositories("example")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].full_name, "example/new-app")
+        self.assertEqual(result[0].default_branch, "main")
+
+
+class CiSummaryTests(unittest.TestCase):
+    def test_green_when_all_checks_succeed(self):
+        state, count = summarize_ci_state(
+            {"check_runs": [
+                {"status": "completed", "conclusion": "success"},
+                {"status": "completed", "conclusion": "skipped"},
+            ]},
+            {"total_count": 0, "state": ""},
+        )
+        self.assertEqual(state, "GREEN")
+        self.assertEqual(count, 2)
+
+    def test_pending_when_check_is_running(self):
+        state, _ = summarize_ci_state(
+            {"check_runs": [{"status": "in_progress", "conclusion": None}]},
+            {"total_count": 0, "state": ""},
+        )
+        self.assertEqual(state, "PENDING")
+
+    def test_failed_when_check_fails(self):
+        state, _ = summarize_ci_state(
+            {"check_runs": [{"status": "completed", "conclusion": "failure"}]},
+            {"total_count": 0, "state": ""},
+        )
+        self.assertEqual(state, "FAILED")
+
+    def test_no_checks_is_reported(self):
+        state, count = summarize_ci_state(
+            {"check_runs": []},
+            {"total_count": 0, "state": ""},
+        )
+        self.assertEqual(state, "NO CHECKS")
+        self.assertEqual(count, 0)
+
+    def test_green_is_not_required_for_candidate(self):
+        state = GitHubState(branch_sha="a" * 40, ci_state="FAILED")
+        self.assertTrue(state.candidate_ready)
+
+    def test_open_pr_blocks_auto_candidate(self):
+        state = GitHubState(
+            branch_sha="a" * 40,
+            ci_state="GREEN",
+            candidate_blocked_by_pr=True,
+        )
+        self.assertFalse(state.candidate_ready)
+
+
+class PromptTests(unittest.TestCase):
+    def test_startup_set_uses_a_path_without_old_tiers(self):
+        text = build_startup_prompt(RepoDefinition("demo", "desktop", "main", owner="example"))
+        self.assertIn("A — ChatGPT fast path", text)
+        self.assertIn("OPERATING_CONTRACT.md", text)
+        self.assertIn("完全40桁candidate SHA", text)
+        self.assertNotIn("T0", text)
+        self.assertNotIn("CI green", text)
+
+    def test_debug_handoff_uses_b_path_and_local_candidate(self):
+        text = build_debug_handoff_prompt(
+            RepoDefinition("demo", "desktop", "main", owner="example"),
+            Path(r"C:\repos\demo"),
+            "b" * 40,
+        )
+        self.assertIn("B — Debug escape path", text)
+        self.assertIn("b" * 40, text)
+        self.assertIn("fast-forward push", text)
+
+    def test_new_repo_setup_requests_central_registration(self):
+        remote = RemoteRepo("new-app", default_branch="main", owner="example")
+        text = build_new_repo_setup_prompt(remote, Path(r"C:\repos\new-app"))
+        self.assertIn("scripts/repo_types.toml", text)
+        self.assertIn("scripts/dev_control_center_repos.toml", text)
+        self.assertIn("A — ChatGPT fast path", text)
+
+
+class SelfUpdateContractTests(unittest.TestCase):
+    def test_sync_wrapper_supports_noninteractive_control_center_call(self):
+        text = (ROOT / "SYNC_CLICK_ME.cmd").read_text(encoding="utf-8")
+        self.assertIn("--no-pause", text)
+        self.assertIn("if not defined NO_PAUSE pause", text)
 
 
 if __name__ == "__main__":

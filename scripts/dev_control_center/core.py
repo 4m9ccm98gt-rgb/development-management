@@ -21,7 +21,7 @@ SKIP_DIR_NAMES = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".pytest_cache"
 }
 SCRIPT_SUFFIXES = {".cmd", ".bat"}
-SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 GITHUB_REMOTE_RE = re.compile(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", re.IGNORECASE)
 CI_SUCCESS_CONCLUSIONS = {"success", "neutral", "skipped"}
 
@@ -87,9 +87,9 @@ class GitHubState:
 
     @property
     def candidate_ready(self) -> bool:
+        """A merged expected-branch SHA can be a candidate without green Actions."""
         return (
-            bool(self.branch_sha)
-            and self.ci_state == "GREEN"
+            candidate_sha_is_valid(self.branch_sha)
             and not self.candidate_blocked_by_pr
             and not self.error
         )
@@ -173,6 +173,7 @@ def active_repo_definitions(
 
 
 def candidate_sha_is_valid(value: str) -> bool:
+    """Candidates are always identified by the complete 40-character SHA."""
     return bool(SHA_RE.fullmatch(value.strip()))
 
 
@@ -286,11 +287,12 @@ def summarize_ci_state(check_runs_payload: object, status_payload: object) -> tu
     return "GREEN", total
 
 
-def _latest_open_pr(full_name: str) -> PullRequestInfo | None:
+def _latest_open_pr(full_name: str, base_branch: str) -> PullRequestInfo | None:
     payload = _run_gh_json([
         "pr", "list",
         "--repo", full_name,
         "--state", "open",
+        "--base", base_branch,
         "--limit", "1",
         "--json", "number,title,headRefName,headRefOid,baseRefName,isDraft,url",
     ])
@@ -321,7 +323,7 @@ def _ci_for_sha(full_name: str, sha: str) -> tuple[str, int]:
 
 
 def fetch_github_state(definition: RepoDefinition) -> GitHubState:
-    """Fetch expected-branch HEAD, active PR-head CI and latest open PR via GitHub CLI."""
+    """Fetch expected-branch HEAD, relevant PR and best-effort CI state."""
     try:
         branch_name = quote(definition.branch, safe="")
         branch_payload = _run_gh_json([
@@ -335,27 +337,24 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
             raise RuntimeError(f"expected branch '{definition.branch}' has no usable HEAD SHA")
 
         try:
-            latest_pr = _latest_open_pr(definition.full_name)
+            latest_pr = _latest_open_pr(definition.full_name, definition.branch)
         except RuntimeError:
             latest_pr = None
 
-        relevant_pr = (
-            latest_pr
-            if latest_pr
-            and latest_pr.base_branch == definition.branch
-            and candidate_sha_is_valid(latest_pr.head_sha)
-            else None
-        )
-        if relevant_pr:
-            ci_sha = relevant_pr.head_sha
-            ci_target = f"PR #{relevant_pr.number}"
+        if latest_pr and candidate_sha_is_valid(latest_pr.head_sha):
+            ci_sha = latest_pr.head_sha
+            ci_target = f"PR #{latest_pr.number}"
             candidate_blocked_by_pr = True
         else:
             ci_sha = branch_sha
             ci_target = definition.branch
             candidate_blocked_by_pr = False
 
-        ci_state, check_count = _ci_for_sha(definition.full_name, ci_sha)
+        try:
+            ci_state, check_count = _ci_for_sha(definition.full_name, ci_sha)
+        except RuntimeError:
+            ci_state, check_count = "UNAVAILABLE", 0
+
         return GitHubState(
             branch_sha=branch_sha,
             ci_sha=ci_sha,
@@ -370,18 +369,44 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
 
 
 def build_startup_prompt(definition: RepoDefinition) -> str:
-    """Create the reusable startup-set prompt for an already-managed repository."""
+    """Create the minimal A-path startup prompt for an already-managed repository."""
     return (
         f"対象repo: {definition.full_name}\n"
-        f"candidate branch: {definition.branch}\n\n"
-        "このrepoの開発を続けます。development-management を開発運用の正本として扱ってください。\n"
-        "最初に OPERATING_CONTRACT.md / STARTUP_HANDOFF_POLICY.md / AGENT_EFFICIENCY_POLICY.md を確認し、"
-        "現在工程と T0〜T3 を判定してください。T3なら AI_STARTUP.md のフル開始チェーン、"
-        "T0/T1なら読み込み予算を守ってください。\n"
-        "GitHub上で完結する①設計→②開発・PR・CI greenまではChatGPT側で進め、"
-        "③SYNC / ④実機確認 / ⑤BUILD・UPDATEは正式ワンクリック入口を使う工程境界を維持してください。\n"
-        "②完了時は candidate branch / candidate SHA / CI結果 / ④で確認する項目を明示してください。\n"
-        "このあと私が開発内容を続けて指示します。"
+        f"expected branch: {definition.branch}\n\n"
+        "このrepoの開発をA — ChatGPT fast pathで続けます。\n"
+        "development-management/OPERATING_CONTRACT.md を開発運用の正本として扱ってください。\n"
+        "開始時は Operating Contract、対象repoのREADMEまたは今回の変更に直接関係する説明、"
+        "変更対象コードと直接のconsumer / producerだけを必要範囲で確認してください。\n"
+        "GitHub上で調査・実装・必要なテスト追加・利用可能な自動検証まで進め、"
+        "expected branchへ反映した完全40桁candidate SHAを明示してください。\n"
+        "GitHub Actionsは補助検証です。利用不能・待ち時間だけを理由に開発全体を止めず、"
+        "実行できた検証と未実施項目を区別してください。\n"
+        "candidate確定後は正式SYNC → ユーザー実機確認 → OKなら正式BUILD / 配布の安全境界を維持してください。\n"
+        "このあと私が変更内容を指示します。"
+    )
+
+
+def build_debug_handoff_prompt(
+    definition: RepoDefinition,
+    local_path: Path,
+    candidate_sha: str = "",
+) -> str:
+    """Create an explicit B-path handoff for local Codex/Claude debugging."""
+    candidate_text = candidate_sha if candidate_sha_is_valid(candidate_sha) else "未確定"
+    return (
+        "B — Debug escape pathでこのrepoをWindowsローカルデバッグしてください。\n"
+        f"対象repo: {definition.full_name}\n"
+        f"ローカル: {local_path}\n"
+        f"expected branch: {definition.branch}\n"
+        f"現在のcandidate: {candidate_text}\n\n"
+        "development-management/OPERATING_CONTRACT.md を正本として、開始時に git fetch 後の local HEAD / origin / branch を確認してください。\n"
+        "origin側が想定外に進んでいたらforceで押し切らず停止してください。\n"
+        "working treeで調査・実装・targeted test・必要なregression・デバッグを続け、"
+        "完成したらlocal candidate commitを作成してください。\n"
+        "candidate確定時は tracked clean、完全40桁SHA、直前の既知良好SHAからの実差分レビューを行い、"
+        "一時デバッグコード・仮パス・不要ファイルが残っていないことを確認してください。\n"
+        "ユーザー実機確認がOKになるまではpush / BUILD / 配布へ進めません。"
+        "OK後はcandidate SHAを変更せずfast-forward pushし、confirmed SHA == pushed SHAを確認してください。"
     )
 
 
@@ -392,13 +417,14 @@ def build_new_repo_setup_prompt(remote: RemoteRepo, local_path: Path) -> str:
         f"GitHub: {remote.github_url}\n"
         f"正式ローカル候補: {local_path}\n"
         f"GitHub default branch: {branch_text}\n\n"
-        "PROJECT_BOOTSTRAP.md / STARTUP_HANDOFF_POLICY.md / OPERATING_CONTRACT.md を正本として、"
+        "development-management/OPERATING_CONTRACT.md を正本としてA — ChatGPT fast pathで進めてください。\n"
         "repo種別を確定し、scripts/repo_types.toml と scripts/dev_control_center_repos.toml へ正式登録してください。"
         "candidate branchは推測せず明示してください。\n"
-        "Windowsアプリなら SYNC / RUN_DEV / BUILD / UPDATE・DEPLOY の各入口を READY / N/A / MISSING で監査し、"
-        "恒久入口がMISSINGならローカル代用品ではなくGitHub側の②開発として整備してください。\n"
-        "秘密情報・実運用データはGit管理しないでください。GitHub側の実装・PR・CI greenまで進め、"
-        "ローカルの初回準備が別途必要なら⓪スタートアップのhandoffを作って停止してください。"
+        "必要な範囲でREADMEと実装を確認し、SYNC / RUN_DEV / BUILD / UPDATE・DEPLOYの正式入口を監査してください。"
+        "恒久入口が必要ならGitHub側の実装として追加してください。\n"
+        "秘密情報・実運用データはGit管理せず、利用可能な自動検証を行ってください。"
+        "GitHub Actionsは補助検証であり、利用不能だけを理由にセットアップ全体を停止しません。\n"
+        "完了時は管理登録内容、expected branch、完全40桁candidate SHA、ローカルで次に行う操作を明示してください。"
     )
 
 
@@ -424,11 +450,7 @@ def _filesystem_scripts(repo_root: Path) -> list[Path]:
 
 
 def _tracked_files(repo_root: Path) -> list[Path] | None:
-    """Return tracked files for a Git repo; None means this is not a Git repo.
-
-    Discovery in real repositories must never promote an untracked command file
-    to a formal lifecycle entrypoint.
-    """
+    """Return tracked files for a Git repo; None means this is not a Git repo."""
     if not (repo_root / ".git").exists():
         return None
     try:
