@@ -14,12 +14,17 @@ SHA = 'a' * 40
 
 @unittest.skipUnless(shutil.which('powershell.exe'), 'Windows PowerShell required')
 class NonInteractiveSyncTests(unittest.TestCase):
+    script_source = ROOT / "scripts/SYNC_CANDIDATE.ps1"
+    bootstrap = False
+    success_marker = "state: SUCCESS"
+    stopped_marker = "state: STOPPED"
+
     def run_case(self, scenario, candidate=SHA):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             scripts = root / 'scripts'
             scripts.mkdir()
-            shutil.copy2(ROOT / 'scripts/SYNC_CANDIDATE.ps1', scripts)
+            shutil.copy2(self.script_source, scripts / 'SYNC_CANDIDATE.ps1')
             fake = root / 'git_double.py'
             fake.write_text('''import json, os, sys
 from pathlib import Path
@@ -29,7 +34,7 @@ with (r/'calls.jsonl').open('a') as f: f.write(json.dumps(a)+'\\n')
 s=os.environ['DCC_SCENARIO']; sha='a'*40
 if a==['rev-parse','--show-toplevel']: print(r)
 elif a==['rev-parse','--is-inside-work-tree']: print('true')
-elif a==['remote','get-url','origin']: print('https://github.com/example/'+('wrong' if s=='origin' else 'app')+'.git')
+elif a==['remote','get-url','origin']: print('https://'+('evilgithub.com' if s=='spoof' else 'github.com')+'/example/'+('wrong' if s=='origin' else 'app')+'.git')
 elif a==['branch','--show-current']: print('' if s=='detached' else 'wrong' if s=='branch' else 'main')
 elif a[:1]==['status']: print(' M tracked.txt' if s=='dirty' else '')
 elif a[:1]==['fetch']:
@@ -44,25 +49,29 @@ else: raise RuntimeError(str(a))
             (root / 'git.cmd').write_text(f'@echo off\n"{sys.executable}" "{fake}" %*\nexit /b %ERRORLEVEL%\n')
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'], DCC_SCENARIO=scenario)
             command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(scripts / 'SYNC_CANDIDATE.ps1'), '-ExpectedRepo', 'example/app', '-TargetBranch', 'main', '-NoPause']
+            if self.bootstrap:
+                command.remove('-NoPause')
+                command += ['-RepoRoot', str(root)]
             if candidate:
                 command += ['-ExpectedSha', candidate]
             result = subprocess.run(command, env=env, capture_output=True, timeout=20)
-            report = (root / 'SYNC_RESULT.txt').read_text()
-            calls = [json.loads(line) for line in (root / 'calls.jsonl').read_text().splitlines()]
+            report = result.stdout.decode('utf-8', errors='replace') if self.bootstrap else (root / 'SYNC_RESULT.txt').read_text()
+            log = root / 'calls.jsonl'
+            calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             return result.returncode, report, calls
 
     def test_matching_candidate_succeeds(self):
         code, report, calls = self.run_case('success')
         self.assertEqual(code, 0, report)
-        self.assertIn('state: SUCCESS', report)
+        self.assertIn(self.success_marker, report)
         self.assertIn(['fetch', '--prune', 'origin', 'main'], calls)
 
     def test_invalid_states_stop_without_merge(self):
-        for scenario in ['origin', 'branch', 'detached', 'dirty', 'ahead', 'candidate', 'fetch']:
+        for scenario in ['origin', 'spoof', 'branch', 'detached', 'dirty', 'ahead', 'candidate', 'fetch']:
             with self.subTest(scenario=scenario):
                 code, report, calls = self.run_case(scenario)
                 self.assertNotEqual(code, 0, report)
-                self.assertIn('state: STOPPED', report)
+                self.assertIn(self.stopped_marker, report)
                 self.assertFalse(any(a[0] == 'merge' for a in calls))
 
     def test_behind_uses_only_fast_forward(self):
@@ -76,6 +85,23 @@ else: raise RuntimeError(str(a))
                 code, report, calls = self.run_case('success', candidate)
                 self.assertNotEqual(code, 0, report)
                 self.assertFalse(any(a[0] == 'fetch' for a in calls))
+
+
+class TemplateNonInteractiveSyncTests(NonInteractiveSyncTests):
+    script_source = ROOT / "templates/windows-python-app/scripts/SYNC_CANDIDATE.ps1"
+
+
+class BootstrapNonInteractiveSyncTests(NonInteractiveSyncTests):
+    script_source = ROOT / "scripts/BOOTSTRAP_REPO_SYNC.ps1"
+    bootstrap = True
+    success_marker = "BOOTSTRAP SYNC SUCCEEDED."
+    stopped_marker = "BOOTSTRAP SYNC STOPPED."
+
+    def test_missing_and_short_sha_do_not_prompt_or_fetch(self):
+        # The bootstrap API requires ExpectedSha; exercise an explicitly supplied short SHA.
+        code, report, calls = self.run_case('success', 'abcdef1')
+        self.assertNotEqual(code, 0, report)
+        self.assertFalse(any(a[0] == 'fetch' for a in calls))
 
 
 if __name__ == '__main__':
