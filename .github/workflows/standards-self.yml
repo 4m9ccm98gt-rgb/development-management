@@ -39,7 +39,8 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
             -ExpectedRepo "4m9ccm98gt-rgb/development-management" `
             -TargetBranch $branch `
-            -ExpectedSha $sha
+            -ExpectedSha $sha `
+            -NoPause
           if ($LASTEXITCODE -ne 0) { throw "success path failed" }
           $result = Get-Content .\SYNC_RESULT.txt -Raw
           if ($result -notmatch "state: SUCCESS" -or $result -notmatch "match: YES") {
@@ -50,7 +51,8 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
             -ExpectedRepo "4m9ccm98gt-rgb/development-management" `
             -TargetBranch $branch `
-            -ExpectedSha $sha
+            -ExpectedSha $sha `
+            -NoPause
           if ($LASTEXITCODE -eq 0) { throw "dirty-tree guard did not stop" }
           $result = Get-Content .\SYNC_RESULT.txt -Raw
           if ($result -notmatch "Tracked working-tree changes exist") {
@@ -62,7 +64,8 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\SYNC_CANDIDATE.ps1 `
             -ExpectedRepo "wrong-owner/wrong-repo" `
             -TargetBranch $branch `
-            -ExpectedSha $sha
+            -ExpectedSha $sha `
+            -NoPause
           if ($LASTEXITCODE -eq 0) { throw "wrong-repo guard did not stop" }
           $result = Get-Content .\SYNC_RESULT.txt -Raw
           if ($result -notmatch "Wrong repository") {

@@ -216,8 +216,10 @@ class PromptTests(unittest.TestCase):
 class SelfUpdateContractTests(unittest.TestCase):
     def test_sync_wrapper_supports_noninteractive_control_center_call(self):
         text = (ROOT / "SYNC_CLICK_ME.cmd").read_text(encoding="utf-8")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
         self.assertIn("--no-pause", text)
-        self.assertIn("if not defined NO_PAUSE pause", text)
+        self.assertIn("NO_PAUSE_ARG=-NoPause", text)
+        self.assertTrue(lines[-1].endswith("& exit /b"))
 
 
 if __name__ == "__main__":

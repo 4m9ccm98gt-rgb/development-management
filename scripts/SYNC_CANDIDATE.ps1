@@ -1,11 +1,14 @@
 param(
     [string]$ExpectedSha = "",
     [Parameter(Mandatory = $true)][string]$ExpectedRepo,
-    [Parameter(Mandatory = $true)][string]$TargetBranch
+    [Parameter(Mandatory = $true)][string]$TargetBranch,
+    [switch]$NoPause
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
+$script:RepoRoot = ""
+$script:ResultPath = Join-Path (Split-Path -Parent $PSScriptRoot) "SYNC_RESULT.txt"
 
 function Run-Git {
     param([string[]]$GitArgs)
@@ -60,10 +63,25 @@ function Write-SyncResult {
     $lines | ForEach-Object { Write-Host $_ }
 }
 
+function Complete-Sync {
+    param(
+        [int]$ExitCode,
+        [string]$Label
+    )
+
+    Write-Host ""
+    Write-Host $Label
+    Write-Host "Result: `"$script:ResultPath`""
+    if (-not $NoPause) {
+        & cmd.exe /d /c pause
+    }
+    exit $ExitCode
+}
+
 $probe = & git -C $PSScriptRoot rev-parse --show-toplevel 2>&1
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: This script is not inside a Git working tree."
-    exit 2
+    Complete-Sync 2 "SYNC STOPPED."
 }
 
 $script:RepoRoot = ($probe | Select-Object -First 1).ToString().Trim()
@@ -116,8 +134,8 @@ try {
         $ExpectedSha = Read-Host "Paste expected candidate SHA"
     }
     $ExpectedSha = $ExpectedSha.Trim()
-    if ($ExpectedSha -notmatch '^[0-9a-fA-F]{7,40}$') {
-        throw "Expected SHA must be 7 to 40 hexadecimal characters."
+    if ($ExpectedSha -notmatch '^[0-9a-fA-F]{40}$') {
+        throw "Expected SHA must be exactly 40 hexadecimal characters."
     }
 
     Write-Host "Fetching origin/$TargetBranch ..."
@@ -155,7 +173,7 @@ try {
     }
 
     Write-SyncResult "SUCCESS" "candidate synchronized and verified" $branch $localHead $originHead $resolvedExpected "YES" $trackedDirty $untrackedCount $ahead $behind
-    exit 0
+    Complete-Sync 0 "SYNC SUCCEEDED."
 }
 catch {
     $reason = $_.Exception.Message
@@ -165,5 +183,5 @@ catch {
     catch { }
 
     Write-SyncResult "STOPPED" $reason $branch $localHead $originHead $resolvedExpected "NO" $trackedDirty $untrackedCount $ahead $behind
-    exit 1
+    Complete-Sync 1 "SYNC STOPPED."
 }
