@@ -35,6 +35,19 @@ class SetupSemanticsTests(unittest.TestCase):
         text = (ROOT / "DEV_CONTROL_CENTER.pyw").read_text(encoding="utf-8")
         self.assertIn("scripts.dev_control_center.app_setup", text)
 
+    def test_windows_template_uses_current_sync_contract(self):
+        cmd = (ROOT / "templates" / "windows-python-app" / "SYNC_CLICK_ME.cmd").read_text(encoding="utf-8")
+        ps1 = (ROOT / "templates" / "windows-python-app" / "scripts" / "SYNC_CANDIDATE.ps1").read_text(encoding="utf-8")
+        cmd_lines = [line.strip() for line in cmd.splitlines() if line.strip()]
+
+        self.assertIn("<owner>/<repo>", cmd)
+        self.assertIn("<candidate-branch>", cmd)
+        self.assertIn("NO_PAUSE_ARG=-NoPause", cmd)
+        self.assertTrue(cmd_lines[-1].endswith("& exit /b"))
+        self.assertIn("[switch]$NoPause", ps1)
+        self.assertIn("Expected SHA must be exactly 40 hexadecimal characters.", ps1)
+        self.assertIn('Complete-Sync 0 "SYNC SUCCEEDED."', ps1)
+
 
 if __name__ == "__main__":
     unittest.main()
