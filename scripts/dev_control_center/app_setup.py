@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from .app import App as BaseApp, self_check
-from .core import RepoDefinition, RepoEntrypoints
+from .core import ControlCenterConfigError, RepoDefinition, RepoEntrypoints
 
 
 def build_setup_prompt(definition: RepoDefinition, entrypoints: RepoEntrypoints) -> str:
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
         root = tk.Tk()
         App(root)
         root.mainloop()
-    except OSError as exc:
+    except (OSError, ControlCenterConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     return 0
