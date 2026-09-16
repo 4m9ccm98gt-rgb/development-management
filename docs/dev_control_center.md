@@ -2,74 +2,122 @@
 
 ## 目的
 
-開発時に各リポジトリを開いて `SYNC_CLICK_ME.cmd` / `RUN_DEV.cmd` / BUILD / UPDATE / DEPLOY の場所を探す作業を減らすための、Windows向けローカル操作パネルです。
+Development Control Center は、各repoの場所・正式スクリプト・candidate SHA・PR / CI状態を探し回らずに、日常の開発後半を一画面で進めるWindows向け操作パネルです。
 
-初版はライフサイクル処理を中央アプリへ移植しません。各リポジトリに存在する正式なワンクリック入口を検出し、その入口を一画面から起動する「発射台」に限定します。
+正式起動入口は `DEV_CONTROL_CENTER.pyw` です。Tkinterのみを使い、専用の追加依存はありません。
 
-## 起動
+## 運用モデル
 
-正式な `development-management` ローカルrepoで `DEV_CONTROL_CENTER.pyw` をダブルクリックします。
+正本は `OPERATING_CONTRACT.md` です。
 
-Python標準ライブラリの Tkinter を使うため、Control Center専用の追加依存はありません。
-
-## 画面上の流れ
+通常は **A — ChatGPT fast path** を使います。
 
 ```text
-①② ChatGPT開発 → ③ SYNC → ④ RUN_DEV → ⑤ BUILD → ⑤ UPDATE / DEPLOY
+ChatGPTで相談・GitHub開発
+→ expected branchへcandidate反映
+→ Control Centerでcandidate確認
+→ SYNC
+→ RUN_DEV / ユーザー実機確認
+→ BUILD
+→ UPDATE / DEPLOY
 ```
 
-各工程は独立しています。ひとつのボタンから後続工程を自動連続実行しません。
+Windowsローカルで連続デバッグしたい場合は、ユーザー判断で **B — Debug escape path** に切り替えます。
 
-- **①② ChatGPT開発**: 対象repo・明示branch・工程境界を含む依頼文をクリップボードへコピーし、ChatGPTを開きます。
-- **③ SYNC**: ChatGPTが②完了時に示したcandidate SHAを入力し、対象repoの正式 `SYNC_CLICK_ME.cmd` へそのSHAを渡します。
-- **④ RUN_DEV**: 対象repoの正式な開発版起動入口を開きます。
-- **⑤ BUILD**: 対象repoの正式なbuild入口を開きます。
-- **⑤ UPDATE / DEPLOY**: 対象repo種別に応じた正式な配布・更新入口を開きます。実行前に確認ダイアログを出します。
+Control Centerの `Bデバッグ指示` は、選択repo・ローカルパス・expected branch・candidate情報を含むhandoffをクリップボードへコピーします。Codex / Claude等の指定エージェントへ貼り付けて使います。
 
-工程担当と停止条件は `OPERATING_CONTRACT.md` をそのまま適用します。この画面を使うことで③〜⑤を自動化・省略するものではありません。
+## STARTUP SET
 
-## リポジトリ一覧とbranch
+`STARTUP SET` はChatGPTを開きません。現在のChatGPTへ貼る最小A-path指示だけをコピーします。
 
-アプリ種別は既存の `scripts/repo_types.toml` を正として使います。
+- `OPERATING_CONTRACT.md` を正本とする
+- 対象repoの必要範囲だけ読む
+- GitHub上で調査・実装・必要な検証を行う
+- 完全40桁candidate SHAを明示する
+- candidate後は正式SYNC → 実機確認 → BUILD / 配布の境界を維持する
 
-candidate同期branchは `scripts/dev_control_center_repos.toml` に明示します。`origin/HEAD` やGitHubのdefault branchから推測しません。
+旧T0〜T3分類や旧Agent Efficiency PolicyはSTARTUP SETへ含めません。
 
-正式ローカルrepoは `development-management` の兄弟ディレクトリにある `<repo名>` として解決します。現在の標準配置 `C:\Users\suisy\Documents\Development\repos\<name>` に対応しつつ、ユーザー名をコードへ固定しません。
+## GitHub / PR / CI
+
+選択repoについて `gh` を使い、次を表示します。
+
+- expected branch HEAD
+- expected branch向けのopen PR
+- open PRがあればPR headのCI状態
+- open PRがなければexpected branch HEADのCI状態
+
+GitHub Actionsは補助検証です。`GREEN` をcandidate完成の絶対条件にはしません。
+
+CI APIが一時的に利用できなくてもbranch HEADを取得できる場合は `UNAVAILABLE` と表示し、candidate SHA自体は失いません。
+
+open PRがある間は、その開発途中PRを誤ってcandidate扱いしないため自動candidate入力を止めます。PRがexpected branchへ反映された後、そのbranch HEADを自動candidateへ入れます。
+
+`PR / CIを開く` から、open PRまたは対象commitのChecks画面を開けます。
+
+## candidateとローカル工程
+
+candidateは **完全40桁SHAのみ**受け付けます。
+
+- candidateがローカルHEADと違う → `SYNC`のみ有効
+- SYNC成功後に `HEAD == candidate` → `RUN_DEV` / `BUILD` / `UPDATE・DEPLOY` が有効
+- tracked dirty / wrong branch / wrong origin → すべて停止
+- 正式入口が `MISSING` / `MULTIPLE` → 該当工程を停止
+
+Control Centerは各repoの正式スクリプトを呼ぶだけで、SYNC / BUILD / UPDATEロジック自体は再実装しません。
+
+UPDATE / DEPLOY前には、対象candidate SHAを表示し、ユーザー実機確認と必要なBUILDが完了していることを確認します。
+
+## 新規repo
+
+GitHub上に存在し、`scripts/repo_types.toml` に未登録の非archived・非fork repoは `GitHub未登録repo` に表示します。
+
+`セットアップ開始` は次を行います。
+
+1. 正式 `Development\repos\<repo>` 配下にrepoが無ければ `gh repo clone`
+2. 既存の非Gitディレクトリがあればfail-close
+3. development-managementへの正式登録・expected branch設定・必要な標準入口整備をChatGPTへ依頼するA-path指示をコピー
+
+ユーザーがcloneコマンド、registryファイル名、標準入口の作り方を暗記する前提にはしません。
+
+## Control Center自身の更新
+
+Control Centerは `development-management/main` とローカルHEADを比較します。
+
+- mainが同一 → `最新版`
+- mainが新しく、CIが `FAILED` ではない → `更新する` を有効化
+- CI `PENDING` / `NO CHECKS` / `UNAVAILABLE` は状態を表示した上で更新可能
+- CI `FAILED` は自動更新を停止
+
+`更新する` は正式 `SYNC_CLICK_ME.cmd` を `--no-pause` で呼びます。成功後は `DEV_CONTROL_CENTER.pyw` を自動再起動します。
+
+通常のダブルクリックSYNCでは従来どおりpauseします。
 
 ## 安全条件
 
-Control Centerは便利さのために既存の安全条件を弱めません。
-
-- originが想定GitHub repoと一致しない場合はSYNC/RUN/BUILD/UPDATEを無効化します。
-- branchが明示branchと違う場合は無効化します。
-- tracked変更がある場合は無効化します。自動stash / reset / branch switchはしません。
-- candidate SHAは7〜40桁の16進SHAだけ受け付けます。
-- 正式入口が無い場合は `MISSING` と表示して無効化します。
-- 同順位の入口が複数あり一意に決められない場合は `MULTIPLE` と表示し、推測して実行しません。
-- 一度に実行できるライフサイクル工程は1つだけです。
-- UPDATE / DEPLOY前には④実機確認と必要なBUILD完了を確認するダイアログを出します。
-- 実際のGit同期・build・配布ロジックは各repoの正式スクリプトに残します。
-
-## 初版で意図的に残すもの
-
-使用感を見てから優先順位を決めるため、初版では次を自動化しません。
-
-- ChatGPTからcandidate SHAをControl Centerへ自動転送すること
-- GitHub Actions / PR状態をローカル画面へ直接取得すること
-- 各正式スクリプトのログをControl Center内部へ完全統合すること
-- Control Center自身のEXE化
-- 工程の自動連続実行
-
-まず「repoと更新ファイルを探さなくてよくなったか」「candidate SHA貼付が面倒か」「状態表示に何が足りないか」を実使用で確認し、その結果を次版へ反映します。
+- origin一致
+- expected branch一致
+- tracked clean
+- candidateは完全40桁SHA
+- RUN / BUILD / 配布時は `local HEAD == candidate`
+- force push / reset / stash / branch切替はControl Centerが勝手に行わない
+- Git管理外の業務データや秘密情報を変更しない
+- 工程は自動連続しない
 
 ## CI
 
-`.github/workflows/dev-control-center.yml` で以下を確認します。
+`.github/workflows/dev-control-center.yml` で次を確認します。
 
-- registry / explicit branch contract
+- registry / explicit branch契約
 - 正式入口の検出と曖昧時fail-close
-- candidate SHA validation
+- 完全40桁candidate SHA
+- GitHub未登録repo検出
+- CI状態集約
+- Actions greenをcandidate必須条件にしない契約
+- open PR中の自動candidateブロック
+- A/B prompt契約
+- `SYNC_CLICK_ME.cmd --no-pause`
 - Python compile
 - registry self-check
 
-GUIの見た目とWindows上での実際のクリック感は④ユーザー実機確認として扱います。
+GUIの見た目、`gh` 認証済みWindows実機での取得・clone・各ボタンのクリック感はユーザー実機確認で扱います。
