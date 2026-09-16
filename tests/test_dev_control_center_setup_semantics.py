@@ -48,6 +48,26 @@ class SetupSemanticsTests(unittest.TestCase):
         self.assertIn("Expected SHA must be exactly 40 hexadecimal characters.", ps1)
         self.assertIn('Complete-Sync 0 "SYNC SUCCEEDED."', ps1)
 
+    def test_central_bootstrap_sync_is_fail_closed(self):
+        text = (ROOT / "scripts" / "BOOTSTRAP_REPO_SYNC.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("Expected SHA must be exactly 40 hexadecimal characters.", text)
+        self.assertIn("Wrong repository.", text)
+        self.assertIn("No automatic switch will be performed.", text)
+        self.assertIn("Tracked working-tree changes exist. Nothing was changed.", text)
+        self.assertIn("Refusing to rewrite local work.", text)
+        self.assertIn('"merge", "--ff-only"', text)
+        self.assertNotIn("reset --hard", text)
+        self.assertNotIn("git stash", text)
+
+    def test_setup_ui_has_one_time_bootstrap_sync_path(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app_setup.py").read_text(encoding="utf-8")
+
+        self.assertIn('self.entrypoints.sync.state == "MISSING"', text)
+        self.assertIn('text="SYNC (初回)" if missing_sync else "SYNC"', text)
+        self.assertIn("BOOTSTRAP_REPO_SYNC.ps1", text)
+        self.assertIn("中央bootstrap SYNC", text)
+
 
 if __name__ == "__main__":
     unittest.main()
