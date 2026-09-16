@@ -2,7 +2,7 @@
 
 ## 目的
 
-Development Control Center は、各repoの場所・正式スクリプト・candidate SHA・PR / CI状態を探し回らずに、日常の開発後半を一画面で進めるWindows向け操作パネルです。
+Development Control Center は、各repoの場所・正式スクリプト・candidate SHA・PR / CI状態を探し回らずに、repoの標準化から日常の開発後半までを一画面で進めるWindows向け操作パネルです。
 
 正式起動入口は `DEV_CONTROL_CENTER.pyw` です。Tkinterのみを使い、専用の追加依存はありません。
 
@@ -13,7 +13,8 @@ Development Control Center は、各repoの場所・正式スクリプト・cand
 通常は **A — ChatGPT fast path** を使います。
 
 ```text
-ChatGPTで相談・GitHub開発
+必要なら SETUP / 標準化
+→ ChatGPTで相談・GitHub開発
 → expected branchへcandidate反映
 → Control Centerでcandidate確認
 → SYNC
@@ -26,17 +27,29 @@ Windowsローカルで連続デバッグしたい場合は、ユーザー判断�
 
 Control Centerの `Bデバッグ指示` は、選択repo・ローカルパス・expected branch・candidate情報を含むhandoffをクリップボードへコピーします。Codex / Claude等の指定エージェントへ貼り付けて使います。
 
-## STARTUP SET
+## SETUP / 標準化
 
-`STARTUP SET` はChatGPTを開きません。現在のChatGPTへ貼る最小A-path指示だけをコピーします。
+`SETUP / 標準化` は、単なるChatGPTセッション開始ボタンではありません。選択repoを Development Control Center の正式ライフサイクルへ載せるためのbootstrap / 監査指示を現在のChatGPTへコピーします。
 
-- `OPERATING_CONTRACT.md` を正本とする
-- 対象repoの必要範囲だけ読む
-- GitHub上で調査・実装・必要な検証を行う
-- 完全40桁candidate SHAを明示する
-- candidate後は正式SYNC → 実機確認 → BUILD / 配布の境界を維持する
+Control Centerがローカルrepoから検出した次の状態を指示へ埋め込みます。
 
-旧T0〜T3分類や旧Agent Efficiency PolicyはSTARTUP SETへ含めません。
+- `SYNC`
+- `RUN_DEV`
+- `BUILD`
+- `UPDATE / DEPLOY`
+
+各入口は `READY / MISSING / MULTIPLE` として扱います。`READY` の正式入口は原則作り直さず、`MISSING / MULTIPLE` だけを優先してGitHub側で整備します。
+
+正本は次の2つです。
+
+- `OPERATING_CONTRACT.md`
+- `PROJECT_BOOTSTRAP.md`
+
+Windows desktop repoでは、必要に応じて tracked な `SYNC_CLICK_ME.cmd` / `scripts/SYNC_CANDIDATE.ps1`、`RUN_DEV.cmd`、`BUILD_EXE_CLICK_ME.cmd`、`UPDATE_SHARED_FOLDER.cmd` またはそのrepoの正式同等入口を整えます。
+
+SETUP完了時は、各入口の状態・変更内容・未確認事項・expected branchへ反映された完全40桁candidate SHAを明示し、そこで停止します。RUN / BUILD / UPDATEは自動実行しません。
+
+つまり、既存repoがControl Center一覧には存在するが `SYNC` 等が `MISSING` の場合、まず `SETUP / 標準化` を使って正式入口をGitHub側へ追加し、そのcandidateをControl Centerで `SYNC` します。
 
 ## GitHub / PR / CI
 
@@ -80,6 +93,8 @@ GitHub上に存在し、`scripts/repo_types.toml` に未登録の非archived・�
 
 ユーザーがcloneコマンド、registryファイル名、標準入口の作り方を暗記する前提にはしません。
 
+新規repoが管理対象へ登録された後も、正式入口が不足していれば `SETUP / 標準化` で同じ監査を行えます。
+
 ## Control Center自身の更新
 
 Control Centerは `development-management/main` とローカルHEADを比較します。
@@ -115,7 +130,7 @@ Control Centerは `development-management/main` とローカルHEADを比較し�
 - CI状態集約
 - Actions greenをcandidate必須条件にしない契約
 - open PR中の自動candidateブロック
-- A/B prompt契約
+- SETUP / A / B prompt契約
 - `SYNC_CLICK_ME.cmd --no-pause`
 - Python compile
 - registry self-check
