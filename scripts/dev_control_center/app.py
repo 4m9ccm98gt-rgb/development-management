@@ -273,6 +273,20 @@ class App(ttk.Frame):
         else:
             self.pr_var.set("なし")
 
+        old_auto = self.auto_candidate_by_repo.get(self.current.name, "")
+        current_value = self.candidate_var.get().strip()
+        if state.candidate_ready and (not current_value or current_value == old_auto):
+            self._applying_lifecycle = True
+            try:
+                self.candidate_var.set(state.branch_sha)
+                self.candidate_by_repo[self.current.name] = state.branch_sha
+                self.auto_candidate_by_repo[self.current.name] = state.branch_sha
+            finally:
+                self._applying_lifecycle = False
+            self._log(
+                f"{self.current.name}: expected branch HEADをcandidateへ自動反映 "
+                f"{short_sha(state.branch_sha)} / CI={state.ci_state}"
+            )
         if state.candidate_blocked_by_pr and state.latest_pr:
             self._log(
                 f"{self.current.name}: open PR #{state.latest_pr.number} は表示のみ。"
