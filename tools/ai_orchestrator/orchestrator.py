@@ -59,7 +59,7 @@ class RepoBaseline:
 
 
 def _now_id() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
 
 def _state_root() -> Path:
@@ -360,6 +360,10 @@ def _diff_for_review(worktree: Path) -> tuple[str, str]:
     return stat, diff
 
 
+def _review_fingerprint(diff_text: str) -> str:
+    return hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
+
+
 def _write_log(run_dir: Path, name: str, text: str) -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / name).write_text(text, encoding="utf-8")
@@ -493,6 +497,7 @@ def run(args: argparse.Namespace) -> int:
             stat, diff = _diff_for_review(worktree)
             if not diff.strip():
                 raise OrchestratorError("Codex produced no reviewable changes")
+            reviewed_fingerprint = _review_fingerprint(diff)
             review_prompt = _read_prompt(
                 "review.md",
                 {
@@ -514,6 +519,11 @@ def run(args: argparse.Namespace) -> int:
             )
 
             if last_review.approved:
+                _, current_diff = _diff_for_review(worktree)
+                if _review_fingerprint(current_diff) != reviewed_fingerprint:
+                    raise OrchestratorError(
+                        "worktree changed after Claude review; refusing unreviewed candidate"
+                    )
                 branch, sha = _create_candidate(
                     worktree,
                     baseline,
