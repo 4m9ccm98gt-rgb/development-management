@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -164,7 +164,7 @@ def _repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) 
 
     if do_fetch:
         fetch = _run(
-            [*_resolved_command("git"), "-C", str(root), "fetch", "--prune", "origin", branch],
+            [*_resolved_command("git"), "-C", str(root), "fetch", "--prune", "origin"],
             timeout=300,
         )
         if fetch.returncode != 0:
@@ -194,6 +194,25 @@ def _assert_source_unchanged(baseline: RepoBaseline) -> None:
     if branch != baseline.branch or head != baseline.head_sha or _tracked_dirty(baseline.root):
         raise OrchestratorError(
             "source repository changed during orchestration; stopped before candidate creation"
+        )
+
+
+def _assert_origin_unchanged(baseline: RepoBaseline, do_fetch: bool) -> None:
+    if do_fetch:
+        fetch = _run(
+            [*_resolved_command("git"), "-C", str(baseline.root), "fetch", "--prune", "origin"],
+            timeout=300,
+        )
+        if fetch.returncode != 0:
+            detail = (fetch.stderr or fetch.stdout).strip()
+            raise OrchestratorError(f"final git fetch failed: {detail}")
+    origin_sha = _git(
+        baseline.root, "rev-parse", f"origin/{baseline.branch}"
+    ).stdout.strip().lower()
+    if origin_sha != baseline.origin_sha:
+        raise OrchestratorError(
+            f"origin/{baseline.branch} moved during orchestration: "
+            f"{baseline.origin_sha[:12]} -> {origin_sha[:12]}"
         )
 
 
@@ -320,8 +339,8 @@ def _run_tests(worktree: Path, commands: Iterable[str], timeout: int) -> tuple[b
 
 
 def _diff_for_review(worktree: Path) -> tuple[str, str]:
-    stat = _git(worktree, "diff", "--stat").stdout
-    diff = _git(worktree, "diff", "--no-ext-diff", "--find-renames").stdout
+    stat = _git(worktree, "diff", "--stat", "HEAD").stdout
+    diff = _git(worktree, "diff", "--no-ext-diff", "--find-renames", "HEAD").stdout
     untracked = _git(worktree, "ls-files", "--others", "--exclude-standard").stdout.strip().splitlines()
     if untracked:
         pieces = [diff, "\n# Untracked files\n" + "\n".join(untracked)]
@@ -350,9 +369,19 @@ def _candidate_branch(task: str, run_id: str) -> str:
     return f"ai-candidate/{run_id}-{_slugify(task, 28)}"
 
 
-def _create_candidate(worktree: Path, baseline: RepoBaseline, task: str, run_id: str) -> tuple[str, str]:
+def _create_candidate(
+    worktree: Path,
+    baseline: RepoBaseline,
+    task: str,
+    run_id: str,
+    *,
+    verify_origin: bool,
+) -> tuple[str, str]:
     if not _git(worktree, "status", "--porcelain").stdout.strip():
         raise OrchestratorError("Codex produced no changes")
+
+    _assert_source_unchanged(baseline)
+    _assert_origin_unchanged(baseline, verify_origin)
 
     branch = _candidate_branch(task, run_id)
     _git(worktree, "switch", "-c", branch)
@@ -485,7 +514,13 @@ def run(args: argparse.Namespace) -> int:
             )
 
             if last_review.approved:
-                branch, sha = _create_candidate(worktree, baseline, task, run_id)
+                branch, sha = _create_candidate(
+                    worktree,
+                    baseline,
+                    task,
+                    run_id,
+                    verify_origin=not args.no_fetch,
+                )
                 result_payload.update(
                     {
                         "status": "candidate_ready",
