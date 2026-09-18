@@ -23,6 +23,7 @@ from .core import (
     choice_text,
     clone_new_repository,
     discover_entrypoints,
+    decide_lifecycle,
     fetch_github_state,
     inspect_repo,
     list_github_repositories,
@@ -52,6 +53,7 @@ class App(ttk.Frame):
         self.github_states: dict[str, GitHubState] = {}
         self.candidate_by_repo = {item.name: "" for item in self.definitions}
         self.auto_candidate_by_repo = {item.name: "" for item in self.definitions}
+        self._applying_lifecycle = False
         self.self_update_sha = ""
         self.self_update_ci_state = "UNKNOWN"
 
@@ -245,14 +247,7 @@ class App(ttk.Frame):
         self.build_var.set(choice_text(entries.build, repo_root))
         self.release_var.set(choice_text(entries.release, repo_root))
         self.release_button_var.set(entries.release_label)
-        if state.safe_for_lifecycle(self.current):
-            if self._candidate_matches_local():
-                self.banner_var.set(f"candidate {short_sha(state.head)} がローカルHEADと一致。RUN / BUILD / 配布操作が可能です。")
-            else:
-                self.banner_var.set("正式repo / branch / origin / tracked clean を確認済み。candidateを選んでSYNCしてください。")
-        else:
-            self.banner_var.set("安全条件を満たしていないためライフサイクル操作を停止中。")
-        self._candidate_changed()
+        self._apply_lifecycle_state()
 
     def refresh_github(self) -> None:
         if not self.current:
@@ -278,30 +273,60 @@ class App(ttk.Frame):
         else:
             self.pr_var.set("なし")
 
-        old_auto = self.auto_candidate_by_repo.get(self.current.name, "")
-        current_value = self.candidate_var.get().strip()
-        if state.candidate_blocked_by_pr:
-            if current_value and current_value == old_auto:
-                self.candidate_var.set("")
-                self.candidate_by_repo[self.current.name] = ""
-                self.auto_candidate_by_repo[self.current.name] = ""
-            self._log(f"{self.current.name}: open PR中のためbranch HEADを自動candidate化しません。CI={state.ci_state}")
-        elif state.candidate_ready:
-            if not current_value or current_value == old_auto:
-                self.auto_candidate_by_repo[self.current.name] = state.branch_sha
-                self.candidate_var.set(state.branch_sha)
-                self.candidate_by_repo[self.current.name] = state.branch_sha
-                self._log(f"{self.current.name}: expected branch HEADをcandidateへ自動反映 {short_sha(state.branch_sha)} / CI={state.ci_state}")
-        self._candidate_changed()
+        if state.candidate_blocked_by_pr and state.latest_pr:
+            self._log(
+                f"{self.current.name}: open PR #{state.latest_pr.number} は表示のみ。"
+                f"candidateはexpected branch HEAD {short_sha(state.branch_sha)} を使用します。"
+            )
+        self._apply_lifecycle_state()
 
     def _candidate_changed(self) -> None:
-        if not self.current:
+        if self._applying_lifecycle or not self.current:
             return
-        value = self.candidate_var.get().strip()
-        self.candidate_by_repo[self.current.name] = value
-        auto_value = self.auto_candidate_by_repo.get(self.current.name, "")
-        self.candidate_source_var.set("AUTO / branch HEAD" if value and value == auto_value else ("MANUAL" if value else "-"))
-        self._set_button_states()
+        self.candidate_by_repo[self.current.name] = self.candidate_var.get().strip()
+        self._apply_lifecycle_state()
+
+    def _apply_lifecycle_state(self) -> None:
+        busy = self.active_process is not None
+        has_current = self.current is not None
+        self.startup_button.configure(state="normal" if has_current and not busy else "disabled")
+        self.debug_button.configure(state="normal" if has_current and not busy else "disabled")
+
+        if not self.current or not self.repo_state or not self.entrypoints:
+            for button in (self.sync_button, self.run_button, self.build_button, self.release_button):
+                button.configure(state="disabled")
+            self.candidate_source_var.set("-")
+            self.self_update_button.configure(state="normal" if self.self_update_sha and not busy else "disabled")
+            return
+
+        decision = decide_lifecycle(
+            self.current,
+            self.repo_state,
+            self.entrypoints,
+            self.github_states.get(self.current.name),
+            self.candidate_var.get(),
+            busy=busy,
+        )
+
+        current_value = self.candidate_var.get().strip()
+        if decision.candidate_sha and decision.candidate_sha != current_value:
+            self._applying_lifecycle = True
+            try:
+                self.candidate_var.set(decision.candidate_sha)
+                self.candidate_by_repo[self.current.name] = decision.candidate_sha
+            finally:
+                self._applying_lifecycle = False
+
+        if decision.candidate_source == "AUTO / branch HEAD":
+            self.auto_candidate_by_repo[self.current.name] = decision.candidate_sha
+        self.candidate_source_var.set(decision.candidate_source)
+        self.banner_var.set(decision.banner)
+
+        self.sync_button.configure(state="normal" if decision.sync_enabled else "disabled")
+        self.run_button.configure(state="normal" if decision.run_enabled else "disabled")
+        self.build_button.configure(state="normal" if decision.build_enabled else "disabled")
+        self.release_button.configure(state="normal" if decision.release_enabled else "disabled")
+        self.self_update_button.configure(state="normal" if self.self_update_sha and not busy else "disabled")
 
     def _candidate_matches_local(self) -> bool:
         if not self.repo_state:
@@ -497,32 +522,12 @@ class App(ttk.Frame):
         self._log(f"{repo_name}: {action.upper()} 終了 rc={rc}")
         if self.current and self.current.name == repo_name:
             self.refresh()
-            if action == "sync" and rc == 0:
-                self.refresh_github()
+            self.refresh_github()
         else:
             self._set_button_states()
 
     def _set_button_states(self) -> None:
-        busy = self.active_process is not None
-        has_current = self.current is not None
-        self.startup_button.configure(state="normal" if has_current and not busy else "disabled")
-        self.debug_button.configure(state="normal" if has_current and not busy else "disabled")
-        safe = bool(self.current and self.repo_state and self.repo_state.safe_for_lifecycle(self.current))
-        if not safe or not self.entrypoints or busy:
-            for button in (self.sync_button, self.run_button, self.build_button, self.release_button):
-                button.configure(state="disabled")
-        else:
-            candidate = self.candidate_var.get().strip()
-            matches = self._candidate_matches_local()
-            self.sync_button.configure(
-                state="normal"
-                if self.entrypoints.sync.ready and candidate_sha_is_valid(candidate) and not matches
-                else "disabled"
-            )
-            self.run_button.configure(state="normal" if self.entrypoints.run.ready and matches else "disabled")
-            self.build_button.configure(state="normal" if self.entrypoints.build.ready and matches else "disabled")
-            self.release_button.configure(state="normal" if self.entrypoints.release.ready and matches else "disabled")
-        self.self_update_button.configure(state="normal" if self.self_update_sha and not busy else "disabled")
+        self._apply_lifecycle_state()
 
     def _copy_to_clipboard(self, text: str) -> None:
         self.master.clipboard_clear()
