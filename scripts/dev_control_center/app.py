@@ -187,7 +187,7 @@ class App(ttk.Frame):
         ttk.Label(flow, textvariable=self.candidate_source_var).grid(row=1, column=6, sticky="w", padx=(8, 0), pady=(10, 0))
         ttk.Label(
             flow,
-            text="Actionsは補助検証。open PR中は自動candidate化せず、merge後のexpected branch HEADを完全40桁SHAで扱います。",
+            text="Actionsは補助検証。open PRは表示のみ。candidateは常にexpected branch HEADを完全40桁SHAで扱います。",
         ).grid(row=2, column=0, columnspan=7, sticky="w", pady=(8, 0))
 
         entries = ttk.LabelFrame(right, text="検出した正式入口", padding=10)
