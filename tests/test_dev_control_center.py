@@ -352,6 +352,21 @@ class LifecycleDecisionTests(unittest.TestCase):
         self.assertTrue(decision.build_enabled)
 
 
+    def test_in_progress_manual_candidate_is_not_overwritten(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(),
+            self.entrypoints,
+            self.github_state(),
+            explicit_candidate="abc",
+        )
+        self.assertEqual(decision.candidate_sha, "abc")
+        self.assertEqual(decision.candidate_source, "MANUAL")
+        self.assertFalse(decision.sync_enabled)
+        self.assertFalse(decision.run_enabled)
+        self.assertIn("candidate", decision.banner)
+
+
 class PromptTests(unittest.TestCase):
     def test_startup_set_uses_a_path_without_old_tiers(self):
         text = build_startup_prompt(RepoDefinition("demo", "desktop", "main", owner="example"))
@@ -377,6 +392,22 @@ class PromptTests(unittest.TestCase):
         self.assertIn("scripts/repo_types.toml", text)
         self.assertIn("scripts/dev_control_center_repos.toml", text)
         self.assertIn("A — ChatGPT fast path", text)
+
+
+class UiLifecycleContractTests(unittest.TestCase):
+    def test_gui_uses_pure_lifecycle_decision(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("decide_lifecycle(", text)
+        self.assertIn("self._apply_lifecycle_state()", text)
+
+    def test_every_finished_action_refreshes_local_and_github_state(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        poll_start = text.index("    def _poll(self) -> None:")
+        state_start = text.index("    def _set_button_states(self) -> None:", poll_start)
+        poll = text[poll_start:state_start]
+        self.assertIn("self.refresh()", poll)
+        self.assertIn("self.refresh_github()", poll)
+        self.assertNotIn('if action == "sync"', poll)
 
 
 class SelfUpdateContractTests(unittest.TestCase):
