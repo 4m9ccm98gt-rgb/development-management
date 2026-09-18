@@ -224,7 +224,7 @@ def decide_lifecycle(
         branch_sha = github_state.branch_sha.strip().lower()
         github_error = github_state.error
 
-    if candidate_sha_is_valid(manual):
+    if manual:
         candidate = manual
         source = "AUTO / branch HEAD" if manual == branch_sha else "MANUAL"
     elif candidate_sha_is_valid(branch_sha) and not github_error:
