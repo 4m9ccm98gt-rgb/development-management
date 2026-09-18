@@ -56,6 +56,12 @@ ChatGPT→GitHub→SYNCの往復が面倒になった場合、ユーザー指定
 
 Bでは修正ごとのpush、Actions待ち、再SYNCを必須にしません。
 
+## AI Development Orchestrator
+
+Codex実装 → 自動テスト → Claude独立レビュー → Codex修正を自動反復し、ローカルcandidateで停止する実験的なv0.1を `tools/ai_orchestrator/` に置いています。
+
+本番配布・BUILD・UPDATEは自動化しません。詳細は [docs/ai_orchestrator.md](docs/ai_orchestrator.md) を参照してください。
+
 ## 最重要の安全条件
 
 - 実機確認前に本番配布しない。

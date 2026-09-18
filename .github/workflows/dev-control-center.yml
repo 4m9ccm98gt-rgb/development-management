@@ -18,6 +18,6 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover -s tests -p "test_dev_control_center*.py" -v
       - name: Compile
-        run: python -m compileall scripts/dev_control_center DEV_CONTROL_CENTER.pyw
+        run: python -m compileall scripts/dev_control_center tools/ai_orchestrator DEV_CONTROL_CENTER.pyw
       - name: Registry self-check
         run: python -m scripts.dev_control_center.app --self-check
