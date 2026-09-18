@@ -6,14 +6,18 @@ from unittest.mock import patch
 
 from scripts.dev_control_center.core import (
     ControlCenterConfigError,
+    EntryPointChoice,
     GitHubState,
     RemoteRepo,
     RepoDefinition,
+    RepoEntrypoints,
+    RepoState,
     active_repo_definitions,
     build_debug_handoff_prompt,
     build_new_repo_setup_prompt,
     build_startup_prompt,
     candidate_sha_is_valid,
+    decide_lifecycle,
     discover_entrypoints,
     list_github_repositories,
     parse_github_repo,
@@ -177,13 +181,175 @@ class CiSummaryTests(unittest.TestCase):
         state = GitHubState(branch_sha="a" * 40, ci_state="FAILED")
         self.assertTrue(state.candidate_ready)
 
-    def test_open_pr_blocks_auto_candidate(self):
+    def test_open_pr_does_not_invalidate_expected_branch_candidate(self):
         state = GitHubState(
             branch_sha="a" * 40,
             ci_state="GREEN",
             candidate_blocked_by_pr=True,
         )
-        self.assertFalse(state.candidate_ready)
+        self.assertTrue(state.candidate_ready)
+
+
+class LifecycleDecisionTests(unittest.TestCase):
+    def setUp(self):
+        self.definition = RepoDefinition("demo", "desktop", "main", owner="example")
+        ready = EntryPointChoice("READY", Path("entry.cmd"))
+        self.entrypoints = RepoEntrypoints(
+            sync=ready,
+            run=ready,
+            build=ready,
+            release=ready,
+            release_label="UPDATE",
+        )
+
+    def repo_state(self, sha="a" * 40, **overrides):
+        values = dict(
+            exists=True,
+            is_git_repo=True,
+            branch="main",
+            head=sha,
+            origin_head=sha,
+            origin_repo="example/demo",
+            tracked_dirty=False,
+            untracked_count=0,
+            error="",
+        )
+        values.update(overrides)
+        return RepoState(**values)
+
+    def github_state(self, sha="a" * 40, **overrides):
+        values = dict(branch_sha=sha, ci_state="GREEN")
+        values.update(overrides)
+        return GitHubState(**values)
+
+    def test_restart_restores_branch_candidate_without_memory(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(),
+            self.entrypoints,
+            self.github_state(),
+            explicit_candidate="",
+        )
+        self.assertEqual(decision.candidate_sha, "a" * 40)
+        self.assertEqual(decision.candidate_source, "AUTO / branch HEAD")
+        self.assertFalse(decision.sync_enabled)
+        self.assertTrue(decision.run_enabled)
+        self.assertTrue(decision.build_enabled)
+        self.assertTrue(decision.release_enabled)
+
+    def test_unrelated_open_pr_does_not_clear_synced_candidate(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(),
+            self.entrypoints,
+            self.github_state(candidate_blocked_by_pr=True),
+            explicit_candidate="",
+        )
+        self.assertEqual(decision.candidate_sha, "a" * 40)
+        self.assertFalse(decision.sync_enabled)
+        self.assertTrue(decision.build_enabled)
+
+    def test_sync_only_when_local_head_differs_from_candidate(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(sha="b" * 40),
+            self.entrypoints,
+            self.github_state(sha="a" * 40),
+            explicit_candidate="",
+        )
+        self.assertTrue(decision.sync_enabled)
+        self.assertFalse(decision.run_enabled)
+        self.assertFalse(decision.build_enabled)
+        self.assertFalse(decision.release_enabled)
+        self.assertIn("SYNC", decision.banner)
+
+    def test_busy_locks_all_lifecycle_actions(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(),
+            self.entrypoints,
+            self.github_state(),
+            busy=True,
+        )
+        self.assertFalse(decision.sync_enabled)
+        self.assertFalse(decision.run_enabled)
+        self.assertFalse(decision.build_enabled)
+        self.assertFalse(decision.release_enabled)
+
+    def test_dirty_repo_fail_closes_every_action(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(tracked_dirty=True),
+            self.entrypoints,
+            self.github_state(),
+        )
+        self.assertFalse(decision.sync_enabled)
+        self.assertFalse(decision.run_enabled)
+        self.assertFalse(decision.build_enabled)
+        self.assertFalse(decision.release_enabled)
+        self.assertIn("安全条件NG", decision.banner)
+
+    def test_wrong_branch_and_wrong_origin_fail_closed(self):
+        for overrides in (
+            {"branch": "feature/test"},
+            {"origin_repo": "someone/else"},
+        ):
+            with self.subTest(overrides=overrides):
+                decision = decide_lifecycle(
+                    self.definition,
+                    self.repo_state(**overrides),
+                    self.entrypoints,
+                    self.github_state(),
+                )
+                self.assertFalse(decision.sync_enabled)
+                self.assertFalse(decision.run_enabled)
+                self.assertFalse(decision.build_enabled)
+                self.assertFalse(decision.release_enabled)
+
+    def test_missing_entrypoint_disables_only_that_action(self):
+        missing_build = RepoEntrypoints(
+            sync=self.entrypoints.sync,
+            run=self.entrypoints.run,
+            build=EntryPointChoice("MISSING"),
+            release=self.entrypoints.release,
+            release_label="UPDATE",
+        )
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(),
+            missing_build,
+            self.github_state(),
+        )
+        self.assertTrue(decision.run_enabled)
+        self.assertFalse(decision.build_enabled)
+        self.assertTrue(decision.release_enabled)
+        self.assertIn("MISSING", decision.build_reason)
+
+    def test_github_unavailable_requires_manual_candidate(self):
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(),
+            self.entrypoints,
+            GitHubState(error="offline"),
+            explicit_candidate="",
+        )
+        self.assertEqual(decision.candidate_sha, "")
+        self.assertFalse(decision.sync_enabled)
+        self.assertFalse(decision.run_enabled)
+        self.assertIn("手入力", decision.banner)
+
+    def test_valid_manual_candidate_is_preserved(self):
+        manual = "c" * 40
+        decision = decide_lifecycle(
+            self.definition,
+            self.repo_state(sha=manual),
+            self.entrypoints,
+            self.github_state(sha="a" * 40),
+            explicit_candidate=manual,
+        )
+        self.assertEqual(decision.candidate_sha, manual)
+        self.assertEqual(decision.candidate_source, "MANUAL")
+        self.assertTrue(decision.build_enabled)
 
 
 class PromptTests(unittest.TestCase):
