@@ -88,12 +88,13 @@ class GitHubState:
 
     @property
     def candidate_ready(self) -> bool:
-        """A merged expected-branch SHA can be a candidate without green Actions."""
-        return (
-            candidate_sha_is_valid(self.branch_sha)
-            and not self.candidate_blocked_by_pr
-            and not self.error
-        )
+        """The expected-branch HEAD can be a candidate without green Actions.
+
+        Open PRs are informational only here. They may change which CI target is
+        displayed, but they must never invalidate the already-merged expected
+        branch HEAD.
+        """
+        return candidate_sha_is_valid(self.branch_sha) and not self.error
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,28 @@ class RepoEntrypoints:
     build: EntryPointChoice
     release: EntryPointChoice
     release_label: str
+
+
+@dataclass(frozen=True)
+class LifecycleDecision:
+    """Pure lifecycle decision used by the GUI and tests.
+
+    Candidate selection is derived from durable Git/GitHub state. A valid
+    explicit candidate wins; otherwise the expected branch HEAD is restored
+    automatically. Open PRs never erase the expected-branch candidate.
+    """
+
+    candidate_sha: str = ""
+    candidate_source: str = "-"
+    sync_enabled: bool = False
+    run_enabled: bool = False
+    build_enabled: bool = False
+    release_enabled: bool = False
+    banner: str = ""
+    sync_reason: str = ""
+    run_reason: str = ""
+    build_reason: str = ""
+    release_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -178,6 +201,108 @@ def active_repo_definitions(
 def candidate_sha_is_valid(value: str) -> bool:
     """Candidates are always identified by the complete 40-character SHA."""
     return bool(SHA_RE.fullmatch(value.strip()))
+
+
+def decide_lifecycle(
+    definition: RepoDefinition,
+    repo_state: RepoState,
+    entrypoints: RepoEntrypoints,
+    github_state: GitHubState | None = None,
+    explicit_candidate: str = "",
+    busy: bool = False,
+) -> LifecycleDecision:
+    """Derive candidate and button state from durable repository state.
+
+    The function intentionally does not depend on GUI memory. This means a DCC
+    restart can reconstruct the same lifecycle state from Git/GitHub facts.
+    """
+
+    manual = explicit_candidate.strip().lower()
+    branch_sha = ""
+    github_error = ""
+    if github_state is not None:
+        branch_sha = github_state.branch_sha.strip().lower()
+        github_error = github_state.error
+
+    if manual:
+        candidate = manual
+        source = "AUTO / branch HEAD" if manual == branch_sha else "MANUAL"
+    elif candidate_sha_is_valid(branch_sha) and not github_error:
+        candidate = branch_sha
+        source = "AUTO / branch HEAD"
+    else:
+        candidate = ""
+        source = "-"
+
+    safe = repo_state.safe_for_lifecycle(definition)
+    matches = bool(
+        candidate
+        and candidate_sha_is_valid(candidate)
+        and repo_state.head.strip().lower() == candidate
+    )
+
+    def blocked_reason(choice: EntryPointChoice, *, require_match: bool) -> str:
+        if busy:
+            return "別工程を実行中"
+        if not safe:
+            return repo_state.error or "repo / branch / origin / tracked clean の安全条件NG"
+        if not choice.ready:
+            return f"正式入口が {choice.state}"
+        if not candidate_sha_is_valid(candidate):
+            return "完全40桁candidate SHAが未確定"
+        if require_match and not matches:
+            return "local HEAD が candidate と不一致"
+        if not require_match and matches:
+            return "local HEAD は既に candidate と一致"
+        return ""
+
+    sync_reason = blocked_reason(entrypoints.sync, require_match=False)
+    run_reason = blocked_reason(entrypoints.run, require_match=True)
+    build_reason = blocked_reason(entrypoints.build, require_match=True)
+    release_reason = blocked_reason(entrypoints.release, require_match=True)
+
+    sync_enabled = not sync_reason
+    run_enabled = not run_reason
+    build_enabled = not build_reason
+    release_enabled = not release_reason
+
+    if busy:
+        banner = "工程実行中。完了後に状態を自動再評価します。"
+    elif not safe:
+        banner = "安全条件NG。repo / branch / origin / tracked clean を確認してください。"
+    elif not candidate_sha_is_valid(candidate):
+        if github_error:
+            banner = "GitHub状態を取得できません。必要なら完全40桁candidate SHAを手入力してください。"
+        else:
+            banner = "candidateを確定できません。GitHub状態を更新してください。"
+    elif not matches:
+        banner = f"candidate {short_sha(candidate)} へSYNCしてください。"
+    else:
+        available: list[str] = []
+        if run_enabled:
+            available.append("RUN")
+        if build_enabled:
+            available.append("BUILD")
+        if release_enabled:
+            available.append(entrypoints.release_label)
+        if available:
+            banner = f"candidate {short_sha(candidate)} 同期済み。利用可能: {' / '.join(available)}"
+        else:
+            banner = f"candidate {short_sha(candidate)} 同期済み。正式入口の状態を確認してください。"
+
+    return LifecycleDecision(
+        candidate_sha=candidate,
+        candidate_source=source,
+        sync_enabled=sync_enabled,
+        run_enabled=run_enabled,
+        build_enabled=build_enabled,
+        release_enabled=release_enabled,
+        banner=banner,
+        sync_reason=sync_reason,
+        run_reason=run_reason,
+        build_reason=build_reason,
+        release_reason=release_reason,
+    )
 
 
 def parse_github_repo(remote_url: str) -> str:

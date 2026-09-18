@@ -70,7 +70,7 @@ GitHub Actionsは補助検証です。`GREEN` をcandidate完成の絶対条件�
 
 CI APIが一時的に利用できなくてもbranch HEADを取得できる場合は `UNAVAILABLE` と表示し、candidate SHA自体は失いません。
 
-open PRがある間は、その開発途中PRを誤ってcandidate扱いしないため自動candidate入力を止めます。PRがexpected branchへ反映された後、そのbranch HEADを自動candidateへ入れます。
+open PRがあっても、そのPR head自体をcandidateにはしません。candidateは常にexpected branch HEADです。したがって、古い・無関係なopen PRが残っていても、expected branch HEADとローカルHEADが一致していればRUN / BUILD / UPDATEを妨げません。
 
 `PR / CIを開く` から、open PRまたは対象commitのChecks画面を開けます。
 
@@ -78,12 +78,13 @@ open PRがある間は、その開発途中PRを誤ってcandidate扱いしな�
 
 candidateは **完全40桁SHAのみ**受け付けます。
 
+- GitHub状態を取得できる場合、candidate欄はexpected branch HEADから自動復元されます。DCC再起動後も前回のUIメモリには依存しません。
 - candidateがローカルHEADと違う → `SYNC`のみ有効
 - SYNC成功後に `HEAD == candidate` → `RUN_DEV` / `BUILD` / `UPDATE・DEPLOY` が有効
 - tracked dirty / wrong branch / wrong origin → すべて停止
 - 正式入口が `MISSING` / `MULTIPLE` → 該当工程を停止
 
-Control Centerは各repoの正式スクリプトを呼ぶだけで、SYNC / BUILD / UPDATEロジック自体は再実装しません。
+Control Centerは各repoの正式スクリプトを呼ぶだけで、SYNC / BUILD / UPDATEロジック自体は再実装しません。各工程の子プロセス終了後はローカル状態とGitHub状態を再取得し、ボタン状態を自動再計算します。
 
 UPDATE / DEPLOY前には、対象candidate SHAを表示し、ユーザー実機確認と必要なBUILDが完了していることを確認します。
 
