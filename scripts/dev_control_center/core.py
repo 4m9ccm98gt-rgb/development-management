@@ -37,6 +37,8 @@ class RepoDefinition:
     branch: str
     owner: str = DEFAULT_OWNER
     application_implemented: bool = True
+    initial_ai_task: str = ""
+    initial_test_command: str = ""
 
     @property
     def full_name(self) -> str:
@@ -174,6 +176,8 @@ def load_repo_definitions(
         registry = tomllib.load(f)
         branches = registry.get("branches", {})
         unimplemented = registry.get("unimplemented", {})
+        initial_ai_tasks = registry.get("initial_ai_tasks", {})
+        initial_tests = registry.get("initial_tests", {})
 
     definitions: list[RepoDefinition] = []
     for name, repo_type in sorted(types.items()):
@@ -183,7 +187,17 @@ def load_repo_definitions(
             raise ControlCenterConfigError(
                 f"{name}: explicit candidate branch is missing from {branches_path.name}"
             )
-        definitions.append(RepoDefinition(str(name), repo_type, branch, owner, name not in unimplemented))
+        definitions.append(
+            RepoDefinition(
+                str(name),
+                repo_type,
+                branch,
+                owner,
+                name not in unimplemented,
+                str(initial_ai_tasks.get(name, "")).strip(),
+                str(initial_tests.get(name, "")).strip(),
+            )
+        )
     return definitions
 
 
@@ -541,18 +555,24 @@ def build_debug_handoff_prompt(
 def build_new_repo_setup_prompt(remote: RemoteRepo, local_path: Path) -> str:
     branch_text = remote.default_branch or "未確定（GitHub上で確認して明示設定すること）"
     return (
-        "新規repoをdevelopment-managementの正式管理対象へセットアップしてください。\n"
+        "新規repoをDevelopmentへ正式登録し、最初のAI開発タスクを設計してください。\n"
         f"GitHub: {remote.github_url}\n"
         f"正式ローカル候補: {local_path}\n"
         f"GitHub default branch: {branch_text}\n\n"
-        "development-management/OPERATING_CONTRACT.md を正本としてA — ChatGPT fast pathで進めてください。\n"
-        "repo種別を確定し、scripts/repo_types.toml と scripts/dev_control_center_repos.toml へ正式登録してください。"
-        "candidate branchは推測せず明示してください。\n"
-        "必要な範囲でREADMEと実装を確認し、SYNC / RUN_DEV / BUILD / UPDATE・DEPLOYの正式入口を監査してください。"
-        "恒久入口が必要ならGitHub側の実装として追加してください。\n"
-        "秘密情報・実運用データはGit管理せず、利用可能な自動検証を行ってください。"
-        "GitHub Actionsは補助検証であり、利用不能だけを理由にセットアップ全体を停止しません。\n"
-        "完了時は管理登録内容、expected branch、完全40桁candidate SHA、ローカルで次に行う操作を明示してください。"
+        "development-management/OPERATING_CONTRACT.md を正本としてください。\n"
+        "この段階でChatGPTは対象アプリ本体を実装・修正・検証しません。"
+        "RUN_DEV / BUILD / UPDATE・DEPLOYの仮実装やplaceholderも追加しません。\n"
+        "ユーザーとの会話から、最初に実機で触れる最小デモに必要な意図・優先順位・受入条件を抽出してください。"
+        "不足があっても安全に仮定できる範囲は最小限のデモ仕様へ落とし、実装判断はClaudeへ渡してください。\n"
+        "repo種別とexpected branchを確定し、scripts/repo_types.toml と "
+        "scripts/dev_control_center_repos.toml へ正式登録してください。candidate branchは推測しません。\n"
+        "scripts/dev_control_center_repos.toml の [initial_ai_tasks] にClaudeへ渡す初期AI依頼、"
+        "[initial_tests] に独立テストコマンドを登録してください。"
+        "DCCは更新後、その内容をAI依頼欄とテスト欄へ自動入力します。\n"
+        "秘密情報・実運用データ・ローカル設定はGit管理しません。"
+        "新規repo登録だけの定型config変更では、ユーザーへCodex/Claudeの手動レビュー操作を要求しません。\n"
+        "完了時は管理登録内容、expected branch、development-management側の完全40桁candidate SHA、"
+        "そしてユーザーが次にDCCで押すボタンだけを明示してください。"
     )
 
 
