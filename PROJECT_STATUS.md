@@ -10,9 +10,7 @@ Development Control Centerを日常開発の司令塔とし、**AI開発を標�
 AI依頼
 → Claude実装（隔離worktree）
 → 独立テスト
-→ Review
-   - 通常repo: GPT-6 Astra
-   - development-management: Claude + GPT-6 Astra
+→ GPT-6 Astra read-onlyレビュー
 → 必要ならClaude修正
 → local candidate
 → DCCがmachine-readable resultから完全40桁SHAを取得
@@ -25,8 +23,8 @@ AI依頼
 
 ### DCC / Orchestrator
 
-- AI Development Orchestrator v0.3を実装済み。development-managementのみClaude + Astraの二重レビュー必須。
-- 実装担当はClaude。通常repoの独立reviewerはGPT-6 Astra。development-managementではClaude plan-mode review + Astra reviewの両方を通す。
+- AI Development Orchestrator v0.2を実装済み。
+- 実装担当はClaude、独立reviewerはGPT-6 Astra。
 - 最大2ラウンド。
 - source repoではなく一時detached worktreeで作業。
 - normal `git push origin` はchild Git環境で禁止。
@@ -51,7 +49,18 @@ AI依頼
 - 旧構成: Codex実装 7% + Claudeレビュー 1%
 - 現構成: Claude実装 1% + Codex/Astraレビュー 1%
 
-表示粒度や更新タイミングがあるため固定比率ではないが、現在は **Claude実装 + Astraレビュー** を標準構成とする。ただしdevelopment-managementは管理基盤のため、クレジット効率よりClaude + Astraの二重レビューを優先する。
+表示粒度や更新タイミングがあるため固定比率ではないが、現在は **Claude実装 + Astraレビュー** を標準構成とする。
+
+### development-management 自身の更新ルート
+
+管理repo自身は通常アプリのDCC Orchestrator対象とは分離する。
+
+- ChatGPTがGitHub上で調査・実装・必要なテスト追加を担当。
+- merge前にCodexとClaudeが同じ差分を独立レビュー。
+- どちらかがchanges_requestedならChatGPTが修正。
+- 修正後は必要なテストを再実行し、Codex + Claudeが再レビュー。
+- 両方approve後だけmergeし、merge SHAをWindowsへ正式SYNCする。
+- ChatGPT自身の見直しやActions greenは、Codex / Claude独立レビューの代替ではない。
 
 ### 現行の安全境界
 
