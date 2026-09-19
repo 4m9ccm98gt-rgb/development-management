@@ -39,6 +39,17 @@ class ConfigTests(unittest.TestCase):
         self.assertGreaterEqual(len(items), 1)
         self.assertTrue(all(item.branch for item in items))
 
+    def test_shizen_launcher_registry_contract(self):
+        items = active_repo_definitions(
+            ROOT / "scripts" / "repo_types.toml",
+            ROOT / "scripts" / "dev_control_center_repos.toml",
+        )
+        by_name = {item.name: item for item in items}
+        launcher = by_name["shizen-launcher"]
+        self.assertEqual(launcher.repo_type, "desktop")
+        self.assertEqual(launcher.branch, "main")
+        self.assertFalse(launcher.application_implemented)
+
     def test_missing_active_branch_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
