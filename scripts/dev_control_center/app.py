@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
+import queue
 import subprocess
 import sys
+import tempfile
+import threading
 import webbrowser
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -16,6 +20,7 @@ from .core import (
     RemoteRepo,
     RepoDefinition,
     active_repo_definitions,
+    apply_local_candidate,
     build_debug_handoff_prompt,
     build_new_repo_setup_prompt,
     build_startup_prompt,
@@ -29,6 +34,7 @@ from .core import (
     list_github_repositories,
     load_repo_definitions,
     short_sha,
+    suggest_test_command,
     unmanaged_github_repositories,
 )
 
@@ -49,6 +55,10 @@ class App(ttk.Frame):
         self.repo_state = None
         self.entrypoints = None
         self.active_process = None
+        self.ai_output_queue: queue.Queue[str] = queue.Queue()
+        self.ai_context: dict[str, object] | None = None
+        self.ai_task_by_repo: dict[str, str] = {}
+        self.ai_test_by_repo: dict[str, str] = {}
         self.unmanaged_repos: list[RemoteRepo] = []
         self.github_states: dict[str, GitHubState] = {}
         self.candidate_by_repo = {item.name: "" for item in self.definitions}
@@ -76,6 +86,8 @@ class App(ttk.Frame):
         self.banner_var = tk.StringVar(value="repoを選択してください")
         self.remote_status_var = tk.StringVar(value="未確認")
         self.self_update_var = tk.StringVar(value="未確認")
+        self.ai_test_var = tk.StringVar()
+        self.ai_status_var = tk.StringVar(value="待機")
 
         self._build()
         self.candidate_var.trace_add("write", lambda *_: self._candidate_changed())
@@ -136,7 +148,7 @@ class App(ttk.Frame):
         right = ttk.Frame(self)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(6, weight=1)
+        right.rowconfigure(7, weight=1)
         ttk.Label(right, textvariable=self.title_var, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(right, textvariable=self.meta_var).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
@@ -190,8 +202,38 @@ class App(ttk.Frame):
             text="Actionsは補助検証。open PRは表示のみ。candidateは常にexpected branch HEADを完全40桁SHAで扱います。",
         ).grid(row=2, column=0, columnspan=7, sticky="w", pady=(8, 0))
 
+        ai_box = ttk.LabelFrame(
+            right,
+            text="B: AI Orchestrator — Claude実装 → Tests → Astraレビュー → local candidate",
+            padding=10,
+        )
+        ai_box.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        ai_box.columnconfigure(1, weight=1)
+        ttk.Label(ai_box, text="AI依頼", width=14).grid(row=0, column=0, sticky="nw")
+        self.ai_task = tk.Text(ai_box, height=3, wrap="word")
+        self.ai_task.grid(row=0, column=1, columnspan=2, sticky="ew")
+        ttk.Label(ai_box, text="テスト", width=14).grid(row=1, column=0, sticky="w", pady=(7, 0))
+        ttk.Entry(ai_box, textvariable=self.ai_test_var).grid(
+            row=1, column=1, sticky="ew", pady=(7, 0)
+        )
+        self.ai_start_button = ttk.Button(
+            ai_box,
+            text="AI開発開始",
+            command=self.launch_ai_orchestrator,
+        )
+        self.ai_start_button.grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=(7, 0))
+        ttk.Label(
+            ai_box,
+            textvariable=self.ai_status_var,
+            wraplength=820,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        ttk.Label(
+            ai_box,
+            text="成功時もpush / BUILD / UPDATEは行いません。candidateをローカル適用する前に確認します。",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
         entries = ttk.LabelFrame(right, text="検出した正式入口", padding=10)
-        entries.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        entries.grid(row=6, column=0, sticky="ew", pady=(0, 10))
         entries.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("SYNC", self.sync_var),
@@ -203,12 +245,12 @@ class App(ttk.Frame):
             ttk.Label(entries, textvariable=var, wraplength=820).grid(row=row, column=1, sticky="w")
 
         log_box = ttk.LabelFrame(right, text="操作ログ", padding=8)
-        log_box.grid(row=6, column=0, sticky="nsew")
+        log_box.grid(row=7, column=0, sticky="nsew")
         log_box.columnconfigure(0, weight=1)
         log_box.rowconfigure(0, weight=1)
         self.log = tk.Text(log_box, height=8, state="disabled", wrap="word")
         self.log.grid(row=0, column=0, sticky="nsew")
-        ttk.Label(right, textvariable=self.banner_var).grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(right, textvariable=self.banner_var).grid(row=8, column=0, sticky="w", pady=(8, 0))
 
     def _select_repo(self) -> None:
         selection = self.repo_list.curselection()
@@ -216,8 +258,20 @@ class App(ttk.Frame):
             return
         if self.current:
             self.candidate_by_repo[self.current.name] = self.candidate_var.get().strip()
+            self.ai_task_by_repo[self.current.name] = self.ai_task.get("1.0", "end").strip()
+            self.ai_test_by_repo[self.current.name] = self.ai_test_var.get().strip()
         self.current = self.definitions[selection[0]]
         self.candidate_var.set(self.candidate_by_repo[self.current.name])
+        self.ai_task.delete("1.0", "end")
+        saved_task = self.ai_task_by_repo.get(self.current.name, "")
+        if saved_task:
+            self.ai_task.insert("1.0", saved_task)
+        repo_root = REPOS_ROOT / self.current.name
+        self.ai_test_var.set(
+            self.ai_test_by_repo.get(self.current.name)
+            or suggest_test_command(repo_root)
+        )
+        self.ai_status_var.set("待機")
         self.refresh()
         self.master.after(50, self.refresh_github)
 
@@ -305,6 +359,16 @@ class App(ttk.Frame):
         has_current = self.current is not None
         self.startup_button.configure(state="normal" if has_current and not busy else "disabled")
         self.debug_button.configure(state="normal" if has_current and not busy else "disabled")
+        ai_ready = bool(
+            has_current
+            and not busy
+            and self.repo_state
+            and self.current
+            and self.repo_state.safe_for_lifecycle(self.current)
+            and self.repo_state.head
+            and self.repo_state.head.lower() == self.repo_state.origin_head.lower()
+        )
+        self.ai_start_button.configure(state="normal" if ai_ready else "disabled")
 
         if not self.current or not self.repo_state or not self.entrypoints:
             for button in (self.sync_button, self.run_button, self.build_button, self.release_button):
@@ -477,6 +541,211 @@ class App(ttk.Frame):
             return
         self.master.destroy()
 
+    def launch_ai_orchestrator(self) -> None:
+        if not self.current or not self.repo_state or self.active_process is not None:
+            return
+        if not self.repo_state.safe_for_lifecycle(self.current):
+            messagebox.showerror(
+                "AI開発停止",
+                "正式repo / branch / origin / tracked clean の安全条件を満たしていません。",
+            )
+            return
+        if self.repo_state.head.lower() != self.repo_state.origin_head.lower():
+            messagebox.showerror(
+                "AI開発停止",
+                "AI開発開始前は local HEAD == origin HEAD が必要です。"
+                "未pushのlocal candidateがある場合は先に実機確認を完了してください。",
+            )
+            return
+
+        task = self.ai_task.get("1.0", "end").strip()
+        test_command = self.ai_test_var.get().strip()
+        if not task:
+            messagebox.showinfo("AI開発", "AI依頼を入力してください。")
+            return
+        if not test_command:
+            messagebox.showerror(
+                "AI開発停止",
+                "独立テストコマンドが未設定です。テスト欄へコマンドを入力してください。",
+            )
+            return
+
+        repo_root = REPOS_ROOT / self.current.name
+        result_path = (
+            Path(tempfile.gettempdir())
+            / f"dcc-ai-result-{self.current.name}-{id(self)}.json"
+        )
+        try:
+            result_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+        command = [
+            sys.executable,
+            str(DM_ROOT / "tools" / "ai_orchestrator" / "orchestrator.py"),
+            "run",
+            "--repo",
+            str(repo_root),
+            "--expected-branch",
+            self.current.branch,
+            "--task",
+            task,
+            "--test",
+            test_command,
+            "--result-file",
+            str(result_path),
+        ]
+        try:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            process = subprocess.Popen(
+                command,
+                cwd=DM_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                creationflags=flags,
+            )
+        except OSError as exc:
+            messagebox.showerror("AI開発起動失敗", str(exc))
+            return
+
+        while True:
+            try:
+                self.ai_output_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        self.ai_context = {
+            "repo_name": self.current.name,
+            "result_path": result_path,
+            "base_sha": self.repo_state.head.lower(),
+        }
+        self.active_process = (process, self.current.name, "ai_orchestrator")
+        self.ai_status_var.set("実行中 — Claude実装 → Tests → Astraレビュー")
+        self._log(f"{self.current.name}: AI Orchestrator開始")
+        self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
+        self._set_button_states()
+
+        reader = threading.Thread(
+            target=self._read_ai_output,
+            args=(process,),
+            daemon=True,
+        )
+        reader.start()
+        self.master.after(250, self._poll)
+
+    def _read_ai_output(self, process: subprocess.Popen[str]) -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            text = line.rstrip()
+            if text:
+                self.ai_output_queue.put(text)
+
+    def _drain_ai_output(self) -> None:
+        while True:
+            try:
+                line = self.ai_output_queue.get_nowait()
+            except queue.Empty:
+                return
+            self._log(f"AI: {line}")
+            self.ai_status_var.set(line)
+
+    def _finish_ai_orchestrator(self, repo_name: str, rc: int) -> None:
+        context = self.ai_context or {}
+        self.ai_context = None
+        result_path = context.get("result_path")
+        payload: dict[str, object] = {}
+        if isinstance(result_path, Path) and result_path.is_file():
+            try:
+                raw = json.loads(result_path.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    payload = raw
+            except (OSError, json.JSONDecodeError) as exc:
+                self._log(f"{repo_name}: AI result JSON読込失敗: {exc}")
+            finally:
+                try:
+                    result_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        status = str(payload.get("status", ""))
+        candidate = str(payload.get("candidate_sha", "")).strip().lower()
+        if rc != 0 or status != "candidate_ready" or not candidate_sha_is_valid(candidate):
+            error = str(payload.get("error", "")).strip() or f"rc={rc}"
+            self.ai_status_var.set(f"STOP: {error}")
+            self._log(f"{repo_name}: AI Orchestrator停止 — {error}")
+            messagebox.showerror(
+                "AI開発停止",
+                f"candidateは作成されませんでした。\n\n{error}",
+            )
+            return
+
+        self.candidate_by_repo[repo_name] = candidate
+        claude_calls = payload.get("claude_calls", "?")
+        codex_calls = payload.get("codex_calls", "?")
+        rounds = payload.get("rounds_used", "?")
+        self.ai_status_var.set(
+            f"CANDIDATE READY {short_sha(candidate)} / "
+            f"rounds={rounds} Claude={claude_calls} Astra={codex_calls}"
+        )
+        self._log(
+            f"{repo_name}: AI candidate {candidate} "
+            f"(rounds={rounds}, Claude={claude_calls}, Astra={codex_calls})"
+        )
+
+        if not self.current or self.current.name != repo_name:
+            return
+
+        self._applying_lifecycle = True
+        try:
+            self.candidate_var.set(candidate)
+            self.candidate_by_repo[repo_name] = candidate
+        finally:
+            self._applying_lifecycle = False
+
+        base_sha = str(payload.get("base_sha", "") or context.get("base_sha", "")).lower()
+        if not messagebox.askyesno(
+            "AI candidate ready",
+            f"candidate {candidate}\n\n"
+            "このcandidateをローカルexpected branchへfast-forwardして、"
+            "RUN_DEVで実機確認できる状態にしますか？\n\n"
+            "push / BUILD / UPDATEは行いません。",
+        ):
+            self.banner_var.set(
+                f"AI candidate {short_sha(candidate)} は作成済み。ローカル適用は未実施です。"
+            )
+            self._set_button_states()
+            return
+
+        try:
+            apply_local_candidate(
+                REPOS_ROOT / repo_name,
+                self.current,
+                base_sha=base_sha,
+                candidate_sha=candidate,
+            )
+        except RuntimeError as exc:
+            self.banner_var.set(f"AI candidate適用停止: {exc}")
+            self._log(f"{repo_name}: local candidate適用停止 — {exc}")
+            messagebox.showerror("candidate適用停止", str(exc))
+            self.refresh()
+            return
+
+        self._log(f"{repo_name}: local expected branchをAI candidateへfast-forward {short_sha(candidate)}")
+        self.refresh()
+        self.banner_var.set(
+            f"AI candidate {short_sha(candidate)} をローカル適用済み。RUN_DEVで実機確認してください。"
+        )
+        messagebox.showinfo(
+            "AI candidate ready",
+            f"ローカルcandidateを適用しました。\n\n{candidate}\n\n"
+            "次はRUN_DEVで実機確認してください。push / BUILD / UPDATEは未実施です。",
+        )
+
     def launch(self, action: str) -> None:
         if not self.current or not self.entrypoints or not self.repo_state or self.active_process is not None:
             return
@@ -528,12 +797,24 @@ class App(ttk.Frame):
         if self.active_process is None:
             return
         process, repo_name, action = self.active_process
+        if action == "ai_orchestrator":
+            self._drain_ai_output()
         rc = process.poll()
         if rc is None:
-            self.master.after(750, self._poll)
+            self.master.after(250 if action == "ai_orchestrator" else 750, self._poll)
             return
+
+        if action == "ai_orchestrator":
+            self._drain_ai_output()
         self.active_process = None
         self._log(f"{repo_name}: {action.upper()} 終了 rc={rc}")
+
+        if action == "ai_orchestrator":
+            self._finish_ai_orchestrator(repo_name, rc)
+            if self.current and self.current.name == repo_name:
+                self._set_button_states()
+            return
+
         if self.current and self.current.name == repo_name:
             self.refresh()
             self.refresh_github()
