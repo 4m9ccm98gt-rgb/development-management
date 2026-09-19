@@ -12,6 +12,7 @@
 - 実機NG後も軽い修正ならAを継続できます。
 - GitHub↔SYNCの往復が面倒、またはローカル連続デバッグが適切になったら、ユーザー指定でBへ切り替えます。
 - Bでは指定されたCodex / Claude等がWindowsローカルrepoで完成まで調査・実装・テスト・デバッグし、local candidate commitをユーザーが確認してからpushします。
+- ただし `development-management` 自身の更新はA/Bの通常ルートとは分離し、ChatGPTがGitHub上で実装し、merge前にCodex + Claudeの独立レビューを両方通します。詳細は `OPERATING_CONTRACT.md` を優先します。
 - ユーザーが特定エージェントを名指ししたら、その指定を別エージェントへ勝手に置き換えません。
 
 ## 常に守ること
