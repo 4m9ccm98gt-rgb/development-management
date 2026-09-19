@@ -17,7 +17,9 @@
 - [ ] Claudeはcommit / branch変更 / pushをしていない
 - [ ] tests pass
 - [ ] Astraはread-only review
-- [ ] review後にdiffが変化していない
+- [ ] development-managementの場合はClaudeもplan-mode read-only reviewを行った
+- [ ] development-managementではClaude + Astraの両方がapprove
+- [ ] 各review後にdiffが変化していない
 - [ ] 最大2ラウンドを超えていない
 
 ## local candidate確定時
