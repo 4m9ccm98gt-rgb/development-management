@@ -88,3 +88,21 @@ Windowsでは通常 `%LOCALAPPDATA%\ShizenDev\AIOrchestrator\runs\<run-id>\` に
 - AI判断だけでproduction gateを越えること
 
 v0.2のスモークテストで役割反転後の利用量を測定し、v0.1と比較してからDCC統合へ進みます。
+
+
+## DCC integration
+
+Development Control Centerからv0.2を直接起動できます。
+
+1. 対象repoを選択
+2. 「AI依頼」を入力
+3. DCCが提案したテストコマンドを確認・必要なら編集
+4. 「AI開発開始」
+5. DCCの操作ログへOrchestrator進捗を表示
+6. candidate成功時、DCCが `--result-file` のJSONから完全40桁SHAを取得
+7. ユーザー確認後だけlocal expected branchへ `git merge --ff-only` 相当の安全なfast-forward
+8. RUN_DEVで実機確認
+
+local fast-forwardは開始時base SHA、current HEAD、branch、origin repo、tracked clean、candidate ancestryを再検証します。source HEADが途中で動いた場合やcandidateがbaseの子孫でない場合は停止します。
+
+DCC統合でもpush / BUILD / UPDATE / DEPLOYは自動実行しません。

@@ -753,6 +753,92 @@ def inspect_repo(repo_root: Path, definition: RepoDefinition) -> RepoState:
         return RepoState(True, True, error=str(exc))
 
 
+def apply_local_candidate(
+    repo_root: Path,
+    definition: RepoDefinition,
+    *,
+    base_sha: str,
+    candidate_sha: str,
+) -> str:
+    """Fast-forward only the local expected branch to an Orchestrator candidate.
+
+    This never pushes. It is intentionally strict because it bridges the
+    isolated Orchestrator worktree back into the real-machine verification
+    working tree.
+    """
+    base = base_sha.strip().lower()
+    candidate = candidate_sha.strip().lower()
+    if not candidate_sha_is_valid(base) or not candidate_sha_is_valid(candidate):
+        raise RuntimeError("base/candidate must be complete 40-character SHAs")
+
+    state = inspect_repo(repo_root, definition)
+    if not state.safe_for_lifecycle(definition):
+        raise RuntimeError(
+            state.error or "repo / branch / origin / tracked clean safety conditions failed"
+        )
+    if state.head.strip().lower() != base:
+        raise RuntimeError(
+            f"local HEAD moved since orchestration started: {short_sha(base)} -> {short_sha(state.head)}"
+        )
+
+    resolved = _run_git(repo_root, "rev-parse", "--verify", f"{candidate}^{{commit}}")
+    if resolved.strip().lower() != candidate:
+        raise RuntimeError("candidate commit could not be resolved exactly")
+
+    ancestry = subprocess.run(
+        ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", base, candidate],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if ancestry.returncode != 0:
+        raise RuntimeError("candidate is not a fast-forward descendant of the orchestration base")
+
+    merge = subprocess.run(
+        ["git", "-C", str(repo_root), "merge", "--ff-only", candidate],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if merge.returncode != 0:
+        detail = (merge.stderr or merge.stdout or f"exit {merge.returncode}").strip()
+        raise RuntimeError(f"local candidate fast-forward failed: {detail}")
+
+    final = inspect_repo(repo_root, definition)
+    if (
+        not final.safe_for_lifecycle(definition)
+        or final.head.strip().lower() != candidate
+        or final.tracked_dirty
+    ):
+        raise RuntimeError("local candidate fast-forward completed but verification failed")
+    return final.head
+
+
+def suggest_test_command(repo_root: Path) -> str:
+    """Return a conservative editable default for the DCC AI test field."""
+    pyproject = repo_root / "pyproject.toml"
+    pytest_markers = (
+        (repo_root / "pytest.ini").exists()
+        or (repo_root / "conftest.py").exists()
+    )
+    if pyproject.is_file():
+        try:
+            pytest_markers = pytest_markers or "pytest" in pyproject.read_text(
+                encoding="utf-8", errors="ignore"
+            ).lower()
+        except OSError:
+            pass
+    if pytest_markers:
+        return "python -m pytest -q"
+    if (repo_root / "tests").is_dir():
+        return "python -m unittest discover -s tests -v"
+    return ""
+
+
 def short_sha(value: str) -> str:
     return value[:12] if value else "-"
 

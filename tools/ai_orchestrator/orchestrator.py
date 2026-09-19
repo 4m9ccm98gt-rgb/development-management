@@ -424,6 +424,20 @@ def _write_log(run_dir: Path, name: str, text: str) -> None:
     (run_dir / name).write_text(text, encoding="utf-8")
 
 
+def _write_external_result(path_arg: str | None, payload: dict[str, object]) -> None:
+    """Write a machine-readable result for callers such as DCC."""
+    if not path_arg:
+        return
+    path = Path(path_arg).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp.replace(path)
+
+
 def _write_status(
     run_dir: Path,
     *,
@@ -789,6 +803,7 @@ def run(args: argparse.Namespace) -> int:
                     "result.json",
                     json.dumps(result_payload, ensure_ascii=False, indent=2),
                 )
+                _write_external_result(args.result_file, result_payload)
                 _write_status(
                     run_dir,
                     stage="candidate_ready",
@@ -953,6 +968,7 @@ def run(args: argparse.Namespace) -> int:
                 "result.json",
                 json.dumps(result_payload, ensure_ascii=False, indent=2),
             )
+            _write_external_result(args.result_file, result_payload)
             _write_status(
                 run_dir,
                 stage="candidate_ready",
@@ -983,6 +999,7 @@ def run(args: argparse.Namespace) -> int:
             }
         )
         _write_log(run_dir, "result.json", json.dumps(result_payload, ensure_ascii=False, indent=2))
+        _write_external_result(args.result_file, result_payload)
         _write_status(
             run_dir,
             stage="stopped",
@@ -1043,6 +1060,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-api-billing",
         action="store_true",
         help="explicitly allow detected API/third-party billing environment variables",
+    )
+    run_parser.add_argument(
+        "--result-file",
+        help="optional JSON result path for machine callers such as DCC",
     )
     run_parser.add_argument("--agent-timeout", type=int, default=DEFAULT_TIMEOUT)
     run_parser.add_argument("--test-timeout", type=int, default=900)
