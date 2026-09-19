@@ -14,6 +14,7 @@ from tools.ai_orchestrator.orchestrator import (
     _extract_json_object,
     _parse_review,
     _read_prompt,
+    _review_fingerprint,
     _slugify,
 )
 
@@ -116,6 +117,11 @@ class SafetyContractTests(unittest.TestCase):
 
     def test_slugify_has_safe_fallback(self):
         self.assertEqual(_slugify("日本語だけ"), "task")
+
+    def test_review_fingerprint_is_stable_and_changes_with_diff(self):
+        first = _review_fingerprint("diff A")
+        self.assertEqual(first, _review_fingerprint("diff A"))
+        self.assertNotEqual(first, _review_fingerprint("diff B"))
 
 
 class DiffCoverageTests(unittest.TestCase):
