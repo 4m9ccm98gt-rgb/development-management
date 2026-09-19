@@ -481,6 +481,25 @@ class PromptTests(unittest.TestCase):
         self.assertIn("A — ChatGPT fast path", text)
 
 
+class DarkThemeContractTests(unittest.TestCase):
+    def test_dcc_applies_dark_theme_before_building_widgets(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        init_start = text.index("    def __init__(self, master: tk.Tk) -> None:")
+        build_start = text.index("    def _build(self) -> None:", init_start)
+        init_text = text[init_start:build_start]
+        self.assertIn("configure_dark_theme(master)", init_text)
+        self.assertIn('style.theme_use("clam")', text)
+        self.assertIn('DARK_BG = "#0f1419"', text)
+        self.assertIn('DARK_FG = "#e6edf3"', text)
+
+    def test_native_tk_widgets_receive_dark_styling(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("configure_dark_listbox(self.repo_list)", text)
+        self.assertIn("configure_dark_listbox(self.new_repo_list)", text)
+        self.assertIn("configure_dark_text(self.ai_task)", text)
+        self.assertIn("configure_dark_text(self.log)", text)
+
+
 class UiLifecycleContractTests(unittest.TestCase):
     def test_gui_uses_pure_lifecycle_decision(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
