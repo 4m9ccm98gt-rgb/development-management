@@ -1,8 +1,70 @@
 # プロジェクト状況
 
-最終更新: 2026-09-07（JST）
+最終更新: 2026-09-19（JST）
 
-## この時期の背景
+## 2026-09-19 現在のDevelopment運用
+
+Development Control Centerを日常開発の司令塔とし、**AI開発を標準ルート**へ変更した。
+
+```text
+AI依頼
+→ Claude実装（隔離worktree）
+→ 独立テスト
+→ GPT-6 Astra read-onlyレビュー
+→ 必要ならClaude修正
+→ local candidate
+→ DCCがmachine-readable resultから完全40桁SHAを取得
+→ ユーザー確認後だけlocal expected branchへfast-forward
+→ RUN_DEV実機確認
+→ OK後に同じSHAをpush
+→ BUILD
+→ UPDATE / DEPLOY
+```
+
+### DCC / Orchestrator
+
+- AI Development Orchestrator v0.2を実装済み。
+- 実装担当はClaude、独立reviewerはGPT-6 Astra。
+- 最大2ラウンド。
+- source repoではなく一時detached worktreeで作業。
+- normal `git push origin` はchild Git環境で禁止。
+- agentのcommit / branch変更を検出して停止。
+- candidate前にorigin再確認。
+- review前後のdiff fingerprint不一致は停止。
+- tests必須（明示例外のみ `--allow-no-tests`）。
+- DCCからAI依頼・テストコマンドを渡して起動可能。
+- Orchestratorの進捗をDCC操作ログへstream表示。
+- candidateは `--result-file` のJSONでDCCへ受け渡す。
+- local candidate反映時はbase/current HEAD、branch、origin、tracked clean、ancestryを再確認してff-only。
+- AI処理だけではpush / BUILD / UPDATE / DEPLOYを行わない。
+- DCCはダークテーマを標準とし、AI依頼欄を拡大。
+- 旧A: GitHub-only開発、旧B: 手動デバッグ指示は通常UIから撤去。
+- 左の「全状態更新」でlocal + GitHub状態を再取得。
+- GitHub / PR / CI表示は観測情報として残す。
+
+### 実測
+
+2026-09-19の同一smoke taskではユーザー観測で以下だった。
+
+- 旧構成: Codex実装 7% + Claudeレビュー 1%
+- 現構成: Claude実装 1% + Codex/Astraレビュー 1%
+
+表示粒度や更新タイミングがあるため固定比率ではないが、現在は **Claude実装 + Astraレビュー** を標準構成とする。
+
+### 現行の安全境界
+
+- 実機確認前に本番配布しない。
+- candidateは完全40桁SHA。
+- confirmed SHA == pushed SHA == BUILD対象SHA。
+- candidate確認開始時とBUILD時はtracked clean。
+- force push / reset --hard / stash / 無断rebaseをしない。
+- remoteが想定外に進んだら停止。
+- 本番データ・秘密情報・Git管理外業務データを保護する。
+
+---
+
+## 2026-09-07 時点の背景（履歴）
+
 
 - 開発補助ツール **Claude Code の提供終了が近い**。終了後も、ChatGPT（GitHub 側）と
   Codex／その他セッション（Windows 実機側）だけで各アプリの開発・ビルド・配布・復旧が
