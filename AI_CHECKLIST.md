@@ -2,51 +2,64 @@
 
 必要な境界でだけ使う短いチェックです。正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) です。
 
-## 開始時
+## AI開発開始時
 
-- [ ] 今回は通常の **A: ChatGPT fast path** か、ユーザー指定の **B: Debug escape path** か
-- [ ] 対象repo / branch / HEADが特定できている
-- [ ] 既存変更・本番データ・秘密情報を保護できる
-- [ ] 今回に必要なコード・仕様だけを読んでいる
+- [ ] 対象repo / expected branch / HEADが特定できている
+- [ ] tracked working treeがclean
+- [ ] local HEAD == expected origin HEAD
+- [ ] 本番データ・秘密情報・Git管理外業務データを保護できる
+- [ ] AI依頼が明確
+- [ ] 独立テストコマンドが設定されている
+- [ ] API課金環境変数が意図せず有効になっていない
+
+## 実装・レビュー中
+
+- [ ] Claudeは隔離worktreeだけを編集している
+- [ ] Claudeがcommit / branch変更していない
+- [ ] child Gitからpushできない
+- [ ] テストPASSを確認した
+- [ ] Astraはread-onlyレビュー
+- [ ] review前後のdiff fingerprintが一致
+- [ ] 変更要求があればClaude修正 → 再テスト → 再レビュー
+- [ ] 最大2ラウンドの境界を越えて自動反復していない
 
 ## candidate確定時
 
-- [ ] candidateを完全SHAで特定した
-- [ ] candidate確認開始時にtracked cleanを確認した
-- [ ] 実行したテストと未実施項目を区別した
-- [ ] 実差分を一度レビューし、一時デバッグコード・仮パス・不要変更が残っていない
+- [ ] Tests PASS + Astra APPROVE
+- [ ] candidateを完全40桁SHAで特定した
+- [ ] source repoのbase HEADが開始時から動いていない
+- [ ] originが想定外に進んでいない
+- [ ] reviewed diff以外の変更が混ざっていない
+- [ ] push / BUILD / UPDATE / DEPLOYは未実施
 
-## AでWindowsへ同期するとき
+## local expected branchへ適用するとき
 
-- [ ] 想定repo / branch / candidate SHAが一致している
-- [ ] 安全な正式同期入口を使う
-- [ ] conflict / diverge / local ahead等をforceで自動修復しない
-- [ ] 同期後のHEADがcandidate SHAでtracked clean
+- [ ] ユーザーがlocal candidate適用を確認した
+- [ ] base SHA == current local HEAD
+- [ ] branch / origin / tracked cleanが安全
+- [ ] candidateがbaseのfast-forward descendant
+- [ ] ff-onlyで適用した
+- [ ] 適用後HEAD == candidate SHA
+- [ ] tracked clean
 
-## Bへ切り替えるとき
+## RUN_DEV / 実機確認
 
-- [ ] ユーザーが使用する実機AIを指定した、またはB利用を明示した
-- [ ] 指定エージェントを別エージェントへ置き換えていない
-- [ ] `git fetch` 後、local HEAD / expected origin / branchの土台を確認した
-- [ ] originが想定外に進んでいる場合はforceせず停止する
-
-## Bのlocal candidate
-
-- [ ] 自動テスト上で完成してからcandidate commitを作った
-- [ ] candidate commit後はtracked clean
-- [ ] 既知良好SHAからcandidateまでの実差分をレビューした
-- [ ] ユーザーが確認するcandidate SHAを明示した
-- [ ] NGなら新candidateとして再確認し、旧OKを流用していない
+- [ ] 実機確認対象SHAが完全40桁で特定できる
+- [ ] RUN_DEVで対象機能を確認した
+- [ ] GUI / 実紙 / printer / LAN / 外部サービス等、変更に必要な実機項目を確認した
+- [ ] NGなら旧candidateを本番へ進めず、新candidateとして再確認する
 
 ## ユーザーOK後 / push
 
 - [ ] 承認後にamend / rebase / squash等でSHAを変えていない
+- [ ] remoteが想定外に進んでいない
 - [ ] pushはfast-forward前提
 - [ ] pushed SHA == confirmed SHA
 
 ## BUILD / deploy
 
 - [ ] HEAD == confirmed SHA
+- [ ] pushed SHA == confirmed SHA（pushを伴うアプリ）
 - [ ] tracked clean
 - [ ] BUILDで実体が変わるアプリは完成binaryを配布前に起動確認した
 - [ ] 実機確認前の本番配布ではない
@@ -57,6 +70,7 @@
 
 次は毎回の必須チェックではありません。
 
+- 旧A/B経路の分類
 - T0〜T3の分類
 - 全Development文書の読み直し
 - 毎ターンのcontract再照合
