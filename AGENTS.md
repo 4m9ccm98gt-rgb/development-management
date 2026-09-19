@@ -36,9 +36,9 @@
 
 ## 手動PowerShell提示
 
-- ユーザーへ複数行PowerShellを貼り付けてもらう場合、Claude / Codex起動、push、sync等の重要コマンドを最終行にしません。
-- 重要コマンドの後ろに `Write-Host "DONE"` 等の無害な末尾行を置き、貼り付け末尾の改行不足によるEnter待ちを重要処理に持ち込みません。
-- この対策は手動貼り付け時だけです。AI Orchestratorの直接プロセス起動には適用しません。
+- 複数行PowerShellでは、状態変更・外部影響・長時間処理を伴う重要コマンドを最終行にしません。
+- 非対話コマンドでは無害な末尾行を使えますが、対話型CLIは同じ貼り付けブロックへ混在させません。
+- 詳細条件と例外は `OPERATING_CONTRACT.md` の「手動PowerShell貼り付け」を正とします。AI Orchestratorの直接プロセス起動には適用しません。
 
 ## GitHub作業
 
