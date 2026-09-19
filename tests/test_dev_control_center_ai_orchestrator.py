@@ -24,6 +24,7 @@ from tools.ai_orchestrator.orchestrator import (
     _read_prompt,
     _review_fingerprint,
     _slugify,
+    _write_external_result,
 )
 
 
@@ -148,6 +149,21 @@ class BillingGuardTests(unittest.TestCase):
                 _enforce_billing_guard(True),
                 ("ANTHROPIC_API_KEY",),
             )
+
+
+class ExternalResultTests(unittest.TestCase):
+    def test_writes_machine_readable_result_for_dcc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "result.json"
+            payload = {
+                "status": "candidate_ready",
+                "candidate_sha": "a" * 40,
+                "claude_calls": 1,
+                "codex_calls": 1,
+            }
+            _write_external_result(str(target), payload)
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), payload)
+            self.assertFalse((Path(tmp) / "result.json.tmp").exists())
 
 
 class SafetyContractTests(unittest.TestCase):
