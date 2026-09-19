@@ -27,6 +27,8 @@ DEFAULT_TIMEOUT = 1800
 MAX_DIFF_CHARS = 200_000
 DEFAULT_REVIEW_MODEL = "gpt-6-astra"
 DEFAULT_MAX_ROUNDS = 2
+ORCHESTRATOR_VERSION = "0.3"
+DUAL_REVIEW_REPOS = frozenset({"development-management"})
 API_BILLING_ENV_VARS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -269,6 +271,19 @@ def _claude_implementation_command() -> list[str]:
     ]
 
 
+def _claude_review_command() -> list[str]:
+    return [
+        *_resolved_command("claude"),
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "plan",
+        "--max-turns",
+        "15",
+    ]
+
+
 def _codex_review_command(model: str) -> list[str]:
     return [
         *_resolved_command("codex"),
@@ -297,6 +312,24 @@ def _run_claude_implementation(
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise OrchestratorError(f"Claude implementation failed: {detail}")
+    return result
+
+
+def _run_claude_review(
+    worktree: Path,
+    prompt: str,
+    timeout: int,
+) -> CommandResult:
+    result = _run(
+        _claude_review_command(),
+        cwd=worktree,
+        input_text=prompt,
+        timeout=timeout,
+        env=_agent_env(),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise OrchestratorError(f"Claude review failed: {detail}")
     return result
 
 
@@ -371,8 +404,123 @@ def _review_from_value(value: dict[str, object], reviewer: str) -> Review:
     return Review(verdict, summary, findings)
 
 
+def _parse_claude_review(stdout: str) -> Review:
+    return _review_from_value(
+        _extract_json_object(_claude_result_text(stdout)),
+        "Claude",
+    )
+
+
 def _parse_codex_review(stdout: str) -> Review:
     return _review_from_value(_extract_json_object(stdout), "Codex")
+
+
+def _requires_dual_review(repo_root: Path) -> bool:
+    return repo_root.name.lower() in DUAL_REVIEW_REPOS
+
+
+def _reviews_approved(claude_review: Review | None, codex_review: Review) -> bool:
+    return codex_review.approved and (
+        claude_review is None or claude_review.approved
+    )
+
+
+def _combined_review_feedback(
+    claude_review: Review | None,
+    codex_review: Review,
+) -> str:
+    payload: dict[str, object] = {
+        "codex_astra_review": asdict(codex_review),
+    }
+    if claude_review is not None:
+        payload["claude_review"] = asdict(claude_review)
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _run_reviewers(
+    worktree: Path,
+    *,
+    prompt: str,
+    run_dir: Path,
+    round_no: int,
+    max_rounds: int,
+    counters: UsageCounters,
+    timeout: int,
+    review_model: str,
+    dual_review: bool,
+    reviewed_fingerprint: str,
+    base_sha: str,
+) -> tuple[Review | None, Review]:
+    claude_review: Review | None = None
+
+    if dual_review:
+        _write_log(
+            run_dir,
+            f"round-{round_no:02d}-claude-review-prompt.md",
+            prompt,
+        )
+        counters.claude_calls += 1
+        _progress(
+            run_dir,
+            stage="claude_review",
+            message="Claude reviewing (read-only plan mode)...",
+            round_no=round_no,
+            max_rounds=max_rounds,
+            counters=counters,
+        )
+        claude = _run_claude_review(worktree, prompt, timeout)
+        _write_log(
+            run_dir,
+            f"round-{round_no:02d}-claude-review-raw.json",
+            claude.stdout,
+        )
+        claude_review = _parse_claude_review(claude.stdout)
+        _write_log(
+            run_dir,
+            f"round-{round_no:02d}-claude-review.json",
+            json.dumps(asdict(claude_review), ensure_ascii=False, indent=2),
+        )
+        _assert_agent_did_not_commit(worktree, base_sha)
+        _, after_claude_diff = _diff_for_review(worktree)
+        if _review_fingerprint(after_claude_diff) != reviewed_fingerprint:
+            raise OrchestratorError(
+                "worktree changed during Claude read-only review; refusing unreviewed candidate"
+            )
+
+    _write_log(
+        run_dir,
+        f"round-{round_no:02d}-codex-review-prompt.md",
+        prompt,
+    )
+    counters.codex_calls += 1
+    _progress(
+        run_dir,
+        stage="codex_review",
+        message=f"Codex/Astra reviewing with {review_model} (read-only)...",
+        round_no=round_no,
+        max_rounds=max_rounds,
+        counters=counters,
+    )
+    codex = _run_codex_review(worktree, prompt, timeout, review_model)
+    _write_log(
+        run_dir,
+        f"round-{round_no:02d}-codex-review.txt",
+        codex.stdout + "\n" + codex.stderr,
+    )
+    codex_review = _parse_codex_review(codex.stdout)
+    _assert_agent_did_not_commit(worktree, base_sha)
+    _write_log(
+        run_dir,
+        f"round-{round_no:02d}-codex-review.json",
+        json.dumps(asdict(codex_review), ensure_ascii=False, indent=2),
+    )
+    _, after_codex_diff = _diff_for_review(worktree)
+    if _review_fingerprint(after_codex_diff) != reviewed_fingerprint:
+        raise OrchestratorError(
+            "worktree changed during Codex read-only review; refusing unreviewed candidate"
+        )
+
+    return claude_review, codex_review
 
 
 def _run_tests(worktree: Path, commands: Iterable[str], timeout: int) -> tuple[bool, str]:
@@ -606,7 +754,7 @@ def run(args: argparse.Namespace) -> int:
 
     result_payload: dict[str, object] = {
         "status": "running",
-        "version": "0.2",
+        "version": ORCHESTRATOR_VERSION,
         "run_id": run_id,
         "repo": str(baseline.root),
         "base_sha": baseline.head_sha,
@@ -614,6 +762,7 @@ def run(args: argparse.Namespace) -> int:
         "worktree": str(worktree),
         "run_dir": str(run_dir),
         "review_model": args.review_model,
+        "dual_review": _requires_dual_review(baseline.root),
         "billing_env_override": list(active_billing),
     }
 
