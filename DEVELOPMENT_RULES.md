@@ -20,6 +20,8 @@
 
 ユーザーがCodex / Claude等を指定した場合、指定エージェントがWindowsローカルrepoでデバッグを完結させてよい。
 
+`development-management` 自身の更新はこのBルートの対象外です。管理repoは `OPERATING_CONTRACT.md` のDevelopment専用ルート（ChatGPT実装 → Codex + Claude独立レビュー → 両方approve後にmerge）を使用します。
+
 - 開始時にlocal HEAD / expected origin / branchを確認する。
 - working treeで修正・targeted test・必要なregressionを繰り返す。
 - 修正ごとのpush / Actions待ち / 再SYNCは不要。
