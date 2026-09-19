@@ -1,6 +1,6 @@
-# AI Development Orchestrator v0.3
+# AI Development Orchestrator v0.2
 
-Claude Codeを実装担当、Codex / GPT-6 Astraを独立レビュー担当としてローカルWindows開発を反復し、**ローカルcandidate commitで停止**する開発支援ツールです。v0.3では `development-management` に限り、Claude自身のplan-mode read-onlyレビューも追加して二重レビューにします。
+Claude Codeを実装担当、Codex / GPT-6 Astraを独立レビュー担当としてローカルWindows開発を反復し、**ローカルcandidate commitで停止**する開発支援ツールです。
 
 v0.1の最小スモークテストでは1ラウンドでCodex側7%減、Claude側1%利用だったため、v0.2では役割を反転しています。
 
@@ -30,7 +30,7 @@ STOP
 
 ## 進捗表示
 
-v0.3は無言で処理せず、現在の段階とClaude/Codex呼び出し回数を表示します。
+v0.2は無言で処理せず、現在の段階とClaude/Codex呼び出し回数を表示します。
 
 ```text
 [Preflight] Checking CLI tools and billing guard...
@@ -71,14 +71,14 @@ python C:\Users\suisy\Documents\Development\repos\development-management\tools\a
 - Codex/Astraはread-only sandbox
 - Astraレビュー前後でdiff fingerprintが変わったら停止
 - candidate直前にoriginが進んでいないか再確認
-- Tests PASS + 必要reviewer全員APPROVE後だけlocal candidateを作成
+- Tests PASS + Astra APPROVE後だけlocal candidateを作成
 - push / BUILD / UPDATE / DEPLOYは行わない
 
 ## ログ
 
-Windowsでは通常 `%LOCALAPPDATA%\ShizenDev\AIOrchestrator\runs\<run-id>\` に、Claude出力、tests、各reviewer結果、status.json、result.jsonを保存します。
+Windowsでは通常 `%LOCALAPPDATA%\ShizenDev\AIOrchestrator\runs\<run-id>\` に、Claude出力、tests、Astraレビュー、status.json、result.jsonを保存します。
 
-## v0.3でやらないこと
+## v0.2でやらないこと
 
 - DCC UI統合
 - 自動push / merge
@@ -92,7 +92,7 @@ v0.2のスモークテストで役割反転後の利用量を測定し、v0.1と
 
 ## DCC integration
 
-Development Control Centerからv0.3を直接起動できます。
+Development Control Centerからv0.2を直接起動できます。
 
 1. 対象repoを選択
 2. 「AI依頼」を入力

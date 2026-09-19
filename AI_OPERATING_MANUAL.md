@@ -4,15 +4,15 @@
 
 ## 1. 基本方針
 
-日常開発は Development Control Center の **AI開発** を標準とします。
+通常アプリの日常開発は Development Control Center の **AI開発** を標準とします。
+
+`development-management` 自身は例外で、**ChatGPT実装 → Codexレビュー + Claudeレビュー → 両方approve後にmerge** を標準とします。
 
 ```text
 AI依頼
 → Claude実装
 → Tests
-→ Review
-   - 通常repo: GPT-6 Astra
-   - development-management: Claude + GPT-6 Astra
+→ GPT-6 Astra read-onlyレビュー
 → 必要ならClaude修正
 → local candidate
 → RUN_DEV実機確認
@@ -22,6 +22,16 @@ AI依頼
 ```
 
 旧A/Bルートは通常UIから外し、GitHub / PR / CIは観測情報として扱います。
+
+### development-management
+
+Developmentの変更ではChatGPTがGitHub上で実装を担当します。実装後はCodexとClaudeが独立reviewerとして同じ差分を確認します。
+
+- CodexとClaudeの両方がapproveしてからmergeする。
+- どちらかがchanges_requestedなら、指摘をChatGPTが修正する。
+- 修正後は必要なテストを再実行し、両reviewerが変更後diffを再確認する。
+- ChatGPT自身の見直しやGitHub Actions greenを、Codex / Claudeの独立レビューの代わりにしない。
+- Developmentは通常アプリ用OrchestratorのClaude実装ルートへ載せない。
 
 ## 2. Claudeの役割
 
@@ -34,9 +44,9 @@ Claudeは隔離worktree内で実装・修正を担当します。
 - 指定タスクの範囲を最小限に保つ
 - テスト失敗またはAstra指摘があれば修正する
 
-## 3. レビューの役割
+## 3. Astraの役割
 
-通常repoではGPT-6 Astraが独立reviewerです。development-managementでは、Claudeもplan modeでread-onlyレビューを行い、Claude + Astraの両方のapproveを必須にします。
+GPT-6 Astraは独立reviewerです。
 
 - read-only
 - 実装agentと役割を分離する
@@ -61,7 +71,7 @@ candidate作成前に以下を満たします。
 - source repoがtracked clean
 - agentがcommit / branch変更していない
 - tests pass
-- 必要なreviewerがすべてapprove（通常repoはAstra、development-managementはClaude + Astra）
+- Astra approve
 - review対象diffとcandidate作成前diffが一致
 
 candidateはlocal branch + 完全40桁SHAで識別します。
@@ -84,7 +94,7 @@ candidate成功後も自動では正式branchへ反映しません。DCCがユ�
 
 ## 8. 使用量と役割分担
 
-現在の標準構成は **Claude実装 + Astraレビュー** です。例外としてdevelopment-managementは **Claudeレビュー + Astraレビューの二重レビュー** を必須とします。
+現在の標準構成は **Claude実装 + Astraレビュー** です。
 
 2026-09-19の同一smoke taskでは、ユーザー観測でClaude 1% / Codex(Astra) 1%の利用表示でした。これは固定コスト保証ではなく、役割反転前より軽い傾向を確認した実測です。
 
