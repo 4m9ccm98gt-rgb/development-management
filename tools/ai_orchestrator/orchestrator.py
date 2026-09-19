@@ -1,6 +1,6 @@
 """Claude implementation + Codex/Astra review orchestrator.
 
-v0.2 intentionally stops at a local candidate commit. It never pushes, builds,
+v0.3 intentionally stops at a local candidate commit. It never pushes, builds,
 deploys, or updates production resources.
 """
 
@@ -1163,7 +1163,7 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Claude implementation + Codex/Astra review orchestrator"
+        description="Claude implementation + repo-aware AI review orchestrator"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1213,7 +1213,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             return doctor()
         if args.max_rounds < 1 or args.max_rounds > 2:
-            raise OrchestratorError("--max-rounds must be 1 or 2 in v0.2")
+            raise OrchestratorError("--max-rounds must be 1 or 2 in v0.3")
         return run(args)
     except (OSError, OrchestratorError) as exc:
         print(f"AI ORCHESTRATOR STOPPED: {exc}", file=sys.stderr)
