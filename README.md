@@ -27,34 +27,21 @@
 
 ## 現在の開発運用
 
-### A — ChatGPT fast path
+Development Control Centerでは **AI開発を標準ルート** とします。
 
 ```text
 要望
-→ ChatGPTがGitHubで調査・実装・テスト追加
-→ 利用可能な自動検証
-→ GitHub candidate SHA
-→ ユーザーがWindowsへ同期
-→ ユーザー実機確認
-→ OKならBUILD / 配布
-```
-
-GitHub Actionsは補助検証です。Actionsの利用制限だけを理由に開発を止めません。
-
-### B — Debug escape path
-
-ChatGPT→GitHub→SYNCの往復が面倒になった場合、ユーザー指定のCodex / Claude等へ切り替えられます。
-
-```text
-指定実機AIがWindowsローカルrepoで調査・実装・テスト・デバッグ
+→ Claudeが隔離worktreeで実装
+→ 独立テスト
+→ GPT-6 Astraがread-onlyレビュー
+→ 必要ならClaude修正
 → local candidate commit
-→ tracked clean + 実差分レビュー
-→ ユーザー実機確認
-→ OKなら同じSHAをpush
+→ RUN_DEVでユーザー実機確認
+→ 確認済みSHAを維持して次工程へ
 → BUILD / 配布
 ```
 
-Bでは修正ごとのpush、Actions待ち、再SYNCを必須にしません。
+GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex / Claudeへ指示文を渡す旧Bデバッグ入口は通常DCC UIから外します。GitHub / PR / CIの状態表示は、同期・確認・将来のpush検証に必要な観測情報として残します。
 
 ## AI Development Orchestrator
 
