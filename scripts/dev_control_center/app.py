@@ -233,7 +233,7 @@ class App(ttk.Frame):
         repo_buttons.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         for col in (0, 1):
             repo_buttons.columnconfigure(col, weight=1)
-        ttk.Button(repo_buttons, text="状態更新", command=self.refresh_all).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(repo_buttons, text="全状態更新", command=self.refresh_all).grid(row=0, column=0, sticky="ew", padx=(0, 3))
         ttk.Button(repo_buttons, text="GitHubを開く", command=self.open_github).grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
         new_box = ttk.LabelFrame(left, text="GitHub未登録repo", padding=8)
@@ -291,62 +291,81 @@ class App(ttk.Frame):
             ttk.Label(github_box, textvariable=var, wraplength=780).grid(row=row, column=1, sticky="w")
         ttk.Button(github_box, text="PR / CIを開く", command=self.open_pr_or_ci).grid(row=0, column=2, rowspan=3, sticky="ns", padx=(12, 0))
 
-        flow = ttk.LabelFrame(right, text="A: ChatGPT → GitHub candidate → SYNC → RUN → BUILD → UPDATE", padding=10)
-        flow.grid(row=4, column=0, sticky="ew", pady=(0, 10))
-        for col in range(7):
-            flow.columnconfigure(col, weight=1)
-        self.startup_button = ttk.Button(flow, text="STARTUP SET", command=self.copy_startup_set)
-        self.startup_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        self.debug_button = ttk.Button(flow, text="Bデバッグ指示", command=self.copy_debug_handoff)
-        self.debug_button.grid(row=0, column=1, sticky="ew", padx=3)
-        ttk.Button(flow, text="GitHub更新", command=self.refresh_github).grid(row=0, column=2, sticky="ew", padx=3)
-        self.sync_button = ttk.Button(flow, text="SYNC", command=lambda: self.launch("sync"))
-        self.sync_button.grid(row=0, column=3, sticky="ew", padx=3)
-        self.run_button = ttk.Button(flow, text="RUN_DEV", command=lambda: self.launch("run"))
-        self.run_button.grid(row=0, column=4, sticky="ew", padx=3)
-        self.build_button = ttk.Button(flow, text="BUILD", command=lambda: self.launch("build"))
-        self.build_button.grid(row=0, column=5, sticky="ew", padx=3)
-        self.release_button = ttk.Button(flow, textvariable=self.release_button_var, command=lambda: self.launch("release"))
-        self.release_button.grid(row=0, column=6, sticky="ew", padx=(3, 0))
-
-        ttk.Label(flow, text="candidate SHA").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(flow, textvariable=self.candidate_var).grid(row=1, column=1, columnspan=5, sticky="ew", pady=(10, 0))
-        ttk.Label(flow, textvariable=self.candidate_source_var).grid(row=1, column=6, sticky="w", padx=(8, 0), pady=(10, 0))
-        ttk.Label(
-            flow,
-            text="Actionsは補助検証。open PRは表示のみ。candidateは常にexpected branch HEADを完全40桁SHAで扱います。",
-        ).grid(row=2, column=0, columnspan=7, sticky="w", pady=(8, 0))
-
         ai_box = ttk.LabelFrame(
             right,
-            text="B: AI Orchestrator — Claude実装 → Tests → Astraレビュー → local candidate",
-            padding=10,
+            text="AI開発 — Claude実装 → Tests → Astraレビュー → local candidate",
+            padding=12,
         )
-        ai_box.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        ai_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         ai_box.columnconfigure(1, weight=1)
         ttk.Label(ai_box, text="AI依頼", width=14).grid(row=0, column=0, sticky="nw")
-        self.ai_task = tk.Text(ai_box, height=3, wrap="word")
+        self.ai_task = tk.Text(ai_box, height=8, wrap="word")
         configure_dark_text(self.ai_task)
         self.ai_task.grid(row=0, column=1, columnspan=2, sticky="ew")
-        ttk.Label(ai_box, text="テスト", width=14).grid(row=1, column=0, sticky="w", pady=(7, 0))
+        ttk.Label(ai_box, text="テスト", width=14).grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(ai_box, textvariable=self.ai_test_var).grid(
-            row=1, column=1, sticky="ew", pady=(7, 0)
+            row=1, column=1, sticky="ew", pady=(8, 0)
         )
         self.ai_start_button = ttk.Button(
             ai_box,
             text="AI開発開始",
             command=self.launch_ai_orchestrator,
         )
-        self.ai_start_button.grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=(7, 0))
+        self.ai_start_button.grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
         ttk.Label(
             ai_box,
             textvariable=self.ai_status_var,
             wraplength=820,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(7, 0))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(
             ai_box,
             text="成功時もpush / BUILD / UPDATEは行いません。candidateをローカル適用する前に確認します。",
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+        lifecycle = ttk.LabelFrame(right, text="実機確認・配布", padding=10)
+        lifecycle.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        for col in range(4):
+            lifecycle.columnconfigure(col, weight=1)
+
+        ttk.Label(lifecycle, text="candidate SHA").grid(row=0, column=0, sticky="w")
+        ttk.Entry(lifecycle, textvariable=self.candidate_var).grid(
+            row=0, column=1, columnspan=2, sticky="ew"
+        )
+        ttk.Label(
+            lifecycle,
+            textvariable=self.candidate_source_var,
+        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
+
+        self.run_button = ttk.Button(
+            lifecycle,
+            text="RUN_DEV",
+            command=lambda: self.launch("run"),
+        )
+        self.run_button.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(8, 0))
+        self.build_button = ttk.Button(
+            lifecycle,
+            text="BUILD",
+            command=lambda: self.launch("build"),
+        )
+        self.build_button.grid(row=1, column=1, sticky="ew", padx=3, pady=(8, 0))
+        self.release_button = ttk.Button(
+            lifecycle,
+            textvariable=self.release_button_var,
+            command=lambda: self.launch("release"),
+        )
+        self.release_button.grid(row=1, column=2, sticky="ew", padx=3, pady=(8, 0))
+
+        # Kept as a non-visual compatibility hook for legacy/bootstrap lifecycle code.
+        self.sync_button = ttk.Button(
+            lifecycle,
+            text="SYNC",
+            command=lambda: self.launch("sync"),
+        )
+
+        ttk.Label(
+            lifecycle,
+            text="通常ルートはAI開発 → local candidate → RUN_DEV。GitHub単独開発の入口は表示しません。",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         entries = ttk.LabelFrame(right, text="検出した正式入口", padding=10)
         entries.grid(row=6, column=0, sticky="ew", pady=(0, 10))
@@ -474,8 +493,6 @@ class App(ttk.Frame):
     def _apply_lifecycle_state(self) -> None:
         busy = self.active_process is not None
         has_current = self.current is not None
-        self.startup_button.configure(state="normal" if has_current and not busy else "disabled")
-        self.debug_button.configure(state="normal" if has_current and not busy else "disabled")
         ai_ready = bool(
             has_current
             and not busy

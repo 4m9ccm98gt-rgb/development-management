@@ -506,6 +506,21 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertIn("decide_lifecycle(", text)
         self.assertIn("self._apply_lifecycle_state()", text)
 
+    def test_ai_development_is_the_primary_visible_route(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        build_start = text.index("    def _build(self) -> None:")
+        select_start = text.index("    def _select_repo(self) -> None:", build_start)
+        build = text[build_start:select_start]
+        self.assertIn('text="AI開発 — Claude実装 → Tests → Astraレビュー → local candidate"', build)
+        self.assertIn('self.ai_task = tk.Text(ai_box, height=8, wrap="word")', build)
+        self.assertIn('text="全状態更新"', build)
+        self.assertIn('text="実機確認・配布"', build)
+        self.assertNotIn('text="A: ChatGPT', build)
+        self.assertNotIn('text="Bデバッグ指示"', build)
+        self.assertNotIn('text="GitHub更新"', build)
+        self.assertNotIn('text="STARTUP SET"', build)
+        self.assertNotIn('self.sync_button.grid(', build)
+
     def test_gui_exposes_ai_orchestrator_with_machine_result_handoff(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
         self.assertIn("def launch_ai_orchestrator", text)
