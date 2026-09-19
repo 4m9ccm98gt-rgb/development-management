@@ -400,11 +400,13 @@ class App(ttk.Frame):
         self.candidate_var.set(self.candidate_by_repo[self.current.name])
         self.ai_task.delete("1.0", "end")
         saved_task = self.ai_task_by_repo.get(self.current.name, "")
-        if saved_task:
-            self.ai_task.insert("1.0", saved_task)
+        initial_task = saved_task or self.current.initial_ai_task
+        if initial_task:
+            self.ai_task.insert("1.0", initial_task)
         repo_root = REPOS_ROOT / self.current.name
         self.ai_test_var.set(
             self.ai_test_by_repo.get(self.current.name)
+            or self.current.initial_test_command
             or suggest_test_command(repo_root)
         )
         self.ai_status_var.set("待機")
@@ -616,10 +618,14 @@ class App(ttk.Frame):
                 messagebox.showerror("セットアップ停止", str(exc))
                 return
         self._copy_to_clipboard(build_new_repo_setup_prompt(remote, dest))
-        self._log(f"{remote.name}: clone確認 + 管理登録指示をコピーしました。")
+        self._log(f"{remote.name}: clone確認 + 管理登録/初期AIタスク設計指示をコピーしました。")
         messagebox.showinfo(
             "新規repo",
-            "正式ローカルrepoを確認しました。\n管理登録・標準入口整備の指示をコピーしました。\n現在のChatGPTへ貼り付けてください。",
+            "正式ローカルrepoを確認しました。\n"
+            "管理登録と初期AIタスク設計の指示をコピーしました。\n"
+            "現在のChatGPTへ貼り付けてください。\n\n"
+            "登録反映後はDCCが初期AI依頼を自動入力します。"
+            "対象repoを選んで「AI開発開始」を押せば、Claude実装 → Tests → Astraレビューへ進みます。",
         )
 
     def check_self_update(self) -> None:
