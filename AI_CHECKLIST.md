@@ -17,9 +17,7 @@
 - [ ] Claudeはcommit / branch変更 / pushをしていない
 - [ ] tests pass
 - [ ] Astraはread-only review
-- [ ] development-managementの場合はClaudeもplan-mode read-only reviewを行った
-- [ ] development-managementではClaude + Astraの両方がapprove
-- [ ] 各review後にdiffが変化していない
+- [ ] review後にdiffが変化していない
 - [ ] 最大2ラウンドを超えていない
 
 ## local candidate確定時
@@ -61,3 +59,17 @@
 - 同じテストの無意味な重複実行
 - Actions green待ちだけを理由にした開発停止
 - 長い定型完了報告
+
+
+## development-management 更新時
+
+- [ ] ChatGPTがGitHub上で実装・必要なテスト追加を行った
+- [ ] 変更対象diff / candidateが特定できている
+- [ ] Codexが独立レビューした
+- [ ] Claudeが独立レビューした
+- [ ] どちらかにblocking findingがあればChatGPTが修正した
+- [ ] 修正後に必要なテストを再実行した
+- [ ] 修正後diffをCodexとClaudeの両方が再レビューした
+- [ ] Codex + Claudeの両方がapprove
+- [ ] 両方approve前にmergeしていない
+- [ ] merge後の完全SHAをWindowsへ正式SYNCした
