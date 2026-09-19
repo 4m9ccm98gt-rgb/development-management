@@ -8,10 +8,18 @@
 
 通常アプリの開発は Development Control Center の **AI開発** を使います。
 
-`development-management` 自身だけは管理基盤なので別ルートとし、**ChatGPTがGitHub上で実装し、merge前にCodexとClaudeの独立レビューを両方通します。**
+実装工程の基本役割は次のとおりです。
+
+- ユーザー: 目的・違和感・優先順位・実機結果を伝える。細かいAI間の受け渡しは担当しない。
+- ChatGPT: ユーザー意見を抽出し、Claudeへ渡す開発タスク・受入条件へ変換する。通常アプリの実装担当にはならない。
+- Claude: 隔離worktreeで実装・修正する。
+- 独立テスト: 機械的に検証する。
+- GPT-6 Astra: read-onlyで独立レビューする。
 
 ```text
-仕様・要望
+ユーザーの要望 / RUN_DEVフィードバック
+→ ChatGPTが意図・優先順位・受入条件を抽出
+→ DCC AI依頼へ変換
 → Claudeが隔離worktreeで実装
 → 独立テスト
 → GPT-6 Astraがread-onlyレビュー
@@ -26,7 +34,33 @@
 → UPDATE / DEPLOY
 ```
 
-通常アプリでは、GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex / Claudeへ指示文を渡す旧Bデバッグ入口は標準運用ではありません。
+通常アプリでは、GitHubだけでChatGPTが実装してcandidateを作る旧A-path、およびユーザーが手動でCodex / Claude間の受け渡しを行う旧Bデバッグ入口は標準運用ではありません。
+
+### 新規repoセットアップ
+
+新規repoは「管理登録だけ」で止めず、**初回AI開発へ接続できる状態**までをセットアップとします。
+
+```text
+GitHubでrepo作成
+→ DCC「セットアップ開始」
+→ 正式ローカルへclone
+→ ChatGPTへセットアップ依頼
+→ ChatGPTがrepo種別 / expected branch / 初期デモの意図・受入条件を整理
+→ development-managementへ管理登録
+→ initial_ai_tasks / initial_tests を登録
+→ Control Center更新
+→ DCCが初期AI依頼・テストを自動入力
+→ ユーザーは対象repoで「AI開発開始」
+→ Claude実装
+→ Tests
+→ Astraレビュー
+→ local candidate
+→ RUN_DEVでユーザーが実物を確認
+```
+
+新規repoセットアップ時のChatGPTは、対象アプリ本体、RUN_DEV、BUILD、UPDATE / DEPLOY、テストコードを実装・完成検証しません。実装判断とコード作成はClaude、独立レビューはAstraへ渡します。
+
+新規repo登録だけの定型変更（`scripts/repo_types.toml`、`scripts/dev_control_center_repos.toml`、管理一覧、初期AI依頼/テスト登録）は設定登録として扱い、**ユーザーへCodex / Claudeの手動レビュー操作を要求しません**。Development本体の実行コード・安全境界・運用契約を変更する場合は、下記のDevelopment更新ルートを使います。
 
 ### development-management の更新
 
@@ -48,7 +82,8 @@
 - CodexとClaudeは同じ差分を独立に確認します。
 - どちらか一方でもblocking findingが残る間はmergeしません。
 - 修正後は変更後の差分を両者が再確認します。
-- development-managementは通常アプリ用AI Orchestratorの実装担当切替ルールには載せません。
+- development-management本体の実行コード・安全境界・運用契約の変更はこの例外ルートを維持します。
+- ただし、新規repoの定型登録だけを理由にユーザーへreviewer操作を要求しません。
 
 ## 2. 絶対に残す安全条件
 
