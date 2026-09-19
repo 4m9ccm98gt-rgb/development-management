@@ -39,6 +39,28 @@ class ConfigTests(unittest.TestCase):
         self.assertGreaterEqual(len(items), 1)
         self.assertTrue(all(item.branch for item in items))
 
+    def test_initial_ai_task_and_test_are_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            types = root / "types.toml"
+            branches = root / "branches.toml"
+            types.write_text('[types]\napp = "desktop"\n', encoding="utf-8")
+            branches.write_text(
+                '[branches]\n'
+                'app = "main"\n\n'
+                '[initial_ai_tasks]\n'
+                'app = "Build a minimal demo"\n\n'
+                '[initial_tests]\n'
+                'app = "python -m unittest discover -s tests -v"\n',
+                encoding="utf-8",
+            )
+            item = active_repo_definitions(types, branches, owner="example")[0]
+            self.assertEqual(item.initial_ai_task, "Build a minimal demo")
+            self.assertEqual(
+                item.initial_test_command,
+                "python -m unittest discover -s tests -v",
+            )
+
     def test_missing_active_branch_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -473,12 +495,16 @@ class PromptTests(unittest.TestCase):
         self.assertIn("b" * 40, text)
         self.assertIn("fast-forward push", text)
 
-    def test_new_repo_setup_requests_central_registration(self):
+    def test_new_repo_setup_requests_central_registration_and_ai_handoff(self):
         remote = RemoteRepo("new-app", default_branch="main", owner="example")
         text = build_new_repo_setup_prompt(remote, Path(r"C:\repos\new-app"))
         self.assertIn("scripts/repo_types.toml", text)
         self.assertIn("scripts/dev_control_center_repos.toml", text)
-        self.assertIn("A — ChatGPT fast path", text)
+        self.assertIn("[initial_ai_tasks]", text)
+        self.assertIn("[initial_tests]", text)
+        self.assertIn("Claude", text)
+        self.assertIn("対象アプリ本体を実装・修正・検証しません", text)
+        self.assertNotIn("A — ChatGPT fast path", text)
 
 
 class DarkThemeContractTests(unittest.TestCase):
@@ -520,6 +546,14 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertNotIn('text="GitHub更新"', build)
         self.assertNotIn('text="STARTUP SET"', build)
         self.assertNotIn('self.sync_button.grid(', build)
+
+    def test_gui_prefills_registered_initial_ai_task(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        select_start = text.index("    def _select_repo(self) -> None:")
+        refresh_start = text.index("    def refresh_all(self) -> None:", select_start)
+        select = text[select_start:refresh_start]
+        self.assertIn("self.current.initial_ai_task", select)
+        self.assertIn("self.current.initial_test_command", select)
 
     def test_gui_exposes_ai_orchestrator_with_machine_result_handoff(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
