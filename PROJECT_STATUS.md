@@ -44,7 +44,7 @@ AI依頼
 
 ### 実測
 
-2026-09-19の同一smoke taskではユーザー観測で以下だった。
+2026-09-19の同一smoke taskではユーザー観測で以下だった。 以下の使用量は通常アプリ用Orchestratorの実測であり、development-management自身の更新ルートには適用しない。
 
 - 旧構成: Codex実装 7% + Claudeレビュー 1%
 - 現構成: Claude実装 1% + Codex/Astraレビュー 1%
