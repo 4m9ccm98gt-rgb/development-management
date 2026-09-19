@@ -1,7 +1,7 @@
-"""Codex + Claude local development orchestrator.
+"""Claude implementation + Astra review local development orchestrator.
 
-v0.1 intentionally stops at a local candidate commit. It never pushes, builds,
-deploys, or updates production resources.
+v0.2 stops at a local candidate commit. It never pushes, builds, deploys, or
+updates production resources.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -26,6 +25,17 @@ HERE = Path(__file__).resolve().parent
 PROMPTS = HERE / "prompts"
 DEFAULT_TIMEOUT = 1800
 MAX_DIFF_CHARS = 200_000
+DEFAULT_MAX_ROUNDS = 2
+ASTRA_MODEL = "gpt-6-astra"
+BILLING_OVERRIDE_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
 
 
 class OrchestratorError(RuntimeError):
@@ -75,6 +85,10 @@ def _state_root() -> Path:
 def _slugify(value: str, limit: int = 42) -> str:
     text = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._").lower()
     return (text or "task")[:limit].rstrip("-._")
+
+
+def _progress(message: str) -> None:
+    print(message, flush=True)
 
 
 def _resolved_command(name: str) -> list[str]:
@@ -133,8 +147,8 @@ def _read_prompt(name: str, replacements: dict[str, str]) -> str:
 def _agent_env() -> dict[str, str]:
     """Child-only Git safety overlay.
 
-    Even if an agent ignores the prompt and invokes `git push origin ...`,
-    Git receives an invalid push URL. This does not modify repository config.
+    Even if an agent ignores the prompt and invokes git push origin, Git
+    receives an invalid push URL. Repository config itself is not modified.
     """
     env = os.environ.copy()
     env["AI_ORCHESTRATOR"] = "1"
@@ -143,6 +157,30 @@ def _agent_env() -> dict[str, str]:
     env["GIT_CONFIG_KEY_0"] = "remote.origin.pushurl"
     env["GIT_CONFIG_VALUE_0"] = "disabled://ai-orchestrator"
     return env
+
+
+def _active_billing_overrides() -> tuple[str, ...]:
+    return tuple(name for name in BILLING_OVERRIDE_ENV_VARS if os.environ.get(name, "").strip())
+
+
+def _billing_guard() -> str:
+    risky = _active_billing_overrides()
+    if risky:
+        raise OrchestratorError(
+            "billing guard blocked environment credential/provider overrides: "
+            + ", ".join(risky)
+            + ". Unset them before using subscription-mode orchestration."
+        )
+
+    status = _run([*_resolved_command("codex"), "login", "status"], timeout=60)
+    combined = (status.stdout + "\n" + status.stderr).strip()
+    if status.returncode != 0 or "chatgpt" not in combined.lower():
+        raise OrchestratorError(
+            "billing guard requires Codex to be logged in using ChatGPT; "
+            f"current status: {combined or '<no output>'}"
+        )
+
+    return "Codex=ChatGPT subscription; Claude=no API/provider override detected"
 
 
 def _tracked_dirty(repo: Path) -> bool:
@@ -226,41 +264,35 @@ def _assert_agent_did_not_commit(worktree: Path, base_sha: str) -> None:
         )
 
 
-def _run_codex(worktree: Path, prompt: str, timeout: int) -> CommandResult:
-    command = [
-        *_resolved_command("codex"),
-        "exec",
-        "--ephemeral",
-        "--sandbox",
-        "workspace-write",
-        "-",
-    ]
-    result = _run(
-        command,
-        cwd=worktree,
-        input_text=prompt,
-        timeout=timeout,
-        env=_agent_env(),
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise OrchestratorError(f"Codex failed: {detail}")
-    return result
-
-
-def _run_claude(worktree: Path, prompt: str, timeout: int) -> CommandResult:
-    command = [
+def _claude_implement_command() -> list[str]:
+    return [
         *_resolved_command("claude"),
         "-p",
         "--output-format",
         "json",
         "--permission-mode",
-        "plan",
+        "acceptEdits",
         "--max-turns",
-        "8",
+        "12",
     ]
+
+
+def _codex_review_command(model: str = ASTRA_MODEL) -> list[str]:
+    return [
+        *_resolved_command("codex"),
+        "exec",
+        "--ephemeral",
+        "--sandbox",
+        "read-only",
+        "-m",
+        model,
+        "-",
+    ]
+
+
+def _run_claude_implement(worktree: Path, prompt: str, timeout: int) -> CommandResult:
     result = _run(
-        command,
+        _claude_implement_command(),
         cwd=worktree,
         input_text=prompt,
         timeout=timeout,
@@ -268,7 +300,27 @@ def _run_claude(worktree: Path, prompt: str, timeout: int) -> CommandResult:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise OrchestratorError(f"Claude review failed: {detail}")
+        raise OrchestratorError(f"Claude implementation failed: {detail}")
+    _claude_result_text(result.stdout)
+    return result
+
+
+def _run_codex_review(
+    worktree: Path,
+    prompt: str,
+    timeout: int,
+    model: str = ASTRA_MODEL,
+) -> CommandResult:
+    result = _run(
+        _codex_review_command(model),
+        cwd=worktree,
+        input_text=prompt,
+        timeout=timeout,
+        env=_agent_env(),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise OrchestratorError(f"Astra review failed: {detail}")
     return result
 
 
@@ -281,7 +333,7 @@ def _claude_result_text(stdout: str) -> str:
         raise OrchestratorError("Claude returned an error result")
     text = payload.get("result")
     if not isinstance(text, str) or not text.strip():
-        raise OrchestratorError("Claude JSON did not contain a review result")
+        raise OrchestratorError("Claude JSON did not contain a result")
     return text.strip()
 
 
@@ -306,18 +358,18 @@ def _extract_json_object(text: str) -> dict[str, object]:
     return value
 
 
-def _parse_review(stdout: str) -> Review:
-    value = _extract_json_object(_claude_result_text(stdout))
+def _parse_review(text: str) -> Review:
+    value = _extract_json_object(text)
     verdict = str(value.get("verdict", "")).strip().lower()
     if verdict not in {"approve", "changes_requested"}:
-        raise OrchestratorError(f"invalid Claude verdict: {verdict or '<missing>'}")
+        raise OrchestratorError(f"invalid Astra verdict: {verdict or '<missing>'}")
     summary = str(value.get("summary", "")).strip()
     raw_findings = value.get("findings", [])
     if not isinstance(raw_findings, list):
         raise OrchestratorError("review findings must be an array")
     findings = tuple(item for item in raw_findings if isinstance(item, dict))
     if verdict == "approve" and findings:
-        raise OrchestratorError("Claude returned approve with findings; refusing ambiguous review")
+        raise OrchestratorError("Astra returned approve with findings; refusing ambiguous review")
     return Review(verdict, summary, findings)
 
 
@@ -383,7 +435,7 @@ def _create_candidate(
     verify_origin: bool,
 ) -> tuple[str, str]:
     if not _git(worktree, "status", "--porcelain").stdout.strip():
-        raise OrchestratorError("Codex produced no changes")
+        raise OrchestratorError("Claude produced no changes")
 
     _assert_source_unchanged(baseline)
     _assert_origin_unchanged(baseline, verify_origin)
@@ -417,6 +469,13 @@ def doctor() -> int:
         except OrchestratorError as exc:
             rows.append((name, str(exc)))
             failed = True
+
+    try:
+        rows.append(("billing", _billing_guard()))
+    except OrchestratorError as exc:
+        rows.append(("billing", str(exc)))
+        failed = True
+
     for name, detail in rows:
         print(f"{name:7} {detail}")
     return 1 if failed else 0
@@ -434,16 +493,22 @@ def run(args: argparse.Namespace) -> int:
     if not task:
         raise OrchestratorError("task is empty")
 
-    # Resolve tools before touching Git worktrees.
+    _progress("[setup] Checking Git / Claude / Codex availability...")
     _resolved_command("git")
     _resolved_command("codex")
     _resolved_command("claude")
 
+    _progress("[setup] Billing guard...")
+    billing_status = _billing_guard()
+    _progress(f"[setup] {billing_status}")
+
+    _progress("[setup] Verifying source repository and origin...")
     baseline = _repo_baseline(Path(args.repo), args.expected_branch, not args.no_fetch)
     run_id = _now_id()
     run_dir = _state_root() / "runs" / run_id
     _write_log(run_dir, "task.md", task + "\n")
 
+    _progress("[setup] Creating isolated Git worktree...")
     parent, worktree = _create_worktree(baseline, run_id)
     result_payload: dict[str, object] = {
         "status": "running",
@@ -453,7 +518,13 @@ def run(args: argparse.Namespace) -> int:
         "source_branch": baseline.branch,
         "worktree": str(worktree),
         "run_dir": str(run_dir),
+        "implementation_agent": "Claude Code",
+        "review_agent": f"Codex/{args.review_model}",
+        "billing_guard": billing_status,
+        "max_rounds": args.max_rounds,
     }
+    claude_calls = 0
+    astra_reviews = 0
 
     try:
         implement_prompt = _read_prompt(
@@ -464,16 +535,28 @@ def run(args: argparse.Namespace) -> int:
                 "SOURCE_BRANCH": baseline.branch,
             },
         )
-        _write_log(run_dir, "round-01-codex-prompt.md", implement_prompt)
-        codex = _run_codex(worktree, implement_prompt, args.agent_timeout)
-        _write_log(run_dir, "round-01-codex.txt", codex.stdout + "\n" + codex.stderr)
+        claude_calls += 1
+        _progress(
+            f"[round 1/{args.max_rounds}] Claude implementing... "
+            f"(Claude calls: {claude_calls}, Astra reviews: {astra_reviews})"
+        )
+        _write_log(run_dir, "round-01-claude-prompt.md", implement_prompt)
+        claude = _run_claude_implement(worktree, implement_prompt, args.agent_timeout)
+        _write_log(run_dir, "round-01-claude-raw.json", claude.stdout)
+        _write_log(run_dir, "round-01-claude.txt", _claude_result_text(claude.stdout) + "\n")
         _assert_agent_did_not_commit(worktree, baseline.head_sha)
         _assert_source_unchanged(baseline)
+        _progress(f"[round 1/{args.max_rounds}] Claude: DONE")
 
         last_review: Review | None = None
         for round_no in range(1, args.max_rounds + 1):
+            _progress(f"[round {round_no}/{args.max_rounds}] Running tests...")
             tests_ok, tests_text = _run_tests(worktree, args.test, args.test_timeout)
             _write_log(run_dir, f"round-{round_no:02d}-tests.txt", tests_text)
+            _progress(
+                f"[round {round_no}/{args.max_rounds}] Tests: "
+                + ("PASS" if tests_ok else "FAIL")
+            )
             if not tests_ok:
                 if round_no >= args.max_rounds:
                     raise OrchestratorError("tests still failing after final round")
@@ -481,23 +564,34 @@ def run(args: argparse.Namespace) -> int:
                     "fix_review.md",
                     {
                         "TASK": task,
-                        "FEEDBACK": "Automated tests failed. Fix the failures without changing Git history.\n\n" + tests_text,
+                        "FEEDBACK": (
+                            "Automated tests failed. Fix the failures without changing Git history.\n\n"
+                            + tests_text
+                        ),
                     },
                 )
-                _write_log(run_dir, f"round-{round_no + 1:02d}-codex-prompt.md", fix_prompt)
-                codex = _run_codex(worktree, fix_prompt, args.agent_timeout)
+                claude_calls += 1
+                next_round = round_no + 1
+                _progress(
+                    f"[round {next_round}/{args.max_rounds}] Claude fixing failed tests... "
+                    f"(Claude calls: {claude_calls}, Astra reviews: {astra_reviews})"
+                )
+                _write_log(run_dir, f"round-{next_round:02d}-claude-prompt.md", fix_prompt)
+                claude = _run_claude_implement(worktree, fix_prompt, args.agent_timeout)
+                _write_log(run_dir, f"round-{next_round:02d}-claude-raw.json", claude.stdout)
                 _write_log(
                     run_dir,
-                    f"round-{round_no + 1:02d}-codex.txt",
-                    codex.stdout + "\n" + codex.stderr,
+                    f"round-{next_round:02d}-claude.txt",
+                    _claude_result_text(claude.stdout) + "\n",
                 )
                 _assert_agent_did_not_commit(worktree, baseline.head_sha)
                 _assert_source_unchanged(baseline)
+                _progress(f"[round {next_round}/{args.max_rounds}] Claude: DONE")
                 continue
 
             stat, diff = _diff_for_review(worktree)
             if not diff.strip():
-                raise OrchestratorError("Codex produced no reviewable changes")
+                raise OrchestratorError("Claude produced no reviewable changes")
             reviewed_fingerprint = _review_fingerprint(diff)
             review_prompt = _read_prompt(
                 "review.md",
@@ -509,22 +603,38 @@ def run(args: argparse.Namespace) -> int:
                     "TEST_RESULTS": tests_text or "(no tests configured)",
                 },
             )
-            _write_log(run_dir, f"round-{round_no:02d}-claude-prompt.md", review_prompt)
-            claude = _run_claude(worktree, review_prompt, args.agent_timeout)
-            _write_log(run_dir, f"round-{round_no:02d}-claude-raw.json", claude.stdout)
-            last_review = _parse_review(claude.stdout)
+            astra_reviews += 1
+            _progress(
+                f"[round {round_no}/{args.max_rounds}] Astra reviewing read-only... "
+                f"(Claude calls: {claude_calls}, Astra reviews: {astra_reviews})"
+            )
+            _write_log(run_dir, f"round-{round_no:02d}-astra-prompt.md", review_prompt)
+            codex = _run_codex_review(
+                worktree,
+                review_prompt,
+                args.agent_timeout,
+                model=args.review_model,
+            )
+            _write_log(run_dir, f"round-{round_no:02d}-astra.txt", codex.stdout)
+            _write_log(run_dir, f"round-{round_no:02d}-astra-stderr.txt", codex.stderr)
+            last_review = _parse_review(codex.stdout)
             _write_log(
                 run_dir,
                 f"round-{round_no:02d}-review.json",
                 json.dumps(asdict(last_review), ensure_ascii=False, indent=2),
+            )
+            _progress(
+                f"[round {round_no}/{args.max_rounds}] Astra: "
+                + ("APPROVE" if last_review.approved else f"CHANGES_REQUESTED ({len(last_review.findings)} findings)")
             )
 
             if last_review.approved:
                 _, current_diff = _diff_for_review(worktree)
                 if _review_fingerprint(current_diff) != reviewed_fingerprint:
                     raise OrchestratorError(
-                        "worktree changed after Claude review; refusing unreviewed candidate"
+                        "worktree changed after Astra review; refusing unreviewed candidate"
                     )
+                _progress("[candidate] Re-checking source/origin invariants...")
                 branch, sha = _create_candidate(
                     worktree,
                     baseline,
@@ -539,6 +649,8 @@ def run(args: argparse.Namespace) -> int:
                         "candidate_sha": sha,
                         "review": asdict(last_review),
                         "tests": list(args.test),
+                        "claude_calls": claude_calls,
+                        "astra_reviews": astra_reviews,
                     }
                 )
                 _write_log(
@@ -549,39 +661,54 @@ def run(args: argparse.Namespace) -> int:
                 print("AI ORCHESTRATOR: CANDIDATE READY")
                 print(f"branch: {branch}")
                 print(f"sha:    {sha}")
+                print(f"calls:  Claude={claude_calls}, Astra={astra_reviews}")
                 print(f"logs:   {run_dir}")
                 print("STOP: push / BUILD / UPDATE have not been performed.")
                 return 0
 
             if round_no >= args.max_rounds:
-                raise OrchestratorError("Claude still requests changes after final review round")
+                raise OrchestratorError("Astra still requests changes after final review round")
 
             feedback = json.dumps(asdict(last_review), ensure_ascii=False, indent=2)
             fix_prompt = _read_prompt(
                 "fix_review.md",
                 {"TASK": task, "FEEDBACK": feedback},
             )
-            _write_log(run_dir, f"round-{round_no + 1:02d}-codex-prompt.md", fix_prompt)
-            codex = _run_codex(worktree, fix_prompt, args.agent_timeout)
+            next_round = round_no + 1
+            claude_calls += 1
+            _progress(
+                f"[round {next_round}/{args.max_rounds}] Claude fixing Astra findings... "
+                f"(Claude calls: {claude_calls}, Astra reviews: {astra_reviews})"
+            )
+            _write_log(run_dir, f"round-{next_round:02d}-claude-prompt.md", fix_prompt)
+            claude = _run_claude_implement(worktree, fix_prompt, args.agent_timeout)
+            _write_log(run_dir, f"round-{next_round:02d}-claude-raw.json", claude.stdout)
             _write_log(
                 run_dir,
-                f"round-{round_no + 1:02d}-codex.txt",
-                codex.stdout + "\n" + codex.stderr,
+                f"round-{next_round:02d}-claude.txt",
+                _claude_result_text(claude.stdout) + "\n",
             )
             _assert_agent_did_not_commit(worktree, baseline.head_sha)
             _assert_source_unchanged(baseline)
+            _progress(f"[round {next_round}/{args.max_rounds}] Claude: DONE")
 
         raise OrchestratorError("orchestration ended without a candidate")
     except Exception as exc:
-        result_payload.update({"status": "stopped", "error": str(exc)})
+        result_payload.update(
+            {
+                "status": "stopped",
+                "error": str(exc),
+                "claude_calls": claude_calls,
+                "astra_reviews": astra_reviews,
+            }
+        )
         _write_log(run_dir, "result.json", json.dumps(result_payload, ensure_ascii=False, indent=2))
         print(f"AI ORCHESTRATOR STOPPED: {exc}", file=sys.stderr)
+        print(f"calls: Claude={claude_calls}, Astra={astra_reviews}", file=sys.stderr)
         print(f"isolated worktree preserved: {worktree}", file=sys.stderr)
         print(f"logs: {run_dir}", file=sys.stderr)
         return 1
     finally:
-        # Successful candidates keep only the local branch/ref; failed runs keep
-        # their isolated worktree for diagnosis.
         if result_payload.get("status") == "candidate_ready":
             try:
                 _git(baseline.root, "worktree", "remove", "--force", str(worktree), timeout=300)
@@ -591,10 +718,10 @@ def run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Codex + Claude AI development orchestrator")
+    parser = argparse.ArgumentParser(description="Claude implementation + Astra review orchestrator")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="check git / codex / claude CLI availability")
+    sub.add_parser("doctor", help="check git / codex / claude CLI and billing guard")
 
     run_parser = sub.add_parser("run", help="develop in an isolated worktree and stop at candidate")
     run_parser.add_argument("--repo", required=True, help="target Git repository")
@@ -604,7 +731,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--expected-branch", help="fail if source repo is on another branch")
     run_parser.add_argument("--test", action="append", default=[], help="test command; repeatable")
     run_parser.add_argument("--allow-no-tests", action="store_true")
-    run_parser.add_argument("--max-rounds", type=int, default=3)
+    run_parser.add_argument("--max-rounds", type=int, default=DEFAULT_MAX_ROUNDS)
+    run_parser.add_argument("--review-model", default=ASTRA_MODEL)
     run_parser.add_argument("--agent-timeout", type=int, default=DEFAULT_TIMEOUT)
     run_parser.add_argument("--test-timeout", type=int, default=900)
     run_parser.add_argument("--no-fetch", action="store_true", help="skip origin fetch (not recommended)")
@@ -617,8 +745,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "doctor":
             return doctor()
-        if args.max_rounds < 1 or args.max_rounds > 8:
-            raise OrchestratorError("--max-rounds must be between 1 and 8")
+        if args.max_rounds < 1 or args.max_rounds > DEFAULT_MAX_ROUNDS:
+            raise OrchestratorError(
+                f"--max-rounds must be between 1 and {DEFAULT_MAX_ROUNDS} in v0.2"
+            )
         return run(args)
     except (OSError, OrchestratorError) as exc:
         print(f"AI ORCHESTRATOR STOPPED: {exc}", file=sys.stderr)
