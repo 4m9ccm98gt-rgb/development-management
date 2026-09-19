@@ -34,6 +34,12 @@
 - `AI_STARTUP.md` / `AI_OPERATING_MANUAL.md` / `STARTUP_HANDOFF_POLICY.md` は補助資料であり、`OPERATING_CONTRACT.md` を上書きしません。
 - 契約の明示的な再確認は、A→B切替、candidate確定、push、BUILD、deploy / update、本番反映などの境界で行えば十分です。
 
+## 手動PowerShell提示
+
+- ユーザーへ複数行PowerShellを貼り付けてもらう場合、Claude / Codex起動、push、sync等の重要コマンドを最終行にしません。
+- 重要コマンドの後ろに `Write-Host "DONE"` 等の無害な末尾行を置き、貼り付け末尾の改行不足によるEnter待ちを重要処理に持ち込みません。
+- この対策は手動貼り付け時だけです。AI Orchestratorの直接プロセス起動には適用しません。
+
 ## GitHub作業
 
 ユーザーが実装・更新を依頼し、ChatGPTがGitHubへ書き込み可能なら、依頼範囲で調査から実装・テスト追加・candidate作成まで進めて構いません。
