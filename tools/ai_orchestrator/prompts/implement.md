@@ -21,4 +21,4 @@ Rules:
 - Preserve unrelated local behavior and keep the change narrowly scoped.
 - If the task cannot be completed safely under these rules, stop and explain why.
 
-Finish with a concise summary of changes and tests you ran. The orchestrator will perform independent tests and Claude review afterward.
+Finish with a concise summary of changes and tests you ran. The orchestrator will perform independent tests and Codex/Astra review afterward.
