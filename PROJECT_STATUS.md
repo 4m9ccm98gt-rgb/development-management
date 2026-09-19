@@ -10,7 +10,9 @@ Development Control Centerを日常開発の司令塔とし、**AI開発を標�
 AI依頼
 → Claude実装（隔離worktree）
 → 独立テスト
-→ GPT-6 Astra read-onlyレビュー
+→ Review
+   - 通常repo: GPT-6 Astra
+   - development-management: Claude + GPT-6 Astra
 → 必要ならClaude修正
 → local candidate
 → DCCがmachine-readable resultから完全40桁SHAを取得
@@ -23,8 +25,8 @@ AI依頼
 
 ### DCC / Orchestrator
 
-- AI Development Orchestrator v0.2を実装済み。
-- 実装担当はClaude、独立reviewerはGPT-6 Astra。
+- AI Development Orchestrator v0.3を実装済み。development-managementのみClaude + Astraの二重レビュー必須。
+- 実装担当はClaude。通常repoの独立reviewerはGPT-6 Astra。development-managementではClaude plan-mode review + Astra reviewの両方を通す。
 - 最大2ラウンド。
 - source repoではなく一時detached worktreeで作業。
 - normal `git push origin` はchild Git環境で禁止。
@@ -49,7 +51,7 @@ AI依頼
 - 旧構成: Codex実装 7% + Claudeレビュー 1%
 - 現構成: Claude実装 1% + Codex/Astraレビュー 1%
 
-表示粒度や更新タイミングがあるため固定比率ではないが、現在は **Claude実装 + Astraレビュー** を標準構成とする。
+表示粒度や更新タイミングがあるため固定比率ではないが、現在は **Claude実装 + Astraレビュー** を標準構成とする。ただしdevelopment-managementは管理基盤のため、クレジット効率よりClaude + Astraの二重レビューを優先する。
 
 ### 現行の安全境界
 
