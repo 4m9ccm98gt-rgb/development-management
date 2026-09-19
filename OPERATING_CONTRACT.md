@@ -2,107 +2,93 @@
 
 この文書は、Development運用で常時適用する最小契約です。
 
-目的は、**実装品質を保ちながら、ChatGPT / Codex / Claude / GitHub Actions の利用制限で開発全体を止めないこと**です。
+目的は、**DCCを中心にAI開発を高速に回しつつ、実機確認・candidate SHA・BUILD対象の一致を崩さないこと**です。
 
-## 1. 絶対に残す安全条件
+## 1. 標準ルート
 
-- ユーザー実機確認前に本番配布しない。
-- 実機確認でNGになったcandidateを本番へ進めない。
-- ユーザーが確認したcandidateを完全SHAで特定できるようにする。
-- 最終的に **confirmed SHA == pushed SHA == BUILD対象SHA** を成立させる。
-- candidate確認開始時と正式BUILD時は tracked clean を確認する。
-- 本番データ、秘密情報、ローカル設定、共有先を不用意に変更しない。
-- force push / 履歴破壊 / 無断rebaseで承認済みSHAを置き換えない。
-- ユーザーが Codex / Claude 等の特定エージェントを指定した場合、その指定作業では指定エージェントを維持する。
-
-## 2. A — ChatGPT fast path
-
-通常の開発はこの経路を第一候補とします。
+通常の開発は Development Control Center の **AI開発** を使います。
 
 ```text
 仕様・要望
-→ ChatGPTがGitHub上で既存コードを調査
-→ 実装 + 必要なテスト追加
-→ 利用可能な自動検証
-→ GitHub candidate SHA確定
-→ ユーザーが正式同期入口でローカルへ反映
-→ ユーザー実機確認
-→ OKなら正式BUILD / 配布
-```
-
-- GitHub Actionsは**補助検証**です。Actions greenをcandidate完了の必須条件にしません。
-- Actionsが利用不能でも、実行できる検証結果と未実施項目を明示すれば開発を継続できます。
-- 自動テストを実行できる環境が無い場合、実行していないテストを「確認済み」と扱いません。
-- 軽い修正なら、実機NG後もAで修正を続けて構いません。
-- GitHub→同期→実機確認の往復が面倒、またはWindowsローカルでの連続デバッグが適切とユーザーが判断したらBへ切り替えます。
-
-## 3. B — Debug escape path
-
-ユーザーが「Codexでやって」「Claudeに渡して」等と明示した場合、その指定エージェントがWindowsローカルrepoでデバッグを完結させる経路です。
-
-```text
-B開始時に local HEAD / expected origin / branch を確認
-→ ローカルworking treeで調査・実装・targeted test・必要なregression・デバッグ
-→ 自動テスト上で完成
+→ Claudeが隔離worktreeで実装
+→ 独立テスト
+→ GPT-6 Astraがread-onlyレビュー
+→ 必要ならClaudeが修正
 → local candidate commit
-→ tracked clean + candidate SHA確認 + 差分レビュー
-→ ユーザーがそのlocal candidateを実機確認
-→ NGならローカル修正へ戻る
-→ OKなら同じcandidate SHAをfast-forwardでpush
+→ DCCがcandidate SHAを取得
+→ ユーザー確認後だけlocal expected branchへfast-forward
+→ RUN_DEVでユーザー実機確認
+→ OKなら同じSHAを正式push
 → confirmed SHA == pushed SHA を確認
-→ 正式BUILD / 配布
+→ BUILD
+→ UPDATE / DEPLOY
 ```
 
-### B開始時
+GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex / Claudeへ指示文を渡す旧Bデバッグ入口は標準運用ではありません。
 
-- `git fetch` 後、作業開始の土台が想定originと一致していることを確認する。
-- origin側が想定外に進んでいる場合は、forceで押し切らず停止する。
-- 本番データ・秘密情報・Git管理外業務データは開発対象に混ぜない。
+## 2. 絶対に残す安全条件
 
-### Bのデバッグ中
+- ユーザー実機確認前に本番配布しない。
+- 実機確認でNGになったcandidateを本番へ進めない。
+- candidateは完全40桁SHAで特定する。
+- 最終的に **confirmed SHA == pushed SHA == BUILD対象SHA** を成立させる。
+- candidate確認開始時と正式BUILD時はtracked cleanを確認する。
+- 本番データ、秘密情報、ローカル設定、共有先、Git管理外業務データを不用意に変更しない。
+- force push / reset --hard / stash / 無断rebase等で既存作業や承認済みSHAを壊さない。
+- remoteが想定外に進んだ場合はforceで押し切らず停止する。
 
-- 修正ごとのpush、GitHub Actions待ち、GitHub→Windowsの再同期は必須にしない。
-- working treeで修正とテストを繰り返してよい。
-- 復旧目的の途中local commitは許可するが、毎反復のcommitを義務化しない。
+## 3. AI Orchestrator
 
-### local candidate確定時
+AI Orchestrator v0.2の標準役割は次です。
 
-- candidate commit後に tracked clean を確認する。
-- 直前の既知良好SHAからcandidateまでの**実差分を一度レビュー**する。`diff --stat`だけでなく、一時デバッグコード、仮パス、閾値変更、不要ファイル等が残っていないかを見る。
-- ユーザー実機確認の対象SHAを明示する。
+- 実装・修正: Claude
+- 自動テスト: 対象repoの独立テストコマンド
+- 独立レビュー: GPT-6 Astra / read-only
+- 最大ラウンド: 2
+- 作業場所: source repoではなく一時detached worktree
+- 完了点: local candidate
+- 自動では行わないもの: push / BUILD / UPDATE / DEPLOY
 
-### ユーザーOK後
+Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。
 
-- OK後にamend / rebase / squash等でcandidate SHAを変更しない。
-- pushはfast-forward前提。remoteが動いていたら停止して再評価する。
-- push後、pushed SHAがユーザー承認SHAと一致することを確認する。
+## 4. DCCでのcandidate受け渡し
 
-## 4. 実機確認とBUILD
+- DCCはOrchestratorのmachine-readable resultからcandidate SHAを取得する。
+- console文字列のスクレイピングをcandidate確定根拠にしない。
+- candidateを正式ローカルbranchへ反映する前にユーザー確認を挟む。
+- local fast-forward時はbase SHA、current HEAD、branch、origin、tracked clean、candidate ancestryを再確認する。
+- fast-forwardできない場合は自動修復せず停止する。
+- candidate反映後はRUN_DEVで実機確認する。
 
-- ユーザー実機確認はcandidateの業務上の正しさ、GUI、実紙、LAN、外部サービス等を確認する最終安全境界です。
-- 正式BUILD前に **HEAD == confirmed SHA** と tracked clean を確認します。
-- Nuitka / PyInstaller / .NET/WPF等、BUILDで配布実体が変わるアプリは、完成binaryを配布前に少なくとも起動確認し、変更内容に応じて該当機能を確認します。
-- ソース実行と配布binaryの確認を同一視しません。
+## 5. 実機確認 / push / BUILD
 
-## 5. GitHub Actions
+- RUN_DEVで業務上の正しさ、GUI、印刷、LAN、外部サービス等を必要範囲で確認する。
+- 実機確認OK後にcandidate SHAを変更しない。
+- pushはfast-forward前提とし、push後にremote SHA == confirmed SHAを確認する。
+- 正式BUILD前にHEAD == confirmed SHAかつtracked cleanを確認する。
+- Nuitka / PyInstaller / .NET/WPF等、BUILDで配布実体が変わる場合は完成binaryも配布前に確認する。
+- ソース実行確認と配布binary確認を同一視しない。
 
-- Actionsは独立環境の補助検証として利用できます。
-- Actionsの利用制限・待ち時間だけを理由に通常開発を停止しません。
-- ローカルで同等の決定的テストを完了しているBでは、同じテストのActions再実行を完了条件にしません。
-- Actions自体、依存関係、共通CI基盤等を変更した場合は、その変更に必要なActions確認を行います。
+## 6. GitHub / CIの位置づけ
 
-## 6. 読み込み・判断コスト
+- GitHub / PR / CI表示は観測・同期・SHA確認のために使う。
+- GitHub Actionsは補助検証であり、Actions greenだけを実機確認の代わりにしない。
+- 同じ決定的テストを、理由なくローカルとActionsで重複実行しない。
+- 実プリンター、実共有サーバー、live外部接続、実HDD等は必要なときだけ実機確認する。
 
-- T0〜T3の必須分類は使用しません。
-- 毎ターンこの契約を再読・再報告する必要はありません。
-- この契約を明示的に再確認する主な境界は、**A→B切替、candidate確定、push、BUILD、deploy / update、本番反映**です。
-- 調査は依頼と変更に必要な範囲を読むことを原則とし、理由のない全repo・全文書読み込みや同一テストの重複実行を行いません。
+## 7. 読み込み・判断コスト
 
-## 7. 他文書との関係
+- T0〜T3の必須分類は使用しない。
+- 新しいチャットという理由だけで全Development文書を読み直さない。
+- 通常は本書、対象repoのREADME、変更箇所と直接のconsumer / producerだけを読む。
+- 毎ターンcontractを再報告しない。
+- 大きなスコープ変更、不可逆操作、本番影響が新たに必要になった場合だけ追加判断を求める。
+
+## 8. 他文書との関係
 
 - 本書がDevelopment運用の正本です。
-- `AGENT_EFFICIENCY_POLICY.md` は旧運用の履歴・参考資料であり、必読ポリシーではありません。
-- `AI_STARTUP.md` / `AI_OPERATING_MANUAL.md` / `STARTUP_HANDOFF_POLICY.md` / `AGENTS.md` は本書を上書きしません。
+- `AI_OPERATING_MANUAL.md` / `AI_CHECKLIST.md` / `AGENTS.md` / `AI_STARTUP.md` は補助資料です。
+- `AGENT_EFFICIENCY_POLICY.md` は旧T0〜T3運用のLegacy Referenceです。
 - 詳細文書と本書が競合する場合は本書を優先します。
 
-運用の安全性は、工程数やAIの確認回数ではなく、**確認対象のSHA、必要な検証、ユーザー実機確認、BUILD対象の一致**で担保します。
+運用の安全性は、工程数ではなく、**candidate SHA、独立テスト、独立レビュー、ユーザー実機確認、confirmed/pushed/BUILD SHA一致**で担保します。
