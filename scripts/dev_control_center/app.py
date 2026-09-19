@@ -44,9 +44,122 @@ TYPES_PATH = DM_ROOT / "scripts" / "repo_types.toml"
 BRANCHES_PATH = DM_ROOT / "scripts" / "dev_control_center_repos.toml"
 LAUNCHER_PATH = DM_ROOT / "DEV_CONTROL_CENTER.pyw"
 
+DARK_BG = "#0f1419"
+DARK_SURFACE = "#171c22"
+DARK_FIELD = "#20262d"
+DARK_BORDER = "#30363d"
+DARK_FG = "#e6edf3"
+DARK_MUTED = "#9ba7b4"
+DARK_DISABLED_BG = "#1a2026"
+DARK_DISABLED_FG = "#6e7681"
+DARK_ACCENT = "#2f81f7"
+DARK_SELECTION = "#1f6feb"
+
+
+def configure_dark_theme(master: tk.Tk) -> None:
+    """Apply the DCC dark palette to ttk and the root window."""
+    master.configure(background=DARK_BG)
+    style = ttk.Style(master)
+    style.theme_use("clam")
+
+    style.configure(".", background=DARK_BG, foreground=DARK_FG)
+    style.configure("TFrame", background=DARK_BG)
+    style.configure("TLabel", background=DARK_BG, foreground=DARK_FG)
+    style.configure(
+        "TLabelframe",
+        background=DARK_BG,
+        foreground=DARK_FG,
+        bordercolor=DARK_BORDER,
+        lightcolor=DARK_BORDER,
+        darkcolor=DARK_BORDER,
+        relief="solid",
+    )
+    style.configure(
+        "TLabelframe.Label",
+        background=DARK_BG,
+        foreground=DARK_FG,
+    )
+    style.configure(
+        "TButton",
+        background=DARK_FIELD,
+        foreground=DARK_FG,
+        bordercolor=DARK_BORDER,
+        lightcolor=DARK_BORDER,
+        darkcolor=DARK_BORDER,
+        focuscolor=DARK_FIELD,
+        padding=(8, 5),
+    )
+    style.map(
+        "TButton",
+        background=[
+            ("disabled", DARK_DISABLED_BG),
+            ("pressed", DARK_SELECTION),
+            ("active", DARK_ACCENT),
+        ],
+        foreground=[
+            ("disabled", DARK_DISABLED_FG),
+            ("pressed", "#ffffff"),
+            ("active", "#ffffff"),
+        ],
+        bordercolor=[
+            ("disabled", DARK_BORDER),
+            ("active", DARK_ACCENT),
+        ],
+    )
+    style.configure(
+        "TEntry",
+        fieldbackground=DARK_FIELD,
+        foreground=DARK_FG,
+        insertcolor=DARK_FG,
+        bordercolor=DARK_BORDER,
+        lightcolor=DARK_BORDER,
+        darkcolor=DARK_BORDER,
+        padding=(6, 4),
+    )
+    style.map(
+        "TEntry",
+        fieldbackground=[
+            ("disabled", DARK_DISABLED_BG),
+            ("readonly", DARK_FIELD),
+        ],
+        foreground=[("disabled", DARK_DISABLED_FG)],
+        bordercolor=[("focus", DARK_ACCENT)],
+    )
+
+
+def configure_dark_listbox(widget: tk.Listbox) -> None:
+    widget.configure(
+        background=DARK_SURFACE,
+        foreground=DARK_FG,
+        selectbackground=DARK_SELECTION,
+        selectforeground="#ffffff",
+        highlightbackground=DARK_BORDER,
+        highlightcolor=DARK_ACCENT,
+        highlightthickness=1,
+        relief="flat",
+        borderwidth=0,
+        activestyle="none",
+    )
+
+
+def configure_dark_text(widget: tk.Text) -> None:
+    widget.configure(
+        background=DARK_SURFACE,
+        foreground=DARK_FG,
+        insertbackground=DARK_FG,
+        selectbackground=DARK_SELECTION,
+        selectforeground="#ffffff",
+        highlightbackground=DARK_BORDER,
+        highlightcolor=DARK_ACCENT,
+        highlightthickness=1,
+        relief="flat",
+        borderwidth=0,
+    )
+
 
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
+        configure_dark_theme(master)
         super().__init__(master, padding=14)
         self.master = master
         self.all_definitions = load_repo_definitions(TYPES_PATH, BRANCHES_PATH)
@@ -110,6 +223,7 @@ class App(ttk.Frame):
         left.rowconfigure(1, weight=1)
         ttk.Label(left, text="Managed Apps", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.repo_list = tk.Listbox(left, width=36, height=17, exportselection=False)
+        configure_dark_listbox(self.repo_list)
         self.repo_list.grid(row=1, column=0, sticky="nsew")
         self.repo_list.bind("<<ListboxSelect>>", lambda _e: self._select_repo())
         for item in self.definitions:
@@ -126,6 +240,7 @@ class App(ttk.Frame):
         new_box.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         ttk.Label(new_box, textvariable=self.remote_status_var, wraplength=300).pack(anchor="w")
         self.new_repo_list = tk.Listbox(new_box, width=34, height=6, exportselection=False)
+        configure_dark_listbox(self.new_repo_list)
         self.new_repo_list.pack(fill="x", pady=(6, 6))
         new_buttons = ttk.Frame(new_box)
         new_buttons.pack(fill="x")
@@ -211,6 +326,7 @@ class App(ttk.Frame):
         ai_box.columnconfigure(1, weight=1)
         ttk.Label(ai_box, text="AI依頼", width=14).grid(row=0, column=0, sticky="nw")
         self.ai_task = tk.Text(ai_box, height=3, wrap="word")
+        configure_dark_text(self.ai_task)
         self.ai_task.grid(row=0, column=1, columnspan=2, sticky="ew")
         ttk.Label(ai_box, text="テスト", width=14).grid(row=1, column=0, sticky="w", pady=(7, 0))
         ttk.Entry(ai_box, textvariable=self.ai_test_var).grid(
@@ -249,6 +365,7 @@ class App(ttk.Frame):
         log_box.columnconfigure(0, weight=1)
         log_box.rowconfigure(0, weight=1)
         self.log = tk.Text(log_box, height=8, state="disabled", wrap="word")
+        configure_dark_text(self.log)
         self.log.grid(row=0, column=0, sticky="nsew")
         ttk.Label(right, textvariable=self.banner_var).grid(row=8, column=0, sticky="w", pady=(8, 0))
 
