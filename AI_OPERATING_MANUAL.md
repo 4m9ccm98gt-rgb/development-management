@@ -10,7 +10,9 @@
 AI依頼
 → Claude実装
 → Tests
-→ GPT-6 Astra read-onlyレビュー
+→ Review
+   - 通常repo: GPT-6 Astra
+   - development-management: Claude + GPT-6 Astra
 → 必要ならClaude修正
 → local candidate
 → RUN_DEV実機確認
@@ -32,9 +34,9 @@ Claudeは隔離worktree内で実装・修正を担当します。
 - 指定タスクの範囲を最小限に保つ
 - テスト失敗またはAstra指摘があれば修正する
 
-## 3. Astraの役割
+## 3. レビューの役割
 
-GPT-6 Astraは独立reviewerです。
+通常repoではGPT-6 Astraが独立reviewerです。development-managementでは、Claudeもplan modeでread-onlyレビューを行い、Claude + Astraの両方のapproveを必須にします。
 
 - read-only
 - 実装agentと役割を分離する
@@ -59,7 +61,7 @@ candidate作成前に以下を満たします。
 - source repoがtracked clean
 - agentがcommit / branch変更していない
 - tests pass
-- Astra approve
+- 必要なreviewerがすべてapprove（通常repoはAstra、development-managementはClaude + Astra）
 - review対象diffとcandidate作成前diffが一致
 
 candidateはlocal branch + 完全40桁SHAで識別します。
@@ -82,7 +84,7 @@ candidate成功後も自動では正式branchへ反映しません。DCCがユ�
 
 ## 8. 使用量と役割分担
 
-現在の標準構成は **Claude実装 + Astraレビュー** です。
+現在の標準構成は **Claude実装 + Astraレビュー** です。例外としてdevelopment-managementは **Claudeレビュー + Astraレビューの二重レビュー** を必須とします。
 
 2026-09-19の同一smoke taskでは、ユーザー観測でClaude 1% / Codex(Astra) 1%の利用表示でした。これは固定コスト保証ではなく、役割反転前より軽い傾向を確認した実測です。
 
