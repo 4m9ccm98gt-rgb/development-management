@@ -12,7 +12,9 @@
 仕様・要望
 → Claudeが隔離worktreeで実装
 → 独立テスト
-→ GPT-6 Astraがread-onlyレビュー
+→ レビュー
+   - 通常repo: GPT-6 Astra read-onlyレビュー
+   - development-management: Claudeレビュー + GPT-6 Astraレビュー
 → 必要ならClaudeが修正
 → local candidate commit
 → DCCがcandidate SHAを取得
@@ -43,13 +45,14 @@ AI Orchestrator v0.2の標準役割は次です。
 
 - 実装・修正: Claude
 - 自動テスト: 対象repoの独立テストコマンド
-- 独立レビュー: GPT-6 Astra / read-only
+- 通常repoレビュー: GPT-6 Astra / read-only
+- development-managementレビュー: Claude / plan-mode read-only + GPT-6 Astra / read-only の両方必須
 - 最大ラウンド: 2
 - 作業場所: source repoではなく一時detached worktree
 - 完了点: local candidate
 - 自動では行わないもの: push / BUILD / UPDATE / DEPLOY
 
-Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。
+Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。development-managementではClaudeとAstraの両レビューがapproveした場合だけcandidate化し、どちらかがchanges_requestedなら指摘をまとめてClaude実装へ戻します。
 
 ## 4. DCCでのcandidate受け渡し
 
@@ -91,4 +94,4 @@ Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時�
 - `AGENT_EFFICIENCY_POLICY.md` は旧T0〜T3運用のLegacy Referenceです。
 - 詳細文書と本書が競合する場合は本書を優先します。
 
-運用の安全性は、工程数ではなく、**candidate SHA、独立テスト、独立レビュー、ユーザー実機確認、confirmed/pushed/BUILD SHA一致**で担保します。
+運用の安全性は、工程数ではなく、**candidate SHA、独立テスト、必要なレビュー、ユーザー実機確認、confirmed/pushed/BUILD SHA一致**で担保します。development-managementは管理基盤そのものなので、クレジット効率より二重レビューを優先します。
