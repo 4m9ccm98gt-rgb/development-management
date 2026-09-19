@@ -61,6 +61,13 @@
 - force push / reset --hard / stash / 無断rebase等で既存作業や承認済みSHAを壊さない。
 - remoteが想定外に進んだ場合はforceで押し切らず停止する。
 
+### 手動PowerShell貼り付け
+
+- ユーザーへ複数行PowerShellを貼り付け実行してもらう場合、Claude / Codex起動、push、sync等の重要コマンドをコードブロックの最終行に置かない。
+- PowerShellでは貼り付け末尾の改行が無いと最終行だけ未実行のまま残る場合があるため、重要処理の後ろに `Write-Host "DONE"` 等の無害な末尾行を置く。
+- これにより「次工程が実行中に見えるが実際はEnter待ち」という状態を避ける。
+- この規則は手動貼り付け用PowerShellにだけ適用する。AI Orchestratorは `claude.cmd` / `codex.cmd` を子プロセスとして直接起動するため、このEnter待ち対策のためにOrchestrator本体を変更しない。
+
 ## 3. AI Orchestrator
 
 AI Orchestrator v0.2の標準役割は次です。
