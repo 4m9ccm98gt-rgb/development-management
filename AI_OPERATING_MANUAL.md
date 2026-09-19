@@ -4,87 +4,95 @@
 
 ## 1. 基本方針
 
-運用は次の2経路だけを基本とします。
+日常開発は Development Control Center の **AI開発** を標準とします。
 
-- **A — ChatGPT fast path**: GitHub上で調査・実装・テスト追加・candidate作成まで進め、ユーザーが同期して実機確認する。
-- **B — Debug escape path**: ユーザーが指定したCodex / Claude等がWindowsローカルrepoで完成までデバッグし、local candidate commitをユーザー確認後にpushする。
+```text
+AI依頼
+→ Claude実装
+→ Tests
+→ GPT-6 Astra read-onlyレビュー
+→ 必要ならClaude修正
+→ local candidate
+→ RUN_DEV実機確認
+→ OK後に同じSHAをpush
+→ BUILD
+→ UPDATE / DEPLOY
+```
 
-Actionsは補助検証であり、通常の完了条件へ固定しません。
+旧A/Bルートは通常UIから外し、GitHub / PR / CIは観測情報として扱います。
 
-## 2. ChatGPTの役割
+## 2. Claudeの役割
 
-Aでは、利用可能なGitHub機能を使って次を行えます。
+Claudeは隔離worktree内で実装・修正を担当します。
 
-- 必要範囲のコード・仕様調査
-- 実装
-- テスト追加・修正
-- branch / commit / push / PR等のGitHub操作
-- 実差分レビュー
-- candidate SHAの確定
-- ユーザー実機確認項目の整理
+- source repoへ直接commitしない
+- branchを変更しない
+- pushしない
+- BUILD / UPDATE / DEPLOYしない
+- 指定タスクの範囲を最小限に保つ
+- テスト失敗またはAstra指摘があれば修正する
 
-実行できない自動テストを実施済みとは扱いません。Actionsが利用不能なら、その事実と未確認項目を明示して継続します。
+## 3. Astraの役割
 
-## 3. Bへ切り替えるとき
+GPT-6 Astraは独立reviewerです。
 
-Bは安全性の上位ティアではなく、**デバッグ摩擦を減らすための別経路**です。
-
-ユーザーが「Codexで」「Claudeに渡して」等と指定したら、その指定された作業でBへ切り替えます。
-
-- B開始時に `git fetch` を行い、local HEAD / expected origin / branchの土台を確認する。
-- origin側が想定外に進んでいたらforceで解決せず停止する。
-- working treeで調査・修正・targeted test・必要なregressionを繰り返してよい。
-- 修正ごとのpush / Actions待ち / GitHub→Windows再同期は不要。
-- 完成時にlocal candidate commitを作り、その後tracked cleanを確認する。
-- 既知良好SHAからcandidateまでの実差分を一度レビューする。
-- ユーザーがそのSHAを実機確認し、NGなら新candidateを作る。
-- OK後は承認SHAを変えず、fast-forwardでpushする。
-
-特定エージェント指定を別エージェントへ勝手に変更しません。
+- read-only
+- 実装agentと役割を分離する
+- diff / task / test resultを確認する
+- structured JSONでapprove / changes_requestedを返す
+- approveとfindingが同居する矛盾出力はfail-close
+- review後にworktree差分が変わった場合はcandidate化しない
 
 ## 4. テスト
 
-テスト量はティア番号ではなく、変更内容と検出したい失敗で決めます。
+- DCCのテスト欄に対象repoの独立テストコマンドを指定する。
+- DCCはrepo構成から保守的な候補を提案できるが、必要ならユーザーが編集する。
+- 原則としてテスト必須。意図的な例外だけ `--allow-no-tests` を使う。
+- targeted / regression / integration等は変更内容に応じて選ぶ。
+- 同じ内容を安心のためだけに重複実行しない。
 
-- 実装中は変更箇所に対応するtargeted testを優先する。
-- 共通処理や広い影響がある場合は必要なregressionを追加する。
-- 同じ対象・同じ環境・同じ内容のテストを安心のためだけに重複実行しない。
-- `compileall`、unit test、integration test、build validation、実機確認は役割が異なるため、必要なものを選ぶ。
-- GUI、実紙、printer、LAN、外部サービス、実HDD等は必要に応じてユーザー実機確認へ残す。
+## 5. candidate
 
-## 5. Gitとcandidate
+candidate作成前に以下を満たします。
 
-- Git上の正式ソースを基準とし、既存変更を保護する。
-- candidateは完全SHAで特定する。
-- candidate確認開始時は tracked clean を確認する。
-- BのユーザーOK後にamend / rebase / squashでSHAを変えない。
-- push時にremoteが進んでいたらforceせず停止する。
-- **confirmed SHA == pushed SHA == BUILD対象SHA** を守る。
+- source repoのbranch / HEAD / originが開始時から変わっていない
+- source repoがtracked clean
+- agentがcommit / branch変更していない
+- tests pass
+- Astra approve
+- review対象diffとcandidate作成前diffが一致
 
-AではGitHub candidateを正式同期入口からWindowsへ反映します。Bではlocal candidateをその場で確認するため、GitHub→Windowsのcandidate同期工程は不要です。
+candidateはlocal branch + 完全40桁SHAで識別します。
 
-## 6. BUILD / deploy / update
+## 6. DCCへの受け渡し
 
-- 実機確認前に本番配布しない。
-- 正式BUILD時はHEADがconfirmed SHAで、tracked cleanであることを確認する。
-- Nuitka / PyInstaller / .NET/WPF等、BUILDによって配布実体が変わる場合は、完成binaryを配布前に少なくとも起動確認する。
-- 本番データ・秘密情報・ローカル設定・共有先を不用意に変更しない。
-- 安全な既存 `*_CLICK_ME.cmd` / `UPDATE_*` 等がある場合はそれを利用する。
+Orchestratorは `--result-file` でmachine-readable JSONを書き、DCCはそこからcandidate SHAとusage countを受け取ります。
 
-## 7. スコープと読み込み
+candidate成功後も自動では正式branchへ反映しません。DCCがユーザー確認を出し、YESの場合だけ安全条件を再確認してlocal expected branchへfast-forwardします。
 
-- 新しいチャットという理由だけで長文書一式を読み直さない。
-- 今回の目的、変更箇所、そのconsumer / producer、安全上必要な資料だけを読む。
-- 大きなスコープ変更、不可逆操作、本番影響が新たに必要になった場合はユーザー判断を求める。
-- 依頼範囲内の通常調査・実装・テストは、工程名ごとの再承認を挟まず進めてよい。
+## 7. 実機確認後
 
-## 8. 記録
+- RUN_DEVで実機確認する。
+- NGなら同じSHAを本番へ進めない。
+- OK後にcandidate SHAをamend / rebase / squashしない。
+- pushはfast-forward前提。
+- pushed SHA == confirmed SHAを確認する。
+- BUILD前にHEAD == confirmed SHAかつtracked cleanを確認する。
+- UPDATE / DEPLOYは最後に行う。
 
-将来の判断に本当に必要な内容だけをGitへ残します。
+## 8. 使用量と役割分担
 
-- 重要な設計・運用判断
-- 現在の未解決課題
+現在の標準構成は **Claude実装 + Astraレビュー** です。
+
+2026-09-19の同一smoke taskでは、ユーザー観測でClaude 1% / Codex(Astra) 1%の利用表示でした。これは固定コスト保証ではなく、役割反転前より軽い傾向を確認した実測です。
+
+## 9. 記録
+
+Gitへ残すのは将来の判断に必要な情報だけです。
+
+- 長期的な設計・運用判断
 - 再発防止に価値があるLessons Learned
-- candidate SHAと、必要なら検証結果
+- 現在の未解決課題
+- 必要なcandidate / release情報
 
-進行表や同じ状態を複数文書へ重複転記しません。
+進行状況の重複転記は避けます。
