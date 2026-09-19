@@ -293,7 +293,7 @@ class App(ttk.Frame):
 
         ai_box = ttk.LabelFrame(
             right,
-            text="AI開発 — Claude実装 → Tests → Astraレビュー → local candidate",
+            text="AI開発 — Claude実装 → Tests → Review → local candidate",
             padding=12,
         )
         ai_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
@@ -319,7 +319,7 @@ class App(ttk.Frame):
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(
             ai_box,
-            text="成功時もpush / BUILD / UPDATEは行いません。candidateをローカル適用する前に確認します。",
+            text="development-managementはClaude + Astraの両レビュー必須。成功時もpush / BUILD / UPDATEは行いません。",
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         lifecycle = ttk.LabelFrame(right, text="実機確認・配布", padding=10)
@@ -758,7 +758,12 @@ class App(ttk.Frame):
             "base_sha": self.repo_state.head.lower(),
         }
         self.active_process = (process, self.current.name, "ai_orchestrator")
-        self.ai_status_var.set("実行中 — Claude実装 → Tests → Astraレビュー")
+        review_label = (
+            "Claudeレビュー + Astraレビュー"
+            if self.current.name == "development-management"
+            else "Astraレビュー"
+        )
+        self.ai_status_var.set(f"実行中 — Claude実装 → Tests → {review_label}")
         self._log(f"{self.current.name}: AI Orchestrator開始")
         self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
         self._set_button_states()

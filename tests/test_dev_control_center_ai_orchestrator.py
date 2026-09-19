@@ -16,11 +16,15 @@ from tools.ai_orchestrator.orchestrator import (
     _agent_env,
     _candidate_branch,
     _claude_implementation_command,
+    _claude_review_command,
     _codex_review_command,
     _diff_for_review,
     _enforce_billing_guard,
     _extract_json_object,
+    _parse_claude_review,
     _parse_codex_review,
+    _requires_dual_review,
+    _reviews_approved,
     _read_prompt,
     _review_fingerprint,
     _slugify,
@@ -36,6 +40,20 @@ class ReviewParsingTests(unittest.TestCase):
 ```"""
         )
         self.assertEqual(value["verdict"], "approve")
+
+    def test_parses_claude_cli_json_review(self):
+        review = _parse_claude_review(
+            json.dumps(
+                {
+                    "is_error": False,
+                    "result": json.dumps(
+                        {"verdict": "approve", "summary": "clean", "findings": []}
+                    ),
+                }
+            )
+        )
+        self.assertTrue(review.approved)
+        self.assertEqual(review.summary, "clean")
 
     def test_parses_codex_json_review(self):
         review = _parse_codex_review(
@@ -83,6 +101,17 @@ class RoleBoundaryTests(unittest.TestCase):
         "tools.ai_orchestrator.orchestrator._resolved_command",
         side_effect=lambda name: [name],
     )
+    def test_claude_review_uses_plan_mode(self, _mock):
+        command = _claude_review_command()
+        self.assertEqual(command[0], "claude")
+        self.assertIn("--permission-mode", command)
+        self.assertEqual(command[command.index("--permission-mode") + 1], "plan")
+        self.assertNotIn("acceptEdits", command)
+
+    @mock.patch(
+        "tools.ai_orchestrator.orchestrator._resolved_command",
+        side_effect=lambda name: [name],
+    )
     def test_codex_is_read_only_astra_reviewer(self, _mock):
         command = _codex_review_command(DEFAULT_REVIEW_MODEL)
         self.assertEqual(command[0], "codex")
@@ -93,6 +122,28 @@ class RoleBoundaryTests(unittest.TestCase):
 
     def test_default_round_limit_is_two(self):
         self.assertEqual(DEFAULT_MAX_ROUNDS, 2)
+
+    def test_development_management_requires_dual_review(self):
+        self.assertTrue(
+            _requires_dual_review(Path(r"C:\repos\development-management"))
+        )
+        self.assertFalse(
+            _requires_dual_review(Path(r"C:\repos\next-day-setup"))
+        )
+
+    def test_dual_review_requires_both_approvals(self):
+        from tools.ai_orchestrator.orchestrator import Review
+
+        approved = Review("approve", "ok", ())
+        rejected = Review(
+            "changes_requested",
+            "fix",
+            ({"severity": "HIGH"},),
+        )
+        self.assertTrue(_reviews_approved(approved, approved))
+        self.assertFalse(_reviews_approved(rejected, approved))
+        self.assertFalse(_reviews_approved(approved, rejected))
+        self.assertTrue(_reviews_approved(None, approved))
 
     def test_implementation_prompt_names_codex_review(self):
         text = _read_prompt(

@@ -511,7 +511,8 @@ class UiLifecycleContractTests(unittest.TestCase):
         build_start = text.index("    def _build(self) -> None:")
         select_start = text.index("    def _select_repo(self) -> None:", build_start)
         build = text[build_start:select_start]
-        self.assertIn('text="AI開発 — Claude実装 → Tests → Astraレビュー → local candidate"', build)
+        self.assertIn('text="AI開発 — Claude実装 → Tests → Review → local candidate"', build)
+        self.assertIn("development-managementはClaude + Astraの両レビュー必須", build)
         self.assertIn('self.ai_task = tk.Text(ai_box, height=8, wrap="word")', build)
         self.assertIn('text="全状態更新"', build)
         self.assertIn('text="実機確認・配布"', build)
@@ -526,7 +527,8 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertIn("def launch_ai_orchestrator", text)
         self.assertIn('"--result-file"', text)
         self.assertIn("apply_local_candidate(", text)
-        self.assertIn("Claude実装 → Tests → Astraレビュー", text)
+        self.assertIn("Claude実装 → Tests → Review", text)
+        self.assertIn('"Claudeレビュー + Astraレビュー"', text)
         self.assertIn("push / BUILD / UPDATEは行いません", text)
 
     def test_every_finished_action_refreshes_local_and_github_state(self):
