@@ -58,9 +58,11 @@ Bでは修正ごとのpush、Actions待ち、再SYNCを必須にしません。
 
 ## AI Development Orchestrator
 
-Codex実装 → 自動テスト → Claude独立レビュー → Codex修正を自動反復し、ローカルcandidateで停止する実験的なv0.1を `tools/ai_orchestrator/` に置いています。
+v0.2は **Claude実装 → 自動テスト → GPT-6 Astra read-onlyレビュー → 必要ならClaude修正** を最大2ラウンドで実行し、ローカルcandidateで停止します。
 
-本番配布・BUILD・UPDATEは自動化しません。詳細は [docs/ai_orchestrator.md](docs/ai_orchestrator.md) を参照してください。
+Development Control Centerから選択repoへAI依頼と独立テストコマンドを渡して起動できます。成功時はDCCがmachine-readable resultから完全40桁candidate SHAを受け取り、確認後だけローカルexpected branchへfast-forwardしてRUN_DEVによる実機確認へ繋げます。
+
+AI処理だけでpush / BUILD / UPDATE / DEPLOYは行いません。詳細は [docs/ai_orchestrator.md](docs/ai_orchestrator.md) を参照してください。
 
 ## 最重要の安全条件
 
