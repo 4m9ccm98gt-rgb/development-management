@@ -33,7 +33,9 @@ Development Control Centerでは **AI開発を標準ルート** とします。
 要望
 → Claudeが隔離worktreeで実装
 → 独立テスト
-→ GPT-6 Astraがread-onlyレビュー
+→ レビュー
+   - 通常repo: GPT-6 Astra
+   - development-management: Claude + GPT-6 Astra
 → 必要ならClaude修正
 → local candidate commit
 → RUN_DEVでユーザー実機確認
@@ -45,7 +47,7 @@ GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex
 
 ## AI Development Orchestrator
 
-v0.2は **Claude実装 → 自動テスト → GPT-6 Astra read-onlyレビュー → 必要ならClaude修正** を最大2ラウンドで実行し、ローカルcandidateで停止します。
+v0.3は **Claude実装 → 自動テスト → レビュー → 必要ならClaude修正** を最大2ラウンドで実行し、ローカルcandidateで停止します。通常repoはGPT-6 Astraレビュー、development-managementだけはClaude plan-mode review + GPT-6 Astra reviewの両方を必須にします。
 
 Development Control Centerから選択repoへAI依頼と独立テストコマンドを渡して起動できます。成功時はDCCがmachine-readable resultから完全40桁candidate SHAを受け取り、確認後だけローカルexpected branchへfast-forwardしてRUN_DEVによる実機確認へ繋げます。
 
