@@ -13,6 +13,7 @@ from scripts.dev_control_center.core import (
     RepoEntrypoints,
     RepoState,
     active_repo_definitions,
+    apply_local_candidate,
     build_debug_handoff_prompt,
     build_new_repo_setup_prompt,
     build_startup_prompt,
@@ -22,6 +23,7 @@ from scripts.dev_control_center.core import (
     list_github_repositories,
     parse_github_repo,
     summarize_ci_state,
+    suggest_test_command,
     unmanaged_github_repositories,
 )
 
@@ -114,6 +116,91 @@ class ValidationTests(unittest.TestCase):
             parse_github_repo("https://github.com/example/demo.git"),
             "example/demo",
         )
+
+
+class LocalAiCandidateTests(unittest.TestCase):
+    def _git(self, root: Path, *args: str) -> str:
+        proc = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    def test_applies_candidate_as_local_fast_forward_without_push(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+            self._git(root, "config", "user.name", "Test")
+            self._git(root, "config", "user.email", "test@example.invalid")
+            self._git(root, "remote", "add", "origin", "https://github.com/example/demo.git")
+
+            target = root / "demo.txt"
+            target.write_text("base\n", encoding="utf-8")
+            self._git(root, "add", "demo.txt")
+            self._git(root, "commit", "-qm", "base")
+            base = self._git(root, "rev-parse", "HEAD")
+
+            self._git(root, "switch", "-qc", "ai-candidate/test")
+            target.write_text("candidate\n", encoding="utf-8")
+            self._git(root, "add", "demo.txt")
+            self._git(root, "commit", "-qm", "candidate")
+            candidate = self._git(root, "rev-parse", "HEAD")
+            self._git(root, "switch", "-q", "main")
+
+            definition = RepoDefinition("demo", "desktop", "main", owner="example")
+            applied = apply_local_candidate(
+                root,
+                definition,
+                base_sha=base,
+                candidate_sha=candidate,
+            )
+            self.assertEqual(applied, candidate)
+            self.assertEqual(self._git(root, "branch", "--show-current"), "main")
+            self.assertEqual(self._git(root, "rev-parse", "HEAD"), candidate)
+            self.assertEqual(self._git(root, "status", "--porcelain"), "")
+
+    def test_rejects_candidate_if_source_head_moved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+            self._git(root, "config", "user.name", "Test")
+            self._git(root, "config", "user.email", "test@example.invalid")
+            self._git(root, "remote", "add", "origin", "https://github.com/example/demo.git")
+            (root / "demo.txt").write_text("base\n", encoding="utf-8")
+            self._git(root, "add", "demo.txt")
+            self._git(root, "commit", "-qm", "base")
+            old_base = self._git(root, "rev-parse", "HEAD")
+            (root / "demo.txt").write_text("moved\n", encoding="utf-8")
+            self._git(root, "add", "demo.txt")
+            self._git(root, "commit", "-qm", "moved")
+            current = self._git(root, "rev-parse", "HEAD")
+            definition = RepoDefinition("demo", "desktop", "main", owner="example")
+            with self.assertRaises(RuntimeError):
+                apply_local_candidate(
+                    root,
+                    definition,
+                    base_sha=old_base,
+                    candidate_sha=current,
+                )
+
+    def test_suggests_pytest_when_repo_has_pytest_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+            self.assertEqual(suggest_test_command(root), "python -m pytest -q")
+
+    def test_suggests_unittest_for_plain_tests_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            self.assertEqual(
+                suggest_test_command(root),
+                "python -m unittest discover -s tests -v",
+            )
 
 
 class GitHubDiscoveryTests(unittest.TestCase):
@@ -399,6 +486,14 @@ class UiLifecycleContractTests(unittest.TestCase):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
         self.assertIn("decide_lifecycle(", text)
         self.assertIn("self._apply_lifecycle_state()", text)
+
+    def test_gui_exposes_ai_orchestrator_with_machine_result_handoff(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("def launch_ai_orchestrator", text)
+        self.assertIn('"--result-file"', text)
+        self.assertIn("apply_local_candidate(", text)
+        self.assertIn("Claude実装 → Tests → Astraレビュー", text)
+        self.assertIn("push / BUILD / UPDATEは行いません", text)
 
     def test_every_finished_action_refreshes_local_and_github_state(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
