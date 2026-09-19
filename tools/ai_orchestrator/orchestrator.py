@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
