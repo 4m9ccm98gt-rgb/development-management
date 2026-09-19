@@ -55,7 +55,6 @@ class App(BaseApp):
 
     def _build(self) -> None:
         super()._build()
-        self.startup_button.configure(text="SETUP / 標準化")
 
     def copy_startup_set(self) -> None:
         if not self.current or not self.entrypoints:
