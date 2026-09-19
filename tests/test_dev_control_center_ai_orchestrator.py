@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from tools.ai_orchestrator.orchestrator import (
+    DEFAULT_MAX_ROUNDS,
+    DEFAULT_REVIEW_MODEL,
     OrchestratorError,
+    _active_api_billing_env,
     _agent_env,
     _candidate_branch,
+    _claude_implementation_command,
+    _codex_review_command,
     _diff_for_review,
+    _enforce_billing_guard,
     _extract_json_object,
-    _parse_review,
+    _parse_codex_review,
     _read_prompt,
     _review_fingerprint,
     _slugify,
@@ -28,59 +36,64 @@ class ReviewParsingTests(unittest.TestCase):
         )
         self.assertEqual(value["verdict"], "approve")
 
-    def test_parses_claude_cli_json_wrapper(self):
-        stdout = json.dumps(
-            {
-                "type": "result",
-                "subtype": "success",
-                "is_error": False,
-                "result": json.dumps(
-                    {"verdict": "approve", "summary": "clean", "findings": []}
-                ),
-            }
+    def test_parses_codex_json_review(self):
+        review = _parse_codex_review(
+            json.dumps(
+                {"verdict": "approve", "summary": "clean", "findings": []}
+            )
         )
-        review = _parse_review(stdout)
         self.assertTrue(review.approved)
         self.assertEqual(review.summary, "clean")
 
     def test_approve_with_findings_fails_closed(self):
-        stdout = json.dumps(
-            {
-                "is_error": False,
-                "result": json.dumps(
+        with self.assertRaises(OrchestratorError):
+            _parse_codex_review(
+                json.dumps(
                     {
                         "verdict": "approve",
                         "summary": "contradictory",
                         "findings": [{"severity": "HIGH"}],
                     }
-                ),
-            }
-        )
-        with self.assertRaises(OrchestratorError):
-            _parse_review(stdout)
+                )
+            )
 
     def test_invalid_verdict_fails_closed(self):
-        stdout = json.dumps(
-            {
-                "is_error": False,
-                "result": json.dumps(
-                    {"verdict": "maybe", "summary": "", "findings": []}
-                ),
-            }
-        )
         with self.assertRaises(OrchestratorError):
-            _parse_review(stdout)
+            _parse_codex_review(
+                json.dumps(
+                    {"verdict": "maybe", "summary": "", "findings": []}
+                )
+            )
 
 
-class SafetyContractTests(unittest.TestCase):
-    def test_agent_env_disables_git_push_without_mutating_repo_config(self):
-        env = _agent_env()
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
-        self.assertEqual(env["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
-        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "disabled://ai-orchestrator")
-        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+class RoleBoundaryTests(unittest.TestCase):
+    @mock.patch(
+        "tools.ai_orchestrator.orchestrator._resolved_command",
+        side_effect=lambda name: [name],
+    )
+    def test_claude_is_implementation_agent_with_edit_permission(self, _mock):
+        command = _claude_implementation_command()
+        self.assertEqual(command[0], "claude")
+        self.assertIn("--permission-mode", command)
+        self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
+        self.assertNotIn("plan", command)
 
-    def test_implementation_prompt_forbids_dangerous_boundaries(self):
+    @mock.patch(
+        "tools.ai_orchestrator.orchestrator._resolved_command",
+        side_effect=lambda name: [name],
+    )
+    def test_codex_is_read_only_astra_reviewer(self, _mock):
+        command = _codex_review_command(DEFAULT_REVIEW_MODEL)
+        self.assertEqual(command[0], "codex")
+        self.assertIn("--sandbox", command)
+        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
+        self.assertIn("-m", command)
+        self.assertEqual(command[command.index("-m") + 1], "gpt-6-astra")
+
+    def test_default_round_limit_is_two(self):
+        self.assertEqual(DEFAULT_MAX_ROUNDS, 2)
+
+    def test_implementation_prompt_names_codex_review(self):
         text = _read_prompt(
             "implement.md",
             {
@@ -93,6 +106,7 @@ class SafetyContractTests(unittest.TestCase):
         self.assertIn("Do NOT run BUILD", text)
         self.assertIn("Do NOT access or modify shared folders", text)
         self.assertIn("isolated Git worktree", text)
+        self.assertIn("Codex/Astra review", text)
 
     def test_review_prompt_is_read_only_and_structured(self):
         text = _read_prompt(
@@ -108,6 +122,41 @@ class SafetyContractTests(unittest.TestCase):
         self.assertIn("Review only", text)
         self.assertIn("Do NOT edit/write files", text)
         self.assertIn('"verdict": "approve" | "changes_requested"', text)
+
+
+class BillingGuardTests(unittest.TestCase):
+    def test_billing_guard_passes_without_api_env(self):
+        clean = {key: value for key, value in os.environ.items() if key not in {
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY",
+        }}
+        with mock.patch.dict(os.environ, clean, clear=True):
+            self.assertEqual(_active_api_billing_env(), ())
+            self.assertEqual(_enforce_billing_guard(False), ())
+
+    def test_billing_guard_blocks_api_key_by_default(self):
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=True):
+            with self.assertRaises(OrchestratorError):
+                _enforce_billing_guard(False)
+
+    def test_billing_guard_can_be_explicitly_overridden(self):
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "secret"}, clear=True):
+            self.assertEqual(
+                _enforce_billing_guard(True),
+                ("ANTHROPIC_API_KEY",),
+            )
+
+
+class SafetyContractTests(unittest.TestCase):
+    def test_agent_env_disables_git_push_without_mutating_repo_config(self):
+        env = _agent_env()
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "disabled://ai-orchestrator")
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
 
     def test_candidate_branch_is_unique_and_sanitized(self):
         branch = _candidate_branch("日本語 task / unsafe chars", "20260918-220000")
