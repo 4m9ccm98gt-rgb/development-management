@@ -21,9 +21,7 @@ from .core import (
     RepoDefinition,
     active_repo_definitions,
     apply_local_candidate,
-    build_debug_handoff_prompt,
-    build_new_repo_setup_prompt,
-    build_startup_prompt,
+    build_new_repo_registration_task,
     candidate_sha_is_valid,
     choice_text,
     clone_new_repository,
@@ -548,22 +546,6 @@ class App(ttk.Frame):
         candidate = self.candidate_var.get().strip().lower()
         return candidate_sha_is_valid(candidate) and self.repo_state.head.lower() == candidate
 
-    def copy_startup_set(self) -> None:
-        if not self.current:
-            return
-        self._copy_to_clipboard(build_startup_prompt(self.current))
-        self._log(f"{self.current.name}: A-path STARTUP SETをコピーしました。")
-        messagebox.showinfo("STARTUP SET", "現在のChatGPTへ貼り付けるA-path STARTUP SETをコピーしました。")
-
-    def copy_debug_handoff(self) -> None:
-        if not self.current:
-            return
-        repo_root = REPOS_ROOT / self.current.name
-        text = build_debug_handoff_prompt(self.current, repo_root, self.candidate_var.get().strip())
-        self._copy_to_clipboard(text)
-        self._log(f"{self.current.name}: B-pathデバッグ指示をコピーしました。")
-        messagebox.showinfo("Bデバッグ指示", "Codex / Claude等へ渡すB-pathデバッグ指示をコピーしました。")
-
     def open_github(self) -> None:
         if self.current:
             webbrowser.open_new_tab(self.current.github_url)
@@ -631,7 +613,7 @@ class App(ttk.Frame):
             )
             return
 
-        task = build_new_repo_setup_prompt(remote, dest)
+        task = build_new_repo_registration_task(remote, dest)
         self.repo_list.selection_clear(0, "end")
         self.repo_list.selection_set(dev_index)
         self.repo_list.activate(dev_index)
