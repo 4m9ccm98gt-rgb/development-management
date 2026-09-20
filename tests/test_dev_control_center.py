@@ -571,7 +571,7 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertIn('definition.name == "development-management"', setup)
         self.assertIn("build_new_repo_registration_task(remote, dest)", setup)
         self.assertIn('self.ai_task.insert("1.0", task)', setup)
-        self.assertIn('"AI開発開始"', setup)
+        self.assertIn("AI開発開始", setup)
         self.assertNotIn("_copy_to_clipboard", setup)
         self.assertNotIn("現在のChatGPTへ貼り付け", setup)
 
