@@ -1,4 +1,6 @@
 [branches]
+shizen-launcher = "main"
+development-management = "main"
 beverage-inventory-ordering-system = "main"
 call-reception-assistant = "main"
 food-cost-calculation-system = "main"
@@ -10,4 +12,21 @@ qr-supply-ordering-system = "main"
 # Keep the app visible; RUN remains MISSING until the application is implemented.
 # Remove this entry when implementation and distribution become applicable.
 [unimplemented]
+shizen-launcher = "Launcher application is not implemented yet; initial demo goes through DCC AI development."
 call-reception-assistant = "Application source is not implemented; SYNC-only setup approved."
+
+[initial_ai_tasks]
+shizen-launcher = """
+Create the first runnable Shizen Launcher demo for Windows using PySide6.
+Goal: give the user a real UI to react to, not production release/update behavior yet.
+UI: restrained premium dark launcher suitable for a ryokan/hotel PC; left app list, selected-app detail area, version/status text, and a prominent launch/update-style button. Seed one mock app entry for the beverage inventory app.
+Architecture: keep UI separate from launcher/domain code so registry, release pointer, manifest validation, cache, runtime launch, diagnostics, and rollback can be added later.
+Do not connect to real shared folders, operational data, external apps, live services, update/deploy targets, or rollback yet.
+Add tracked RUN_DEV.cmd and BUILD_EXE_CLICK_ME.cmd entrypoints that are appropriate for the implemented demo. Keep secrets, local settings, runtime cache, logs, and operational data out of Git.
+Add focused automated tests for config/model/domain behavior; avoid brittle pixel/screenshot assertions.
+Acceptance: tests pass; RUN_DEV starts the demo on Windows; the visible demo is sufficient for the user to give UI/layout feedback; no production distribution is performed.
+"""
+
+[initial_tests]
+development-management = "python -m unittest discover -s tests -p \"test_dev_control_center*.py\" -v"
+shizen-launcher = "python -m unittest discover -s tests -v"
