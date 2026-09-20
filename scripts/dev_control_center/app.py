@@ -221,7 +221,7 @@ class App(ttk.Frame):
         left = ttk.Frame(self)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         left.rowconfigure(1, weight=1)
-        ttk.Label(left, text="Managed Apps", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(left, text="Managed Repositories", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.repo_list = tk.Listbox(left, width=36, height=17, exportselection=False)
         configure_dark_listbox(self.repo_list)
         self.repo_list.grid(row=1, column=0, sticky="nsew")
