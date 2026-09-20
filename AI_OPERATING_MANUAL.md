@@ -6,6 +6,8 @@
 
 通常アプリの日常開発は Development Control Center の **AI開発** を標準とします。
 
+実装・設定変更はrepo種別に関係なくDCCのAI依頼欄から開始します。ChatGPTによるGitHub直接編集を標準経路にせず、Claude → Tests → Astraへ統一します。
+
 `development-management` 自身も同じAI Orchestratorを使い、例外ルートへ分けません。
 
 ```text
