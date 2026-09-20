@@ -30,7 +30,8 @@
 Development Control Centerでは **AI開発を標準ルート** とします。
 
 ```text
-要望
+要望 / 実機フィードバック
+→ ChatGPTが意図・受入条件をAI依頼へ整理
 → Claudeが隔離worktreeで実装
 → 独立テスト
 → GPT-6 Astraがread-onlyレビュー
