@@ -38,29 +38,37 @@
 
 ### 新規repoセットアップ
 
-新規repoは「管理登録だけ」で止めず、**初回AI開発へ接続できる状態**までをセットアップとします。
+**実装・設定変更の開始点は常にDCCの「AI依頼」欄です。** 新規repoだけ別のGitHub編集経路へ分岐しません。
+
+DCCの「セットアップ開始」は開発処理ではなく、正式ローカルへのcloneとAI依頼の準備だけを行います。
 
 ```text
 GitHubでrepo作成
 → DCC「セットアップ開始」
 → 正式ローカルへclone
-→ ChatGPTへセットアップ依頼
-→ ChatGPTがrepo種別 / expected branch / 初期デモの意図・受入条件を整理
-→ development-managementへ管理登録
-→ initial_ai_tasks / initial_tests を登録
+→ DCCが development-management を選択
+→ AI依頼欄へ新規repo登録タスクをセット
+→ ChatGPT / ユーザーがrepo種別・初期デモ要件・受入条件をAI依頼へ整理
+→ 「AI開発開始」
+→ Claudeがdevelopment-managementのregistryを実装
+→ DevelopmentのTests
+→ Astra read-onlyレビュー
+→ local candidate
+→ ユーザー確認後に反映
 → Control Center更新
-→ DCCが初期AI依頼・テストを自動入力
-→ ユーザーは対象repoで「AI開発開始」
-→ Claude実装
+→ 新repoを選択
+→ 登録済みinitial_ai_tasks / initial_testsがAI依頼欄へ入る
+→ 「AI開発開始」
+→ Claudeが新repoを実装
 → Tests
 → Astraレビュー
 → local candidate
 → RUN_DEVでユーザーが実物を確認
 ```
 
-新規repoセットアップ時のChatGPTは、対象アプリ本体、RUN_DEV、BUILD、UPDATE / DEPLOY、テストコードを実装・完成検証しません。実装判断とコード作成はClaude、独立レビューはAstraへ渡します。
+ChatGPTは新規repo登録を含め、標準運用ではGitHub上のコード・設定を直接編集しません。ユーザー意図をAI依頼へ変換する役割に固定します。
 
-新規repo登録だけの定型変更（`scripts/repo_types.toml`、`scripts/dev_control_center_repos.toml`、管理一覧、初期AI依頼/テスト登録）は設定登録として扱い、**ユーザーへCodex / Claudeの手動レビュー操作を要求しません**。Development本体の実行コード・安全境界・運用契約を変更する場合は、下記のDevelopment更新ルートを使います。
+repo種別、expected branch、初期AI依頼、初期テスト等の中央登録も `development-management` を対象にした通常のAI Orchestrator経路で変更します。ユーザーへCodex / Claudeの手動レビュー操作を要求しません。
 
 ### development-management の更新
 
@@ -82,8 +90,8 @@ GitHubでrepo作成
 ```
 
 - Development自身も実装担当はClaude、独立reviewerはAstraです。
-- ChatGPTは仕様化・意見抽出・宣言的なrepo登録を担当し、Developmentの実行コード変更を直接実装しません。
-- 新規repoの定型登録だけ（repo種別、expected branch、初期AI依頼、初期テスト等）は宣言的設定変更としてChatGPTが行えます。
+- ChatGPTは仕様化・意見抽出・AI依頼作成を担当し、Developmentのコード・設定変更を直接実装しません。
+- 新規repoの定型登録も例外にせず、development-managementを対象にClaude → Tests → Astraで変更します。
 - ユーザーへCodex / Claudeの手動受け渡しを要求しません。
 - 自己更新でもsource repo不変、tracked clean、origin同期、candidate SHA固定、fast-forwardだけの安全条件は変えません。
 
