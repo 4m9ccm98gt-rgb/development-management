@@ -1,14 +1,14 @@
 # リポジトリ一覧
 
-最終更新: 2026-09-04（JST）
+最終更新: 2026-09-20（JST）
 
 正式ソースはすべて `C:\Users\suisy\Documents\Development\repos\<name>` 配下。
 GitHub は `https://github.com/4m9ccm98gt-rgb/<name>`（すべて private）。
 種別の唯一の正は [scripts/repo_types.toml](scripts/repo_types.toml)。
 
-## 管理対象（10）
+## 管理対象（11）
 
-| リポジトリ | 種別 | 既定ブランチ | GitHub 既定ブランチ HEAD（2026-09-04） | タグ | 備考 |
+| リポジトリ | 種別 | 既定ブランチ | 参考HEAD | タグ | 備考 |
 |---|---|---|---|---|---|
 | next-day-setup | desktop | `main` | `1b048f4` | `v1.2.1` | 翌日準備。実運用中。3経路完備。 |
 | inventory-reconciliation-system | service | `main` | `fd2de21` | `v2.0.0` | 販売在庫突合。夜間自動実行。 |
@@ -17,11 +17,12 @@ GitHub は `https://github.com/4m9ccm98gt-rgb/<name>`（すべて private）。
 | menu-sheet-generator | desktop | `main` | `fa4fdf7` | `v1.0.0` | 料理説明書。.NET / WPF。GitHub Release 公開済み。 |
 | qr-supply-ordering-system | web | `main` | `790fff5` | なし | QR 物品発注。社内 LAN の 1 ホストで Flask 常駐。`DEPLOY.md`。 |
 | call-reception-assistant | desktop | `main` | `ae78cf5` | なし | 電話受付。**アプリ本体は未実装**。無課金・ローカル完結の初期試作方針。 |
+| shizen-launcher | desktop | `main` | `f505b90` | なし | 共通Windowsランチャー。初期デモはDCCの登録済みAI依頼からClaude → Tests → Astraで作成する。 |
 | kitchen-calendar | archived | `main` | `2362043` | なし | 調理場カレンダー。next-day-setup へ統合済み。**今後開発しない**。 |
 | hospitality-review-reply | knowledge | `main` | `f6e1e74` | なし | 旅館口コミ返信のテンプレート／知識 repo。アプリではない。CI は warning-only、実行・ビルド標準は課さない。 |
-| development-management | — | `main` | `d45c0c9` | `ci-v1`（moving）/ `ci-v1.0.x`（固定） | 本知識ベース。共通 CI アクション（`.github/actions/check-standards`）を各 repo が `@ci-v1` で参照。 |
+| development-management | management | `main` | `3af7ae0` | `ci-v1`（moving）/ `ci-v1.0.x`（固定） | 本知識ベース。共通 CI アクション（`.github/actions/check-standards`）を各 repo が `@ci-v1` で参照。 |
 
-- HEAD 値は 2026-09-04 時点。最新は各リポジトリで `git -C <path> log -1` により確認する。
+- 参考HEADは記録時点の目安です。candidate判断には使わず、最新状態はDCC / GitHub / `git -C <path> log -1` で確認します。
 - 「既定ブランチ」はそのリポジトリで作業の基準になるブランチ。beverage は移行が終わるまで
   `python-desktop-migration`。俺伝は 2026-09-04 まで `codex/bootstrap-invoice-reading` だったが、
   M3 の監査（[docs/food_cost_default_branch.md](docs/food_cost_default_branch.md)）を経て `main` へ改名済み。

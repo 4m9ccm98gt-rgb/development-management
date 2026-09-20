@@ -63,13 +63,12 @@
 
 ## development-management 更新時
 
-- [ ] ChatGPTがGitHub上で実装・必要なテスト追加を行った
-- [ ] 変更対象diff / candidateが特定できている
-- [ ] Codexが独立レビューした
-- [ ] Claudeが独立レビューした
-- [ ] どちらかにblocking findingがあればChatGPTが修正した
-- [ ] 修正後に必要なテストを再実行した
-- [ ] 修正後diffをCodexとClaudeの両方が再レビューした
-- [ ] Codex + Claudeの両方がapprove
-- [ ] 両方approve前にmergeしていない
-- [ ] merge後の完全SHAをWindowsへ正式SYNCした
+- [ ] DCCで development-management を対象repoとして選んだ
+- [ ] ChatGPTは実装せず、要望・受入条件をAI依頼へ整理した
+- [ ] Claudeが隔離worktreeで実装した
+- [ ] Developmentの独立テストがpassした
+- [ ] Astraがread-only reviewでapproveした
+- [ ] local candidateは完全40桁SHA
+- [ ] source main / origin / tracked cleanが開始時から勝手に動いていない
+- [ ] ユーザー確認後だけlocal mainへfast-forwardした
+- [ ] OK後もcandidate SHAを変更せずpush / Control Center更新へ進んだ

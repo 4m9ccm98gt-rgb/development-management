@@ -16,7 +16,7 @@ from typing import Callable, Iterable
 from urllib.parse import quote
 
 DEFAULT_OWNER = "4m9ccm98gt-rgb"
-ACTIVE_TYPES = {"desktop", "web", "service"}
+ACTIVE_TYPES = {"desktop", "web", "service", "management"}
 SKIP_DIR_NAMES = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".pytest_cache"
 }
@@ -37,6 +37,8 @@ class RepoDefinition:
     branch: str
     owner: str = DEFAULT_OWNER
     application_implemented: bool = True
+    initial_ai_task: str = ""
+    initial_test_command: str = ""
 
     @property
     def full_name(self) -> str:
@@ -174,6 +176,8 @@ def load_repo_definitions(
         registry = tomllib.load(f)
         branches = registry.get("branches", {})
         unimplemented = registry.get("unimplemented", {})
+        initial_ai_tasks = registry.get("initial_ai_tasks", {})
+        initial_tests = registry.get("initial_tests", {})
 
     definitions: list[RepoDefinition] = []
     for name, repo_type in sorted(types.items()):
@@ -183,7 +187,17 @@ def load_repo_definitions(
             raise ControlCenterConfigError(
                 f"{name}: explicit candidate branch is missing from {branches_path.name}"
             )
-        definitions.append(RepoDefinition(str(name), repo_type, branch, owner, name not in unimplemented))
+        definitions.append(
+            RepoDefinition(
+                str(name),
+                repo_type,
+                branch,
+                owner,
+                name not in unimplemented,
+                str(initial_ai_tasks.get(name, "")).strip(),
+                str(initial_tests.get(name, "")).strip(),
+            )
+        )
     return definitions
 
 
@@ -496,65 +510,27 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
         return GitHubState(error=str(exc))
 
 
-def build_startup_prompt(definition: RepoDefinition) -> str:
-    """Create the minimal A-path startup prompt for an already-managed repository."""
+def build_new_repo_registration_task(remote: RemoteRepo, local_path: Path) -> str:
+    """Build the development-management AI task used to register a new repo."""
+    branch_text = remote.default_branch or "未確定"
     return (
-        f"対象repo: {definition.full_name}\n"
-        f"expected branch: {definition.branch}\n\n"
-        "このrepoの開発をA — ChatGPT fast pathで続けます。\n"
-        "development-management/OPERATING_CONTRACT.md を開発運用の正本として扱ってください。\n"
-        "開始時は Operating Contract、対象repoのREADMEまたは今回の変更に直接関係する説明、"
-        "変更対象コードと直接のconsumer / producerだけを必要範囲で確認してください。\n"
-        "GitHub上で調査・実装・必要なテスト追加・利用可能な自動検証まで進め、"
-        "expected branchへ反映した完全40桁candidate SHAを明示してください。\n"
-        "GitHub Actionsは補助検証です。利用不能・待ち時間だけを理由に開発全体を止めず、"
-        "実行できた検証と未実施項目を区別してください。\n"
-        "candidate確定後は正式SYNC → ユーザー実機確認 → OKなら正式BUILD / 配布の安全境界を維持してください。\n"
-        "このあと私が変更内容を指示します。"
-    )
-
-
-def build_debug_handoff_prompt(
-    definition: RepoDefinition,
-    local_path: Path,
-    candidate_sha: str = "",
-) -> str:
-    """Create an explicit B-path handoff for local Codex/Claude debugging."""
-    candidate_text = candidate_sha if candidate_sha_is_valid(candidate_sha) else "未確定"
-    return (
-        "B — Debug escape pathでこのrepoをWindowsローカルデバッグしてください。\n"
-        f"対象repo: {definition.full_name}\n"
-        f"ローカル: {local_path}\n"
-        f"expected branch: {definition.branch}\n"
-        f"現在のcandidate: {candidate_text}\n\n"
-        "development-management/OPERATING_CONTRACT.md を正本として、開始時に git fetch 後の local HEAD / origin / branch を確認してください。\n"
-        "origin側が想定外に進んでいたらforceで押し切らず停止してください。\n"
-        "working treeで調査・実装・targeted test・必要なregression・デバッグを続け、"
-        "完成したらlocal candidate commitを作成してください。\n"
-        "candidate確定時は tracked clean、完全40桁SHA、直前の既知良好SHAからの実差分レビューを行い、"
-        "一時デバッグコード・仮パス・不要ファイルが残っていないことを確認してください。\n"
-        "ユーザー実機確認がOKになるまではpush / BUILD / 配布へ進めません。"
-        "OK後はcandidate SHAを変更せずfast-forward pushし、confirmed SHA == pushed SHAを確認してください。"
-    )
-
-
-def build_new_repo_setup_prompt(remote: RemoteRepo, local_path: Path) -> str:
-    branch_text = remote.default_branch or "未確定（GitHub上で確認して明示設定すること）"
-    return (
-        "新規repoをdevelopment-managementの正式管理対象へセットアップしてください。\n"
+        "新規repoをDevelopmentの正式管理対象へ登録してください。\n"
+        "このAI依頼の実装対象は development-management です。新規repo本体は編集しません。\n"
         f"GitHub: {remote.github_url}\n"
-        f"正式ローカル候補: {local_path}\n"
+        f"正式ローカル: {local_path}\n"
         f"GitHub default branch: {branch_text}\n\n"
-        "development-management/OPERATING_CONTRACT.md を正本としてA — ChatGPT fast pathで進めてください。\n"
-        "repo種別を確定し、scripts/repo_types.toml と scripts/dev_control_center_repos.toml へ正式登録してください。"
-        "candidate branchは推測せず明示してください。\n"
-        "必要な範囲でREADMEと実装を確認し、SYNC / RUN_DEV / BUILD / UPDATE・DEPLOYの正式入口を監査してください。"
-        "恒久入口が必要ならGitHub側の実装として追加してください。\n"
-        "秘密情報・実運用データはGit管理せず、利用可能な自動検証を行ってください。"
-        "GitHub Actionsは補助検証であり、利用不能だけを理由にセットアップ全体を停止しません。\n"
-        "完了時は管理登録内容、expected branch、完全40桁candidate SHA、ローカルで次に行う操作を明示してください。"
+        "OPERATING_CONTRACT.md を正本として、通常のClaude実装 → Tests → Astra read-onlyレビュー → "
+        "local candidateで進めてください。\n"
+        "新規repo側のREADME、DCC_SETUP.md、tracked metadata、およびこのAI依頼へ追記されたユーザー要件を確認し、"
+        "repo種別、expected branch、最初のAI開発タスク、独立テストコマンドを確定してください。"
+        "情報が足りない項目は推測で埋めず、candidateを作らず不足内容を明示してください。\n"
+        "確定できる場合は scripts/repo_types.toml と scripts/dev_control_center_repos.toml へ登録し、"
+        "[initial_ai_tasks] に対象repoの最初のClaude向け開発タスク、"
+        "[initial_tests] に独立テストコマンドを設定してください。"
+        "未実装repoなら [unimplemented] も整合させてください。\n"
+        "秘密情報、実運用データ、ローカル設定はGit管理しません。"
+        "対象repoのRUN_DEV / BUILD / UPDATE・DEPLOYをこの登録タスク内で直接実装しません。"
     )
-
 
 def clone_new_repository(remote: RemoteRepo, repos_root: Path) -> Path:
     """Clone an unmanaged repository into canonical repos root without overwriting."""
@@ -665,8 +641,10 @@ def discover_entrypoints(repo_root: Path, repo_type: str, *, application_impleme
         _regex(r"BUILD.*CLICK_ME\.(?:CMD|BAT)"),
     ])
 
-    if repo_type in {"web", "service"} and build.state == "MISSING":
+    if repo_type in {"web", "service", "management"} and build.state == "MISSING":
         build = EntryPointChoice("N/A")
+    if repo_type == "management" and run.state == "MISSING":
+        run = EntryPointChoice("N/A")
 
     if repo_type == "desktop":
         release_label = "UPDATE"

@@ -21,9 +21,7 @@ from .core import (
     RepoDefinition,
     active_repo_definitions,
     apply_local_candidate,
-    build_debug_handoff_prompt,
-    build_new_repo_setup_prompt,
-    build_startup_prompt,
+    build_new_repo_registration_task,
     candidate_sha_is_valid,
     choice_text,
     clone_new_repository,
@@ -221,7 +219,7 @@ class App(ttk.Frame):
         left = ttk.Frame(self)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         left.rowconfigure(1, weight=1)
-        ttk.Label(left, text="Managed Apps", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(left, text="Managed Repositories", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.repo_list = tk.Listbox(left, width=36, height=17, exportselection=False)
         configure_dark_listbox(self.repo_list)
         self.repo_list.grid(row=1, column=0, sticky="nsew")
@@ -400,11 +398,13 @@ class App(ttk.Frame):
         self.candidate_var.set(self.candidate_by_repo[self.current.name])
         self.ai_task.delete("1.0", "end")
         saved_task = self.ai_task_by_repo.get(self.current.name, "")
-        if saved_task:
-            self.ai_task.insert("1.0", saved_task)
+        initial_task = saved_task or self.current.initial_ai_task
+        if initial_task:
+            self.ai_task.insert("1.0", initial_task)
         repo_root = REPOS_ROOT / self.current.name
         self.ai_test_var.set(
             self.ai_test_by_repo.get(self.current.name)
+            or self.current.initial_test_command
             or suggest_test_command(repo_root)
         )
         self.ai_status_var.set("待機")
@@ -546,22 +546,6 @@ class App(ttk.Frame):
         candidate = self.candidate_var.get().strip().lower()
         return candidate_sha_is_valid(candidate) and self.repo_state.head.lower() == candidate
 
-    def copy_startup_set(self) -> None:
-        if not self.current:
-            return
-        self._copy_to_clipboard(build_startup_prompt(self.current))
-        self._log(f"{self.current.name}: A-path STARTUP SETをコピーしました。")
-        messagebox.showinfo("STARTUP SET", "現在のChatGPTへ貼り付けるA-path STARTUP SETをコピーしました。")
-
-    def copy_debug_handoff(self) -> None:
-        if not self.current:
-            return
-        repo_root = REPOS_ROOT / self.current.name
-        text = build_debug_handoff_prompt(self.current, repo_root, self.candidate_var.get().strip())
-        self._copy_to_clipboard(text)
-        self._log(f"{self.current.name}: B-pathデバッグ指示をコピーしました。")
-        messagebox.showinfo("Bデバッグ指示", "Codex / Claude等へ渡すB-pathデバッグ指示をコピーしました。")
-
     def open_github(self) -> None:
         if self.current:
             webbrowser.open_new_tab(self.current.github_url)
@@ -615,11 +599,41 @@ class App(ttk.Frame):
             except RuntimeError as exc:
                 messagebox.showerror("セットアップ停止", str(exc))
                 return
-        self._copy_to_clipboard(build_new_repo_setup_prompt(remote, dest))
-        self._log(f"{remote.name}: clone確認 + 管理登録指示をコピーしました。")
+
+        try:
+            dev_index = next(
+                index
+                for index, definition in enumerate(self.definitions)
+                if definition.name == "development-management"
+            )
+        except StopIteration:
+            messagebox.showerror(
+                "セットアップ停止",
+                "development-management がManaged Repositoriesにありません。Control Centerを更新してください。",
+            )
+            return
+
+        task = build_new_repo_registration_task(remote, dest)
+        self.repo_list.selection_clear(0, "end")
+        self.repo_list.selection_set(dev_index)
+        self.repo_list.activate(dev_index)
+        self.repo_list.see(dev_index)
+        self._select_repo()
+        self.ai_task.delete("1.0", "end")
+        self.ai_task.insert("1.0", task)
+        self.ai_task_by_repo["development-management"] = task
+        self.ai_status_var.set("新規repo登録タスクを準備済み")
+
+        self._log(
+            f"{remote.name}: clone確認 → development-management のAI依頼欄へ登録タスクをセットしました。"
+        )
         messagebox.showinfo(
             "新規repo",
-            "正式ローカルrepoを確認しました。\n管理登録・標準入口整備の指示をコピーしました。\n現在のChatGPTへ貼り付けてください。",
+            "正式ローカルrepoを確認しました。\n"
+            "development-management を選択し、AI依頼欄へ登録タスクをセットしました。\n\n"
+            "必要ならGPTでrepo種別や最初のデモ要件をAI依頼へ追記し、"
+            "そのまま「AI開発開始」を押してください。\n"
+            "以後は Claude実装 → Tests → Astraレビュー → local candidate の通常ルートです。",
         )
 
     def check_self_update(self) -> None:

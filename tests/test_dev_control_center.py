@@ -14,9 +14,7 @@ from scripts.dev_control_center.core import (
     RepoState,
     active_repo_definitions,
     apply_local_candidate,
-    build_debug_handoff_prompt,
-    build_new_repo_setup_prompt,
-    build_startup_prompt,
+    build_new_repo_registration_task,
     candidate_sha_is_valid,
     decide_lifecycle,
     discover_entrypoints,
@@ -38,6 +36,45 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertGreaterEqual(len(items), 1)
         self.assertTrue(all(item.branch for item in items))
+
+    def test_initial_ai_task_and_test_are_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            types = root / "types.toml"
+            branches = root / "branches.toml"
+            types.write_text('[types]\napp = "desktop"\n', encoding="utf-8")
+            branches.write_text(
+                '[branches]\n'
+                'app = "main"\n\n'
+                '[initial_ai_tasks]\n'
+                'app = "Build a minimal demo"\n\n'
+                '[initial_tests]\n'
+                'app = "python -m unittest discover -s tests -v"\n',
+                encoding="utf-8",
+            )
+            item = active_repo_definitions(types, branches, owner="example")[0]
+            self.assertEqual(item.initial_ai_task, "Build a minimal demo")
+            self.assertEqual(
+                item.initial_test_command,
+                "python -m unittest discover -s tests -v",
+            )
+
+    def test_management_and_shizen_are_active_registry_entries(self):
+        items = {
+            item.name: item
+            for item in active_repo_definitions(
+                ROOT / "scripts" / "repo_types.toml",
+                ROOT / "scripts" / "dev_control_center_repos.toml",
+            )
+        }
+        self.assertIn("development-management", items)
+        self.assertEqual(items["development-management"].repo_type, "management")
+        self.assertEqual(items["development-management"].branch, "main")
+        self.assertIn("unittest discover", items["development-management"].initial_test_command)
+        self.assertIn("shizen-launcher", items)
+        self.assertEqual(items["shizen-launcher"].repo_type, "desktop")
+        self.assertIn("PySide6", items["shizen-launcher"].initial_ai_task)
+        self.assertIn("RUN_DEV.cmd", items["shizen-launcher"].initial_ai_task)
 
     def test_missing_active_branch_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -69,6 +106,17 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(found.build.ready)
             self.assertTrue(found.release.ready)
             self.assertEqual(found.release_label, "UPDATE")
+
+    def test_management_uses_run_and_skips_app_distribution_actions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "SYNC_CLICK_ME.cmd").write_text("test", encoding="utf-8")
+            (root / "RUN_DEV.cmd").write_text("test", encoding="utf-8")
+            found = discover_entrypoints(root, "management")
+            self.assertTrue(found.sync.ready)
+            self.assertTrue(found.run.ready)
+            self.assertEqual(found.build.state, "N/A")
+            self.assertEqual(found.release.state, "N/A")
 
     def test_ambiguous_best_match_is_not_guessed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -455,30 +503,20 @@ class LifecycleDecisionTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
-    def test_startup_set_uses_a_path_without_old_tiers(self):
-        text = build_startup_prompt(RepoDefinition("demo", "desktop", "main", owner="example"))
-        self.assertIn("A — ChatGPT fast path", text)
-        self.assertIn("OPERATING_CONTRACT.md", text)
-        self.assertIn("完全40桁candidate SHA", text)
-        self.assertNotIn("T0", text)
-        self.assertNotIn("CI green", text)
-
-    def test_debug_handoff_uses_b_path_and_local_candidate(self):
-        text = build_debug_handoff_prompt(
-            RepoDefinition("demo", "desktop", "main", owner="example"),
-            Path(r"C:\repos\demo"),
-            "b" * 40,
-        )
-        self.assertIn("B — Debug escape path", text)
-        self.assertIn("b" * 40, text)
-        self.assertIn("fast-forward push", text)
-
-    def test_new_repo_setup_requests_central_registration(self):
+    def test_new_repo_registration_task_targets_development_orchestrator(self):
         remote = RemoteRepo("new-app", default_branch="main", owner="example")
-        text = build_new_repo_setup_prompt(remote, Path(r"C:\repos\new-app"))
+        text = build_new_repo_registration_task(remote, Path(r"C:\repos\new-app"))
+        self.assertIn("development-management", text)
         self.assertIn("scripts/repo_types.toml", text)
         self.assertIn("scripts/dev_control_center_repos.toml", text)
-        self.assertIn("A — ChatGPT fast path", text)
+        self.assertIn("[initial_ai_tasks]", text)
+        self.assertIn("[initial_tests]", text)
+        self.assertIn("Claude", text)
+        self.assertIn("Astra", text)
+        self.assertIn("新規repo本体は編集しません", text)
+        self.assertIn("推測で埋めず", text)
+        self.assertNotIn("A — ChatGPT fast path", text)
+        self.assertNotIn("B — Debug escape path", text)
 
 
 class DarkThemeContractTests(unittest.TestCase):
@@ -513,13 +551,37 @@ class UiLifecycleContractTests(unittest.TestCase):
         build = text[build_start:select_start]
         self.assertIn('text="AI開発 — Claude実装 → Tests → Astraレビュー → local candidate"', build)
         self.assertIn('self.ai_task = tk.Text(ai_box, height=8, wrap="word")', build)
+        self.assertIn('text="Managed Repositories"', build)
         self.assertIn('text="全状態更新"', build)
         self.assertIn('text="実機確認・配布"', build)
         self.assertNotIn('text="A: ChatGPT', build)
         self.assertNotIn('text="Bデバッグ指示"', build)
         self.assertNotIn('text="GitHub更新"', build)
         self.assertNotIn('text="STARTUP SET"', build)
+        self.assertNotIn('text="Bデバッグ指示"', build)
         self.assertNotIn('self.sync_button.grid(', build)
+        self.assertNotIn("def copy_startup_set", text)
+        self.assertNotIn("def copy_debug_handoff", text)
+
+    def test_new_repo_setup_enters_development_ai_request(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        start = text.index("    def setup_new_repo(self) -> None:")
+        end = text.index("    def check_self_update(self) -> None:", start)
+        setup = text[start:end]
+        self.assertIn('definition.name == "development-management"', setup)
+        self.assertIn("build_new_repo_registration_task(remote, dest)", setup)
+        self.assertIn('self.ai_task.insert("1.0", task)', setup)
+        self.assertIn("AI開発開始", setup)
+        self.assertNotIn("_copy_to_clipboard", setup)
+        self.assertNotIn("現在のChatGPTへ貼り付け", setup)
+
+    def test_gui_prefills_registered_initial_ai_task(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        select_start = text.index("    def _select_repo(self) -> None:")
+        refresh_start = text.index("    def refresh_all(self) -> None:", select_start)
+        select = text[select_start:refresh_start]
+        self.assertIn("self.current.initial_ai_task", select)
+        self.assertIn("self.current.initial_test_command", select)
 
     def test_gui_exposes_ai_orchestrator_with_machine_result_handoff(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
@@ -537,6 +599,23 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertIn("self.refresh()", poll)
         self.assertIn("self.refresh_github()", poll)
         self.assertNotIn('if action == "sync"', poll)
+
+
+class DocumentationRouteContractTests(unittest.TestCase):
+    def test_entry_docs_use_unified_orchestrator_route(self):
+        for name in ("OPERATING_CONTRACT.md", "AGENTS.md", "AI_STARTUP.md", "AI_OPERATING_MANUAL.md"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertIn("Claude", text)
+                self.assertIn("Astra", text)
+                self.assertNotIn("ChatGPTがGitHub上で実装", text)
+                self.assertNotIn("Codex + Claude", text)
+                self.assertNotIn("Codexレビュー + Claudeレビュー", text)
+
+    def test_development_has_formal_run_dev_entrypoint(self):
+        text = (ROOT / "RUN_DEV.cmd").read_text(encoding="ascii")
+        self.assertIn("DEV_CONTROL_CENTER.pyw", text)
+        self.assertTrue(text.rstrip().endswith("exit /b"))
 
 
 class SelfUpdateContractTests(unittest.TestCase):

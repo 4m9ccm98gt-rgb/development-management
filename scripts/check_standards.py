@@ -7,6 +7,7 @@
      - web     : 起動 / デプロイ
      - service : 起動 / 常駐登録
      - lib     : なし
+     - management : 管理基盤。アプリ配布経路は課さない
      種別は scripts/repo_types.toml（唯一の正）で管理する。未登録は警告。
      アプリ側のリポジトリには種別マーカーを置かない。
   2. 秘密情報らしきパターン（秘密鍵、各種トークン、実 *_settings.json）
@@ -115,6 +116,7 @@ REQUIRED_BY_TYPE = {
     "service":   ["run", "install"],
     "lib":       [],
     "knowledge": [],  # 知識ベース/テンプレート repo。実行・ビルド標準は課さない（秘密チェックのみ）
+    "management": [], # Development管理基盤。アプリ配布経路は課さない
 }
 PATH_LABEL = {
     "run":     "RUN_DEV.cmd 相当（開発版ワンクリック起動）",
@@ -186,7 +188,7 @@ def check_paths(repo: Path) -> None:
         tail = f"（{hint} らしい）" if hint else ""
         add("WARN", repo.name,
             f'種類が repo_types.toml に未登録{tail} — '
-            'development-management/scripts/repo_types.toml へ "desktop|web|service|lib|archived" を追記')
+            'development-management/scripts/repo_types.toml へ "desktop|web|service|lib|knowledge|management|archived" を追記')
         return
     if t not in REQUIRED_BY_TYPE:
         add("WARN", repo.name, f"repo_types.toml の種類が不正: {t!r}")
