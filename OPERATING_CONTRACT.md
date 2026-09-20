@@ -64,26 +64,28 @@ GitHubでrepo作成
 
 ### development-management の更新
 
+`development-management` も通常repoと同じAI Orchestratorを使います。管理基盤だからという理由でChatGPT実装・手動Codex/Claudeレビューへ分岐しません。
+
 ```text
-仕様・要望
-→ ChatGPTがGitHub上で調査・実装・必要なテスト追加
-→ 利用可能な自動検証
-→ Codexが独立レビュー
-→ Claudeが独立レビュー
-→ どちらかがchanges requestedならChatGPTが修正
-→ 必要なテストを再実行
-→ Codex + Claudeが再レビュー
-→ 両方approve
-→ merge
-→ Windowsへ正式SYNC
+ユーザー要望
+→ ChatGPTが意図・受入条件を整理
+→ DCCで development-management を選択
+→ Claudeが隔離worktreeで実装
+→ Developmentの独立テスト
+→ GPT-6 Astraがread-onlyレビュー
+→ 必要ならClaude修正
+→ local candidate
+→ ユーザー確認後だけlocal mainへfast-forward
+→ 必要な実機確認
+→ OKなら同じSHAを正式push
+→ Control Center更新
 ```
 
-- ChatGPTはDevelopmentの実装担当であり、Codex / Claudeレビューの代替にはなりません。
-- CodexとClaudeは同じ差分を独立に確認します。
-- どちらか一方でもblocking findingが残る間はmergeしません。
-- 修正後は変更後の差分を両者が再確認します。
-- development-management本体の実行コード・安全境界・運用契約の変更はこの例外ルートを維持します。
-- ただし、新規repoの定型登録だけを理由にユーザーへreviewer操作を要求しません。
+- Development自身も実装担当はClaude、独立reviewerはAstraです。
+- ChatGPTは仕様化・意見抽出・宣言的なrepo登録を担当し、Developmentの実行コード変更を直接実装しません。
+- 新規repoの定型登録だけ（repo種別、expected branch、初期AI依頼、初期テスト等）は宣言的設定変更としてChatGPTが行えます。
+- ユーザーへCodex / Claudeの手動受け渡しを要求しません。
+- 自己更新でもsource repo不変、tracked clean、origin同期、candidate SHA固定、fast-forwardだけの安全条件は変えません。
 
 ## 2. 絶対に残す安全条件
 
