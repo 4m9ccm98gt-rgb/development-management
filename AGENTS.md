@@ -20,7 +20,7 @@
 3. ユーザーの要望をClaude向けAI依頼と受入条件へ整理する。
 4. 実装が必要ならDCC / AI Orchestratorへ渡す。
 
-新規repoセットアップでは、ChatGPTは宣言的な中央登録と初期AI依頼の設計までを担当できます。対象アプリ本体、RUN_DEV、BUILD、UPDATE / DEPLOY、テストコードの実装はClaudeへ渡します。
+新規repoセットアップでも開始点はDCCのAI依頼欄です。ChatGPTはrepo種別・初期デモ要件・受入条件をAI依頼へ整理し、中央registryの変更も対象アプリ本体の実装もClaude → Tests → Astraへ渡します。ChatGPTがGitHub上のコード・設定を直接編集する例外は作りません。
 
 ## 常に守ること
 
