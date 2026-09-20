@@ -28,6 +28,9 @@ STOP
 
 通常上限は2ラウンドです。push / BUILD / UPDATE / DEPLOYは自動実行しません。
 
+`development-management` 自身も同じOrchestrator対象です。DCCでmanagement repoとして選択し、通常repoと同じClaude実装 → Tests → Astraレビュー → local candidateを使います。
+
+
 ## 進捗表示
 
 v0.2は無言で処理せず、現在の段階とClaude/Codex呼び出し回数を表示します。
