@@ -2,7 +2,7 @@
 
 この文書は、Windowsローカル開発環境の**初回準備が必要な場合だけ**参照する補助資料です。
 
-正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) です。本書はA / B二経路やユーザーのエージェント指定を上書きしません。
+正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) です。本書は標準のChatGPT仕様化 → Claude実装 → Tests → Astraレビュー経路を上書きしません。
 
 ## 1. 基本方針
 
@@ -23,7 +23,7 @@
 - 指定範囲を超えてcandidate確認、BUILD、deploy等へ自動進行しない。
 - 本番データ、秘密情報、Git管理外業務データを保護する。
 
-ユーザーが実機AIを指定していない場合は、利用可能なA経路と既存の安全なユーザー操作で進め、必要になった時点でBへの切替を判断します。
+ユーザーが特定エージェントを指定していない場合は、DCC / AI Orchestratorの標準経路を使います。ユーザーへAI間の手動受け渡しを要求しません。
 
 ## 3. 最低限の開始条件
 
