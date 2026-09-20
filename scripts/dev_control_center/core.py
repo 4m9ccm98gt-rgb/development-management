@@ -511,22 +511,22 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
 
 
 def build_startup_prompt(definition: RepoDefinition) -> str:
-    """Create the minimal A-path startup prompt for an already-managed repository."""
+    """Create the standard ChatGPT-to-Orchestrator handoff prompt."""
     return (
         f"対象repo: {definition.full_name}\n"
         f"expected branch: {definition.branch}\n\n"
-        "このrepoの開発をA — ChatGPT fast pathで続けます。\n"
         "development-management/OPERATING_CONTRACT.md を開発運用の正本として扱ってください。\n"
-        "開始時は Operating Contract、対象repoのREADMEまたは今回の変更に直接関係する説明、"
+        "ChatGPTは実装担当にならず、ユーザーの要望・違和感・優先順位を抽出して、"
+        "Claudeへ渡すAI開発タスクと受入条件へ整理してください。\n"
+        "実装はDCC / AI Orchestratorの Claude → Tests → GPT-6 Astra read-onlyレビュー → "
+        "local candidate の標準ルートへ渡してください。development-management自身も同じルートです。\n"
+        "ユーザーへCodex / Claude間の手動受け渡しを要求しないでください。\n"
+        "開始時はOperating Contract、対象repoのREADMEまたは今回の変更に直接関係する説明、"
         "変更対象コードと直接のconsumer / producerだけを必要範囲で確認してください。\n"
-        "GitHub上で調査・実装・必要なテスト追加・利用可能な自動検証まで進め、"
-        "expected branchへ反映した完全40桁candidate SHAを明示してください。\n"
-        "GitHub Actionsは補助検証です。利用不能・待ち時間だけを理由に開発全体を止めず、"
-        "実行できた検証と未実施項目を区別してください。\n"
-        "candidate確定後は正式SYNC → ユーザー実機確認 → OKなら正式BUILD / 配布の安全境界を維持してください。\n"
-        "このあと私が変更内容を指示します。"
+        "candidate確定後はユーザー確認 → local expected branchへfast-forward → RUN_DEV / 必要な実機確認 → "
+        "OKなら同じSHAをpush → BUILD / UPDATE・DEPLOYの安全境界を維持してください。\n"
+        "このあとユーザーの変更要望をAI依頼へ整理してください。"
     )
-
 
 def build_debug_handoff_prompt(
     definition: RepoDefinition,
