@@ -16,7 +16,7 @@ from typing import Callable, Iterable
 from urllib.parse import quote
 
 DEFAULT_OWNER = "4m9ccm98gt-rgb"
-ACTIVE_TYPES = {"desktop", "web", "service"}
+ACTIVE_TYPES = {"desktop", "web", "service", "management"}
 SKIP_DIR_NAMES = {
     ".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist", ".pytest_cache"
 }
@@ -685,8 +685,10 @@ def discover_entrypoints(repo_root: Path, repo_type: str, *, application_impleme
         _regex(r"BUILD.*CLICK_ME\.(?:CMD|BAT)"),
     ])
 
-    if repo_type in {"web", "service"} and build.state == "MISSING":
+    if repo_type in {"web", "service", "management"} and build.state == "MISSING":
         build = EntryPointChoice("N/A")
+    if repo_type == "management" and run.state == "MISSING":
+        run = EntryPointChoice("N/A")
 
     if repo_type == "desktop":
         release_label = "UPDATE"
