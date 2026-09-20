@@ -510,49 +510,7 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
         return GitHubState(error=str(exc))
 
 
-def build_startup_prompt(definition: RepoDefinition) -> str:
-    """Create the standard ChatGPT-to-Orchestrator handoff prompt."""
-    return (
-        f"対象repo: {definition.full_name}\\n"
-        f"expected branch: {definition.branch}\\n\\n"
-        "development-management/OPERATING_CONTRACT.md を開発運用の正本として扱ってください。\\n"
-        "ChatGPTは実装担当にならず、ユーザーの要望・違和感・優先順位を抽出して、"
-        "Claudeへ渡すAI開発タスクと受入条件へ整理してください。\\n"
-        "実装はDCC / AI Orchestratorの Claude → Tests → GPT-6 Astra read-onlyレビュー → "
-        "local candidate の標準ルートへ渡してください。development-management自身も同じルートです。\\n"
-        "ユーザーへCodex / Claude間の手動受け渡しを要求しないでください。\\n"
-        "開始時はOperating Contract、対象repoのREADMEまたは今回の変更に直接関係する説明、"
-        "変更対象コードと直接のconsumer / producerだけを必要範囲で確認してください。\\n"
-        "candidate確定後はユーザー確認 → local expected branchへfast-forward → RUN_DEV / 必要な実機確認 → "
-        "OKなら同じSHAをpush → BUILD / UPDATE・DEPLOYの安全境界を維持してください。\\n"
-        "このあとユーザーの変更要望をAI依頼へ整理してください。"
-    )
-
-def build_debug_handoff_prompt(
-    definition: RepoDefinition,
-    local_path: Path,
-    candidate_sha: str = "",
-) -> str:
-    """Create an explicit B-path handoff for local Codex/Claude debugging."""
-    candidate_text = candidate_sha if candidate_sha_is_valid(candidate_sha) else "未確定"
-    return (
-        "B — Debug escape pathでこのrepoをWindowsローカルデバッグしてください。\n"
-        f"対象repo: {definition.full_name}\n"
-        f"ローカル: {local_path}\n"
-        f"expected branch: {definition.branch}\n"
-        f"現在のcandidate: {candidate_text}\n\n"
-        "development-management/OPERATING_CONTRACT.md を正本として、開始時に git fetch 後の local HEAD / origin / branch を確認してください。\n"
-        "origin側が想定外に進んでいたらforceで押し切らず停止してください。\n"
-        "working treeで調査・実装・targeted test・必要なregression・デバッグを続け、"
-        "完成したらlocal candidate commitを作成してください。\n"
-        "candidate確定時は tracked clean、完全40桁SHA、直前の既知良好SHAからの実差分レビューを行い、"
-        "一時デバッグコード・仮パス・不要ファイルが残っていないことを確認してください。\n"
-        "ユーザー実機確認がOKになるまではpush / BUILD / 配布へ進めません。"
-        "OK後はcandidate SHAを変更せずfast-forward pushし、confirmed SHA == pushed SHAを確認してください。"
-    )
-
-
-def build_new_repo_setup_prompt(remote: RemoteRepo, local_path: Path) -> str:
+def build_new_repo_registration_task(remote: RemoteRepo, local_path: Path) -> str:
     """Build the development-management AI task used to register a new repo."""
     branch_text = remote.default_branch or "未確定"
     return (
