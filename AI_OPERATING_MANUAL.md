@@ -6,7 +6,7 @@
 
 通常アプリの日常開発は Development Control Center の **AI開発** を標準とします。
 
-`development-management` 自身は例外で、**ChatGPT実装 → Codexレビュー + Claudeレビュー → 両方approve後にmerge** を標準とします。
+`development-management` 自身も同じAI Orchestratorを使い、例外ルートへ分けません。
 
 ```text
 AI依頼
@@ -25,13 +25,13 @@ AI依頼
 
 ### development-management
 
-Developmentの変更ではChatGPTがGitHub上で実装を担当します。実装後はCodexとClaudeが独立reviewerとして同じ差分を確認します。
+Development自身もDCCで対象repoとして選択し、Claude実装 → Tests → Astra read-onlyレビュー → local candidateを使います。
 
-- CodexとClaudeの両方がapproveしてからmergeする。
-- どちらかがchanges_requestedなら、指摘をChatGPTが修正する。
-- 修正後は必要なテストを再実行し、両reviewerが変更後diffを再確認する。
-- ChatGPT自身の見直しやGitHub Actions greenを、Codex / Claudeの独立レビューの代わりにしない。
-- Developmentは通常アプリ用OrchestratorのClaude実装ルートへ載せない。
+- ChatGPTは要望・受入条件の整理を担当し、実行コードを直接実装しない。
+- ユーザーへCodex / Claudeの手動レビュー操作を要求しない。
+- source main / origin / tracked cleanを開始前後で確認する。
+- candidate後のlocal main反映はfast-forwardだけに限定する。
+- Control Center更新も確認済みcandidate SHAを維持する。
 
 ## 2. Claudeの役割
 
