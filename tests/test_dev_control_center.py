@@ -505,13 +505,15 @@ class LifecycleDecisionTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
-    def test_startup_set_uses_a_path_without_old_tiers(self):
+    def test_startup_handoff_uses_unified_orchestrator_route(self):
         text = build_startup_prompt(RepoDefinition("demo", "desktop", "main", owner="example"))
-        self.assertIn("A — ChatGPT fast path", text)
         self.assertIn("OPERATING_CONTRACT.md", text)
-        self.assertIn("完全40桁candidate SHA", text)
+        self.assertIn("Claude", text)
+        self.assertIn("GPT-6 Astra", text)
+        self.assertIn("ChatGPTは実装担当にならず", text)
+        self.assertIn("development-management自身も同じルート", text)
+        self.assertNotIn("A — ChatGPT fast path", text)
         self.assertNotIn("T0", text)
-        self.assertNotIn("CI green", text)
 
     def test_debug_handoff_uses_b_path_and_local_candidate(self):
         text = build_debug_handoff_prompt(
