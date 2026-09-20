@@ -6,58 +6,37 @@
 
 1. [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)
 2. 対象repoのREADMEまたは今回の変更に直接関係する説明
-3. 変更対象コードと、その変更で壊れ得る直接のconsumer / producer
+3. 変更対象と、その変更で壊れ得る直接のconsumer / producer
 
 新しいチャットという理由だけでDevelopment文書一式を読みません。
 
-`AGENT_EFFICIENCY_POLICY.md` のT0〜T3、読み込み予算、CI必須ゲートは現在の必須運用ではありません。
-
-## 2. 通常はA — ChatGPT fast path
+## 2. 標準フロー
 
 ```text
-ChatGPTがGitHub上で調査・実装・テスト追加
-→ 利用可能な自動検証
-→ GitHub candidate SHA
-→ ユーザーが正式同期入口でWindowsへ反映
-→ ユーザー実機確認
-→ OKならBUILD / 配布
+ユーザーの要望 / 実機フィードバック
+→ ChatGPTが意図・優先順位・受入条件を整理
+→ DCC AI依頼
+→ Claude実装
+→ Tests
+→ GPT-6 Astra read-onlyレビュー
+→ 必要ならClaude修正
+→ local candidate
+→ ユーザー確認後だけlocal expected branchへfast-forward
+→ RUN_DEV / 必要な実機確認
+→ OKなら同じSHAをpush
+→ BUILD / UPDATE / DEPLOY
 ```
 
-GitHub Actionsは補助であり、利用不能だけを理由に開発を止めません。
+`development-management` も同じルートです。別のChatGPT実装ルートや、ユーザーによるCodex / Claude手動レビューは使いません。
 
-## 3. 面倒になったらB — Debug escape path
+## 3. 新規repo
 
-ユーザーがCodex / Claude等を明示した場合、その指定エージェントがWindowsローカルrepoで連続デバッグします。
+DCCの「セットアップ開始」で正式ローカルへcloneし、生成された指示をChatGPTへ渡します。
 
-```text
-開始時にlocal HEAD / origin / branch確認
-→ working treeで調査・実装・テスト・デバッグ
-→ local candidate commit
-→ tracked clean + 実差分レビュー
-→ ユーザー実機確認
-→ OKなら同じSHAをfast-forward push
-→ BUILD / 配布
-```
+ChatGPTはrepo種別、expected branch、初期デモの意図・受入条件、初期AI依頼、独立テストコマンドを中央registryへ登録します。対象アプリのコードは実装しません。
 
-Bの詳細条件は `OPERATING_CONTRACT.md` を正とします。
+DCC更新後、対象repoを選ぶと初期AI依頼とテストが自動入力されます。ユーザーは「AI開発開始」を押し、Claude → Tests → Astraへ進めます。
 
-## 4. 初回ローカル準備
+## 4. 境界
 
-ローカルrepo、runtime、依存関係、`RUN_DEV`、BUILD / UPDATE入口等の初回準備が必要なら、今回必要な範囲だけ整えます。
-
-- 外部実機AIを自動的な必須担当にしません。
-- ユーザーがCodex / Claude等を指定した場合は、その指定を維持します。
-- ユーザーへ長いGit / PowerShell手順を覚えさせるより、既存の安全なワンクリック入口を優先します。
-- 初回準備のためだけに、将来工程すべての入口監査を必須にしません。
-
-## 5. 境界で確認すること
-
-毎ターンではなく、主に次の境界で `OPERATING_CONTRACT.md` を再確認します。
-
-- A → Bへ切り替えるとき
-- candidateを確定するとき
-- pushするとき
-- BUILDするとき
-- deploy / update / 本番反映するとき
-
-常に、実行していない検証を「確認済み」と扱わず、本番データ・秘密情報・既存変更を保護します。
+candidate / push / BUILD / deploy・updateでは [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) の安全条件を再確認します。実行していない検証を確認済みと扱わず、本番データ・秘密情報・既存変更を保護します。
