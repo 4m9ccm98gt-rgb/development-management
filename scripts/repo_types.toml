@@ -14,6 +14,7 @@
 #   archived  … 開発対象外。点検しない
 
 [types]
+development-management              = "management" # DCC / Orchestrator / 開発運用の管理基盤
 beverage-inventory-ordering-system = "desktop"   # PySide6。3経路の実績元
 call-reception-assistant           = "desktop"   # PCのマイク・スピーカーで完結する対話受付試作
 food-cost-calculation-system       = "desktop"   # 俺伝。EXEビルド + HDD配布
