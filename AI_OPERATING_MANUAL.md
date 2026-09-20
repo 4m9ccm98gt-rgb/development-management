@@ -4,12 +4,11 @@
 
 ## 1. 基本方針
 
-通常アプリの日常開発は Development Control Center の **AI開発** を標準とします。
-
-`development-management` 自身は例外で、**ChatGPT実装 → Codexレビュー + Claudeレビュー → 両方approve後にmerge** を標準とします。
+実装・設定変更の開始点は、常にDCCの **AI依頼** 欄です。通常アプリも `development-management` 自身も新規repo登録も同じ経路です。
 
 ```text
-AI依頼
+GPTがAI依頼を整理
+→ DCC AI依頼欄 → AI開発開始
 → Claude実装
 → Tests
 → GPT-6 Astra read-onlyレビュー
@@ -21,17 +20,7 @@ AI依頼
 → UPDATE / DEPLOY
 ```
 
-旧A/Bルートは通常UIから外し、GitHub / PR / CIは観測情報として扱います。
-
-### development-management
-
-Developmentの変更ではChatGPTがGitHub上で実装を担当します。実装後はCodexとClaudeが独立reviewerとして同じ差分を確認します。
-
-- CodexとClaudeの両方がapproveしてからmergeする。
-- どちらかがchanges_requestedなら、指摘をChatGPTが修正する。
-- 修正後は必要なテストを再実行し、両reviewerが変更後diffを再確認する。
-- ChatGPT自身の見直しやGitHub Actions greenを、Codex / Claudeの独立レビューの代わりにしない。
-- Developmentは通常アプリ用OrchestratorのClaude実装ルートへ載せない。
+GPTはユーザーの意図・要望・優先順位・受入条件をAI依頼へ整理する役割で、標準運用ではGitHub上のコード・設定を直接編集しません。GitHub / PR / CIは観測情報として扱います。
 
 ## 2. Claudeの役割
 
@@ -42,6 +31,7 @@ Claudeは隔離worktree内で実装・修正を担当します。
 - pushしない
 - BUILD / UPDATE / DEPLOYしない
 - 指定タスクの範囲を最小限に保つ
+- `acceptEdits` + `--allowedTools` で許可された検査・テスト系Bashだけを使う（`bypassPermissions` は使わない）
 - テスト失敗またはAstra指摘があれば修正する
 
 ## 3. Astraの役割

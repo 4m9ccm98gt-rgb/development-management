@@ -53,14 +53,7 @@ AI依頼
 
 ### development-management 自身の更新ルート
 
-管理repo自身は通常アプリのDCC Orchestrator対象とは分離する。
-
-- ChatGPTがGitHub上で調査・実装・必要なテスト追加を担当。
-- merge前にCodexとClaudeが同じ差分を独立レビュー。
-- どちらかがchanges_requestedならChatGPTが修正。
-- 修正後は必要なテストを再実行し、Codex + Claudeが再レビュー。
-- 両方approve後だけmergeし、merge SHAをWindowsへ正式SYNCする。
-- ChatGPT自身の見直しやActions greenは、Codex / Claude独立レビューの代替ではない。
+通常repoと同じ単一ルート。DCCのAI依頼欄から開始し、Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidateで進める。GPTはAI依頼の整理のみを担当し、GitHub上のコード・設定を直接編集しない。
 
 ### 現行の安全境界
 

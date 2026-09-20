@@ -18,7 +18,7 @@
 
 - [AGENTS.md](AGENTS.md) — AI向け短い入口ガイド
 - [AI_STARTUP.md](AI_STARTUP.md) — 新しい環境での最小開始手順
-- [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — A/B運用の補助説明
+- [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AI依頼経路の補助説明
 - [AI_CHECKLIST.md](AI_CHECKLIST.md) — candidate / push / BUILD等の境界チェック
 - [CAPABILITIES.md](CAPABILITIES.md) — GitHub / Windows / 周辺機器等の能力整理
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — Git・テスト・配布・データ保護の補助ルール
@@ -27,12 +27,14 @@
 
 ## 現在の開発運用
 
-Development Control Centerでは **AI開発を標準ルート** とします。
+実装・設定変更の開始点は、**常にDCCの「AI依頼」欄**です。通常アプリ、`development-management` 自身、新規repo登録のすべて同じ経路です。
 
 ```text
 要望
+→ GPTが意図・優先順位・受入条件をAI依頼へ整理
+→ DCCのAI依頼欄 → 「AI開発開始」
 → Claudeが隔離worktreeで実装
-→ 独立テスト
+→ 独立Tests
 → GPT-6 Astraがread-onlyレビュー
 → 必要ならClaude修正
 → local candidate commit
@@ -41,23 +43,9 @@ Development Control Centerでは **AI開発を標準ルート** とします。
 → BUILD / 配布
 ```
 
-GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex / Claudeへ指示文を渡す旧Bデバッグ入口は通常DCC UIから外します。GitHub / PR / CIの状態表示は、同期・確認・将来のpush検証に必要な観測情報として残します。
+GPTは標準運用でGitHub上のコード・設定を直接編集しません。GitHub / PR / CIの状態表示は、同期・確認・push検証のための観測情報です。
 
-### development-management 自身の更新
-
-Development管理repoだけは通常アプリのDCC開発ルートとは分離します。
-
-```text
-ChatGPTがGitHub上で実装
-→ Codex独立レビュー
-→ Claude独立レビュー
-→ 指摘があればChatGPT修正
-→ 両方approve
-→ merge
-→ WindowsへSYNC
-```
-
-DevelopmentではChatGPTが実装担当、CodexとClaudeが独立reviewerです。両reviewerのapprove前にmergeしません。
+`development-management` はDCCのManaged Repositoriesに登録済みで、`RUN_DEV.cmd` でDCCを起動できます。新規repoは「GitHub未登録repo」の「セットアップ開始」で正式ローカルへcloneした後、`development-management` のAI依頼欄へ登録タスクがセットされます。
 
 ## AI Development Orchestrator
 

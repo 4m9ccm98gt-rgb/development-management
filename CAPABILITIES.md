@@ -14,25 +14,13 @@
 
 能力を持つことと、その主体を必須担当にすることは別です。
 
-## A — ChatGPT fast path
+## 開発ルート
 
-Aでは `github-rw` を持つChatGPTがGitHub上の調査・実装・テスト追加・candidate作成を担当できます。
+実装・設定変更は、常にDCCのAI依頼欄から始めます（`OPERATING_CONTRACT.md`）。Claudeが隔離worktreeで実装し、独立TestsとGPT-6 Astra read-onlyレビューを通してlocal candidateまで進みます。
 
-- `sandbox-exec` が利用できれば自動検証に使う。
-- GitHub Actionsは `sandbox-exec` の一実装であり、必須ではない。
-- `windows-real` が必要な確認はユーザー実機確認へ残す。
-
-## B — Debug escape path
-
-ユーザーがCodex / Claude等を指定し、そのエージェントが `windows-real` を持つ場合、Windowsローカルrepoで調査・実装・テスト・デバッグを連続して行えます。
-
-Bでは、能力が揃っている実機AIへローカル開発をまとめて渡すこと自体を禁止しません。
-
-- B開始時にlocal HEAD / expected origin / branchを確認する。
-- 完成後にlocal candidate commitを作る。
-- candidate SHAとtracked cleanを確認し、実差分をレビューする。
-- ユーザーがそのcandidateを実機確認する。
-- OK後に同じSHAをfast-forwardでpushする。
+- GPTは要望・優先順位・受入条件をAI依頼へ整理する。標準運用ではGitHub上のコード・設定を直接編集しない。
+- `sandbox-exec` が利用できれば自動検証に使う。GitHub Actionsはその一実装であり必須ではない。
+- `windows-real` / `real-peripherals` が必要な確認はユーザー実機確認へ残す。
 
 ## ユーザー
 

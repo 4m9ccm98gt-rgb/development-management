@@ -14,9 +14,7 @@ from scripts.dev_control_center.core import (
     RepoState,
     active_repo_definitions,
     apply_local_candidate,
-    build_debug_handoff_prompt,
     build_new_repo_setup_prompt,
-    build_startup_prompt,
     candidate_sha_is_valid,
     decide_lifecycle,
     discover_entrypoints,
@@ -69,6 +67,20 @@ class DiscoveryTests(unittest.TestCase):
             self.assertTrue(found.build.ready)
             self.assertTrue(found.release.ready)
             self.assertEqual(found.release_label, "UPDATE")
+
+    def test_management_repo_ignores_template_build_and_has_no_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            template = root / "templates" / "windows-python-app"
+            template.mkdir(parents=True)
+            (template / "BUILD_EXE_CLICK_ME.cmd").write_text("test", encoding="utf-8")
+            (root / "RUN_DEV.cmd").write_text("test", encoding="utf-8")
+            found = discover_entrypoints(root, "management")
+            self.assertTrue(found.run.ready)
+            self.assertEqual(found.run.path.name, "RUN_DEV.cmd")
+            self.assertEqual(found.run.path.parent.name, root.name)
+            self.assertEqual(found.build.state, "N/A")
+            self.assertEqual(found.release.state, "N/A")
 
     def test_ambiguous_best_match_is_not_guessed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -455,30 +467,15 @@ class LifecycleDecisionTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
-    def test_startup_set_uses_a_path_without_old_tiers(self):
-        text = build_startup_prompt(RepoDefinition("demo", "desktop", "main", owner="example"))
-        self.assertIn("A — ChatGPT fast path", text)
-        self.assertIn("OPERATING_CONTRACT.md", text)
-        self.assertIn("完全40桁candidate SHA", text)
-        self.assertNotIn("T0", text)
-        self.assertNotIn("CI green", text)
-
-    def test_debug_handoff_uses_b_path_and_local_candidate(self):
-        text = build_debug_handoff_prompt(
-            RepoDefinition("demo", "desktop", "main", owner="example"),
-            Path(r"C:\repos\demo"),
-            "b" * 40,
-        )
-        self.assertIn("B — Debug escape path", text)
-        self.assertIn("b" * 40, text)
-        self.assertIn("fast-forward push", text)
-
     def test_new_repo_setup_requests_central_registration(self):
         remote = RemoteRepo("new-app", default_branch="main", owner="example")
         text = build_new_repo_setup_prompt(remote, Path(r"C:\repos\new-app"))
         self.assertIn("scripts/repo_types.toml", text)
         self.assertIn("scripts/dev_control_center_repos.toml", text)
-        self.assertIn("A — ChatGPT fast path", text)
+        self.assertIn("development-management", text)
+        self.assertIn("[initial_ai_tasks]", text)
+        self.assertIn("[initial_tests]", text)
+        self.assertIn("https://github.com/example/new-app", text)
 
 
 class DarkThemeContractTests(unittest.TestCase):

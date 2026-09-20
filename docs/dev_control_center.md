@@ -10,22 +10,18 @@ Development Control Center は、各repoの場所・正式スクリプト・cand
 
 正本は `OPERATING_CONTRACT.md` です。
 
-通常は **A — ChatGPT fast path** を使います。
+実装・設定変更の開始点は常に **AI依頼欄** です。`development-management` 自身も通常repoと同じManaged Repositoryです。
 
 ```text
-必要なら SETUP / 標準化
-→ ChatGPTで相談・GitHub開発
-→ expected branchへcandidate反映
-→ Control Centerでcandidate確認
-→ SYNC
-→ RUN_DEV / ユーザー実機確認
+GPTがAI依頼を整理
+→ AI依頼欄 + テスト欄 → AI開発開始
+→ Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate
+→ Control Centerでcandidate確認 → RUN_DEV / ユーザー実機確認
 → BUILD
 → UPDATE / DEPLOY
 ```
 
-Windowsローカルで連続デバッグしたい場合は、ユーザー判断で **B — Debug escape path** に切り替えます。
-
-Control Centerの `Bデバッグ指示` は、選択repo・ローカルパス・expected branch・candidate情報を含むhandoffをクリップボードへコピーします。Codex / Claude等の指定エージェントへ貼り付けて使います。
+repoを選択すると、`dev_control_center_repos.toml` の `[initial_ai_tasks]` / `[initial_tests]` がAI依頼欄・テスト欄へ自動入力されます（ユーザー入力済みの内容が優先）。
 
 ## SETUP / 標準化
 
@@ -35,58 +31,7 @@ Control Centerの `Bデバッグ指示` は、選択repo・ローカルパス・
 
 既存の `UPDATE.cmd` / `DEPLOY.cmd` も正式入口として認識します。service / webでBUILD入口がない場合はソース配布として `N/A` を表示します。アプリ未実装の例外は `dev_control_center_repos.toml` の `[unimplemented]` に理由を記録し、RUNはMISSINGのまま、未実装で不要なBUILD・配布だけN/Aにします。実装時はこの例外を削除します。
 
-`SETUP / 標準化` は、単なるChatGPTセッション開始ボタンではありません。選択repoを Development Control Center の正式ライフサイクルへ載せるためのbootstrap / 監査指示を現在のChatGPTへコピーします。
-
-Control Centerがローカルrepoから検出した次の状態を指示へ埋め込みます。
-
-- `SYNC`
-- `RUN_DEV`
-- `BUILD`
-- `UPDATE / DEPLOY`
-
-各入口は `READY / MISSING / MULTIPLE` として扱います。`READY` の正式入口は原則作り直さず、`MISSING / MULTIPLE` だけを優先してGitHub側で整備します。
-
-正本は次の2つです。
-
-- `OPERATING_CONTRACT.md`
-- `PROJECT_BOOTSTRAP.md`
-
-Windows desktop repoでは、必要に応じて tracked な `SYNC_CLICK_ME.cmd` / `scripts/SYNC_CANDIDATE.ps1`、`RUN_DEV.cmd`、`BUILD_EXE_CLICK_ME.cmd`、`UPDATE_SHARED_FOLDER.cmd` またはそのrepoの正式同等入口を整えます。
-
-SETUP完了時は、各入口の状態・変更内容・未確認事項・expected branchへ反映された完全40桁candidate SHAを明示し、そこで停止します。RUN / BUILD / UPDATEは自動実行しません。
-
-つまり、既存repoがControl Center一覧には存在するが `SYNC` 等が `MISSING` の場合、まず `SETUP / 標準化` を使って正式入口をGitHub側へ追加し、そのcandidateをControl Centerで `SYNC` します。
-
-## GitHub / PR / CI
-
-選択repoについて `gh` を使い、次を表示します。
-
-- expected branch HEAD
-- expected branch向けのopen PR
-- open PRがあればPR headのCI状態
-- open PRがなければexpected branch HEADのCI状態
-
-GitHub Actionsは補助検証です。`GREEN` をcandidate完成の絶対条件にはしません。
-
-CI APIが一時的に利用できなくてもbranch HEADを取得できる場合は `UNAVAILABLE` と表示し、candidate SHA自体は失いません。
-
-open PRがあっても、そのPR head自体をcandidateにはしません。candidateは常にexpected branch HEADです。したがって、古い・無関係なopen PRが残っていても、expected branch HEADとローカルHEADが一致していればRUN / BUILD / UPDATEを妨げません。
-
-`PR / CIを開く` から、open PRまたは対象commitのChecks画面を開けます。
-
-## candidateとローカル工程
-
-candidateは **完全40桁SHAのみ**受け付けます。
-
-- GitHub状態を取得できる場合、candidate欄はexpected branch HEADから自動復元されます。DCC再起動後も前回のUIメモリには依存しません。
-- candidateがローカルHEADと違う → `SYNC`のみ有効
-- SYNC成功後に `HEAD == candidate` → `RUN_DEV` / `BUILD` / `UPDATE・DEPLOY` が有効
-- tracked dirty / wrong branch / wrong origin → すべて停止
-- 正式入口が `MISSING` / `MULTIPLE` → 該当工程を停止
-
-Control Centerは各repoの正式スクリプトを呼ぶだけで、SYNC / BUILD / UPDATEロジック自体は再実装しません。各工程の子プロセス終了後はローカル状態とGitHub状態を再取得し、ボタン状態を自動再計算します。
-
-UPDATE / DEPLOY前には、対象candidate SHAを表示し、ユーザー実機確認と必要なBUILDが完了していることを確認します。
+既存repoの標準入口が不足していれば、その内容をAI依頼欄から依頼します。
 
 ## 新規repo
 
@@ -96,11 +41,9 @@ GitHub上に存在し、`scripts/repo_types.toml` に未登録の非archived・�
 
 1. 正式 `Development\repos\<repo>` 配下にrepoが無ければ `gh repo clone`
 2. 既存の非Gitディレクトリがあればfail-close
-3. development-managementへの正式登録・expected branch設定・必要な標準入口整備をChatGPTへ依頼するA-path指示をコピー
+3. `development-management` を自動選択し、そのAI依頼欄へrepo登録タスクをセット（「AI開発開始」でClaude → Tests → Astraにより登録）
 
-ユーザーがcloneコマンド、registryファイル名、標準入口の作り方を暗記する前提にはしません。
-
-新規repoが管理対象へ登録された後も、正式入口が不足していれば `SETUP / 標準化` で同じ監査を行えます。
+ユーザーがcloneコマンド、registryファイル名、標準入口の作り方を暗記する前提にはしません。登録後にDCCを更新して新repoを選択すると、`initial_ai_tasks` / `initial_tests` が自動入力されます。
 
 ## Control Center自身の更新
 
@@ -137,7 +80,7 @@ Control Centerは `development-management/main` とローカルHEADを比較し�
 - CI状態集約
 - Actions greenをcandidate必須条件にしない契約
 - open PR中の自動candidateブロック
-- SETUP / A / B prompt契約
+- 新規repo登録prompt契約
 - `SYNC_CLICK_ME.cmd --no-pause`
 - Python compile
 - registry self-check

@@ -9,25 +9,13 @@
 - 秘密情報、認証情報、実運用設定、顧客データ、業務データ、cache、実行結果をGit管理しない。
 - 設定例はダミー値の `*.example.*` 等を使用する。
 
-## A — ChatGPT fast path
+## 開発ルート
 
-- ChatGPTがGitHubへ書き込み可能なら、依頼範囲でコード調査、実装、テスト追加、branch / commit / push / PR、差分レビュー、candidate SHA確定まで進めてよい。
+- 実装・設定変更の開始点は常にDCCのAI依頼欄。`development-management` 自身も同じ。
+- Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate。
+- GPTは要望・優先順位・受入条件をAI依頼へ整理する。標準運用ではGitHub上のコード・設定を直接編集しない。
 - Actionsは補助。Actions greenをcandidateの必須条件にしない。
 - 実行できないテストを実施済みとは扱わない。
-- GitHub candidateをWindowsへ反映する場合は、既存の安全な `SYNC_CLICK_ME.cmd` 等を優先する。
-
-## B — Debug escape path
-
-ユーザーがCodex / Claude等を指定した場合、指定エージェントがWindowsローカルrepoでデバッグを完結させてよい。
-
-`development-management` 自身の更新はこのBルートの対象外です。管理repoは `OPERATING_CONTRACT.md` のDevelopment専用ルート（ChatGPT実装 → Codex + Claude独立レビュー → 両方approve後にmerge）を使用します。
-
-- 開始時にlocal HEAD / expected origin / branchを確認する。
-- working treeで修正・targeted test・必要なregressionを繰り返す。
-- 修正ごとのpush / Actions待ち / 再SYNCは不要。
-- 完成時にlocal candidate commitを作り、tracked cleanを確認する。
-- 既知良好SHAからcandidateまでの実差分を一度レビューする。
-- ユーザー実機確認OK後、同じSHAをfast-forwardでpushする。
 - remoteが進んでいたらforceせず停止する。
 
 ## candidateと実機確認

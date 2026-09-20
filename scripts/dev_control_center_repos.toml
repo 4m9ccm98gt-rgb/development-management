@@ -1,13 +1,31 @@
 [branches]
 beverage-inventory-ordering-system = "main"
 call-reception-assistant = "main"
+development-management = "main"
 food-cost-calculation-system = "main"
 inventory-reconciliation-system = "main"
 menu-sheet-generator = "main"
 next-day-setup = "main"
 qr-supply-ordering-system = "main"
+shizen-launcher = "main"
 
 # Keep the app visible; RUN remains MISSING until the application is implemented.
 # Remove this entry when implementation and distribution become applicable.
 [unimplemented]
 call-reception-assistant = "Application source is not implemented; SYNC-only setup approved."
+
+# First AI request / independent test command shown in the DCC AI fields when a repo
+# is selected and the user has not typed anything yet.
+[initial_ai_tasks]
+development-management = """development-managementの変更依頼です。
+変更内容・優先順位・受入条件をここへ具体的に書いてください。
+OPERATING_CONTRACT.mdを正本とし、関連する自動テストも追加・更新してください。"""
+shizen-launcher = """PySide6のデモアプリを新規に作成してください。
+ウィンドウにタイトルとボタンを1つ表示し、ボタンを押すとラベルが更新される最小構成にしてください。
+RUN_DEV.cmd（.venvを作成しrequirements.txtからPySide6を導入して起動）とrequirements.txt、README.md、
+ヘッドレスで実行できる最小のテストを追加してください。
+BUILD / UPDATEの入口はこの依頼では作成せず、秘密情報・実運用データは含めないでください。"""
+
+[initial_tests]
+development-management = "python -m unittest discover -s tests -v"
+shizen-launcher = "python -m unittest discover -s tests -v"

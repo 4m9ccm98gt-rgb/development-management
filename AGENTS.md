@@ -1,19 +1,19 @@
 # development-management AI入口ガイド
 
-このリポジトリでは、開発運用の正本を [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) とします。
+開発運用の正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) です。
 
-最初に必要なのは、今回が **A: ChatGPT fast path** か、ユーザー指定の **B: Debug escape path** かを確認することです。
+## 単一路線
 
-## 基本
+実装・設定変更の開始点は、常にDCCの「AI依頼」欄です。通常repo、`development-management` 自身、新規repo登録で経路は同じです。
 
-- 通常はAで、ChatGPTがGitHub上の調査・実装・テスト追加・candidate作成を担当します。
-- GitHub Actionsは補助です。Actions greenを通常candidateの必須条件にしません。
-- ユーザーがWindowsへcandidateを反映し、実機確認します。
-- 実機NG後も軽い修正ならAを継続できます。
-- GitHub↔SYNCの往復が面倒、またはローカル連続デバッグが適切になったら、ユーザー指定でBへ切り替えます。
-- Bでは指定されたCodex / Claude等がWindowsローカルrepoで完成まで調査・実装・テスト・デバッグし、local candidate commitをユーザーが確認してからpushします。
-- ただし `development-management` 自身の更新はA/Bの通常ルートとは分離し、ChatGPTがGitHub上で実装し、merge前にCodex + Claudeの独立レビューを両方通します。詳細は `OPERATING_CONTRACT.md` を優先します。
-- ユーザーが特定エージェントを名指ししたら、その指定を別エージェントへ勝手に置き換えません。
+```text
+AI依頼 → Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate
+```
+
+- GPTの役割は、ユーザーの意図・要望・優先順位・受入条件をAI依頼へ整理することです。標準運用ではGitHub上のコード・設定を直接編集しません。
+- 実装・修正はDCCのOrchestratorが起動するClaudeが隔離worktreeで行います。
+- ユーザーが特定エージェントを名指ししても、開発開始経路は増やしません。
+- 新規repoはDCCの「セットアップ開始」から `development-management` のAI依頼欄へ登録タスクをセットし、同じ経路で登録します。
 
 ## 常に守ること
 
@@ -28,20 +28,13 @@
 
 ## 読み込み方針
 
-- `AGENT_EFFICIENCY_POLICY.md` のT0〜T3は現在の必須運用ではありません。
 - 新しいチャットという理由だけで長文書一式を読みません。
 - 対象README、変更箇所、関連consumer / producer、安全上必要な文書だけを読みます。
-- `AI_STARTUP.md` / `AI_OPERATING_MANUAL.md` / `STARTUP_HANDOFF_POLICY.md` は補助資料であり、`OPERATING_CONTRACT.md` を上書きしません。
-- 契約の明示的な再確認は、A→B切替、candidate確定、push、BUILD、deploy / update、本番反映などの境界で行えば十分です。
+- `AGENT_EFFICIENCY_POLICY.md` は旧運用のLegacy Referenceで、必須ではありません。
+- 補助資料は `OPERATING_CONTRACT.md` を上書きしません。
 
 ## 手動PowerShell提示
 
 - 複数行PowerShellでは、状態変更・外部影響・長時間処理を伴う重要コマンドを最終行にしません。
 - 非対話コマンドでは無害な末尾行を使えますが、対話型CLIは同じ貼り付けブロックへ混在させません。
 - 詳細条件と例外は `OPERATING_CONTRACT.md` の「手動PowerShell貼り付け」を正とします。AI Orchestratorの直接プロセス起動には適用しません。
-
-## GitHub作業
-
-ユーザーが実装・更新を依頼し、ChatGPTがGitHubへ書き込み可能なら、依頼範囲で調査から実装・テスト追加・candidate作成まで進めて構いません。
-
-本番反映、tag、実運用データ更新は、明示的な依頼なしに実施しません。

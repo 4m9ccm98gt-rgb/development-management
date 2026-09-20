@@ -4,16 +4,18 @@
 
 目的は、**DCCを中心にAI開発を高速に回しつつ、実機確認・candidate SHA・BUILD対象の一致を崩さないこと**です。
 
-## 1. 標準ルート
+## 1. 単一の開発ルート
 
-通常アプリの開発は Development Control Center の **AI開発** を使います。
-
-`development-management` 自身だけは管理基盤なので別ルートとし、**ChatGPTがGitHub上で実装し、merge前にCodexとClaudeの独立レビューを両方通します。**
+実装・設定変更の開始点は、**常にDCC（Development Control Center）の「AI依頼」欄**です。
+対象は通常アプリ、`development-management` 自身、新規repo登録のすべてで、別の開発開始経路はありません。
 
 ```text
-仕様・要望
+ユーザーの要望
+→ GPTが意図・優先順位・受入条件をAI依頼へ整理
+→ DCCで対象repoを選び、AI依頼欄 + テスト欄へ入力
+→ 「AI開発開始」
 → Claudeが隔離worktreeで実装
-→ 独立テスト
+→ 独立Tests
 → GPT-6 Astraがread-onlyレビュー
 → 必要ならClaudeが修正
 → local candidate commit
@@ -26,29 +28,24 @@
 → UPDATE / DEPLOY
 ```
 
-通常アプリでは、GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex / Claudeへ指示文を渡す旧Bデバッグ入口は標準運用ではありません。
+### GPTの役割
 
-### development-management の更新
+- GPTはユーザーの意図・要望・優先順位・受入条件を、DCCのAI依頼として貼れる形へ整理する。
+- 標準運用ではGitHub上のコード・設定を直接編集しない。
+- AI依頼にはrepo名、目的、受入条件、触れてはいけない範囲、独立テストコマンドを含める。
 
-```text
-仕様・要望
-→ ChatGPTがGitHub上で調査・実装・必要なテスト追加
-→ 利用可能な自動検証
-→ Codexが独立レビュー
-→ Claudeが独立レビュー
-→ どちらかがchanges requestedならChatGPTが修正
-→ 必要なテストを再実行
-→ Codex + Claudeが再レビュー
-→ 両方approve
-→ merge
-→ Windowsへ正式SYNC
-```
+### 管理対象
 
-- ChatGPTはDevelopmentの実装担当であり、Codex / Claudeレビューの代替にはなりません。
-- CodexとClaudeは同じ差分を独立に確認します。
-- どちらか一方でもblocking findingが残る間はmergeしません。
-- 修正後は変更後の差分を両者が再確認します。
-- development-managementは通常アプリ用AI Orchestratorの実装担当切替ルールには載せません。
+- `development-management` はDCCのManaged Repositoriesへ登録済みで、通常repoと同じAI Orchestrator対象。RUN_DEVは `RUN_DEV.cmd`（DCC起動）。
+- 変更は `scripts/repo_types.toml`（種別）と `scripts/dev_control_center_repos.toml`（`[branches]` / `[initial_ai_tasks]` / `[initial_tests]`）が正。
+
+### 新規repo登録
+
+1. DCCの「GitHub未登録repo」で対象を選び「セットアップ開始」を押す。
+2. 正式ローカルへのcloneを確認する（既存ファイルは上書きしない）。
+3. DCCが `development-management` を自動選択し、AI依頼欄へrepo登録タスクをセットする。
+4. 内容を確認して「AI開発開始」。Claude → Tests → Astraで `development-management` を変更する。
+5. local candidateの確認・反映・DCC更新後、新repoを選ぶと `initial_ai_tasks` / `initial_tests` が自動入力される。
 
 ## 2. 絶対に残す安全条件
 
@@ -80,6 +77,8 @@ AI Orchestrator v0.2の標準役割は次です。
 - 作業場所: source repoではなく一時detached worktree
 - 完了点: local candidate
 - 自動では行わないもの: push / BUILD / UPDATE / DEPLOY
+- Claudeの権限: `--permission-mode acceptEdits` + `--allowedTools` で許可した検査・テスト・interpreter系Bashのみ（`bypassPermissions` / `--dangerously-skip-permissions` は使わない）。agent側のgit pushは無効化し、git履歴を変える操作は許可しない
+- Claudeの `--max-turns` は30
 
 Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。
 
@@ -119,7 +118,7 @@ Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時�
 ## 8. 他文書との関係
 
 - 本書がDevelopment運用の正本です。
-- `AI_OPERATING_MANUAL.md` / `AI_CHECKLIST.md` / `AGENTS.md` / `AI_STARTUP.md` は補助資料です。
+- `README.md` / `AI_OPERATING_MANUAL.md` / `AI_CHECKLIST.md` / `AGENTS.md` / `AI_STARTUP.md` / `STARTUP_HANDOFF_POLICY.md` は正本と整合する補助資料です。
 - `AGENT_EFFICIENCY_POLICY.md` は旧T0〜T3運用のLegacy Referenceです。
 - 詳細文書と本書が競合する場合は本書を優先します。
 

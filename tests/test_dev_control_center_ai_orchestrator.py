@@ -78,6 +78,25 @@ class RoleBoundaryTests(unittest.TestCase):
         self.assertIn("--permission-mode", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
         self.assertNotIn("plan", command)
+        self.assertEqual(command[command.index("--max-turns") + 1], "30")
+
+    @mock.patch(
+        "tools.ai_orchestrator.orchestrator._resolved_command",
+        side_effect=lambda name: [name],
+    )
+    def test_claude_bash_is_allowed_without_bypassing_permissions(self, _mock):
+        command = _claude_implementation_command()
+        joined = " ".join(command)
+        self.assertNotIn("bypassPermissions", joined)
+        self.assertNotIn("dangerously-skip-permissions", joined)
+        allowed = command[command.index("--allowedTools") + 1].split(",")
+        self.assertIn("Bash(python:*)", allowed)
+        self.assertIn("Bash(git diff:*)", allowed)
+        for tool in allowed:
+            for forbidden in ("push", "commit", "checkout", "reset", "rebase", "add", "switch", "merge"):
+                self.assertNotIn(f"git {forbidden}", tool)
+        self.assertNotIn("Bash(*)", allowed)
+        self.assertNotIn("Bash", allowed)
 
     @mock.patch(
         "tools.ai_orchestrator.orchestrator._resolved_command",

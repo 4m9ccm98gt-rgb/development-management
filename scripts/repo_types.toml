@@ -9,6 +9,7 @@
 #   web      … ブラウザ/サーバーアプリ。起動 + デプロイ
 #   service  … 常駐・自動実行。起動 + 常駐登録
 #   lib       … 部品。ワンクリック経路は不要
+#   management… 開発管理基盤（development-management）。通常repoと同じAI依頼経路。ビルド・配布は課さない
 #   knowledge … 知識ベース/テンプレート repo。実行・ビルド標準は課さない（秘密チェックのみ）
 #   archived  … 開発対象外。点検しない
 
@@ -20,5 +21,7 @@ inventory-reconciliation-system    = "service"   # PMS照合の自動実行、�
 menu-sheet-generator               = "desktop"   # PMS CSV取込 → 帳票生成・印刷の対話型アプリ
 next-day-setup                     = "desktop"   # 翌日準備。BUILD_EXE_CLICK_ME + UPDATE_SHARED_FOLDER
 qr-supply-ordering-system          = "web"       # Flask系の独立Webアプリ
+development-management            = "management" # DCC / AI Orchestrator / 運用契約。AI依頼欄から変更する
+shizen-launcher                    = "desktop"   # PySide6ランチャーのデモ
 kitchen-calendar                   = "archived"  # next-day-setup へ取り込み済み。今後開発しない
 hospitality-review-reply           = "knowledge" # 旅館口コミ返信のテンプレート/知識 repo。アプリではない

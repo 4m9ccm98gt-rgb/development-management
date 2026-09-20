@@ -114,6 +114,7 @@ REQUIRED_BY_TYPE = {
     "web":       ["run", "deploy"],
     "service":   ["run", "install"],
     "lib":       [],
+    "management": [],  # development-management。ワンクリック経路は課さない
     "knowledge": [],  # 知識ベース/テンプレート repo。実行・ビルド標準は課さない（秘密チェックのみ）
 }
 PATH_LABEL = {

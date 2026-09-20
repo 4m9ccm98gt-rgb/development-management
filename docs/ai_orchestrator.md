@@ -68,6 +68,8 @@ python C:\Users\suisy\Documents\Development\repos\development-management\tools\a
 - AI編集は一時detached worktreeだけ
 - Claudeのcommit / branch操作を検出したら停止
 - child Gitのpush URLを無効化
+- Claudeは `--permission-mode acceptEdits` のまま、`--allowedTools` で許可した検査・テスト・interpreter系Bashだけ非対話で実行（`bypassPermissions` / `--dangerously-skip-permissions` は使わない。git add / commit / push / checkout / reset等は許可しない）
+- Claudeの `--max-turns` は30
 - Codex/Astraはread-only sandbox
 - Astraレビュー前後でdiff fingerprintが変わったら停止
 - candidate直前にoriginが進んでいないか再確認

@@ -256,6 +256,45 @@ def _assert_agent_did_not_commit(worktree: Path, base_sha: str) -> None:
         )
 
 
+# Non-interactive acceptEdits denies Bash unless allowed here. Only inspection,
+# test/static-check and interpreter commands are allowed; git write commands
+# (add/commit/push/checkout/reset/...) are deliberately absent.
+CLAUDE_ALLOWED_BASH_TOOLS: tuple[str, ...] = tuple(
+    f"Bash({prefix}:*)"
+    for prefix in (
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git ls-files",
+        "git grep",
+        "git rev-parse",
+        "git branch --show-current",
+        "python",
+        "python3",
+        "py",
+        "pytest",
+        "ruff",
+        "ls",
+        "dir",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "grep",
+        "rg",
+        "find",
+        "sort",
+        "diff",
+        "pwd",
+        "mkdir",
+        "cp",
+        "mv",
+        "echo",
+    )
+)
+
+
 def _claude_implementation_command() -> list[str]:
     return [
         *_resolved_command("claude"),
@@ -264,6 +303,8 @@ def _claude_implementation_command() -> list[str]:
         "json",
         "--permission-mode",
         "acceptEdits",
+        "--allowedTools",
+        ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
         "--max-turns",
         "30",
     ]

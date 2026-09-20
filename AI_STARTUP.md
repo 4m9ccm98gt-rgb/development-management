@@ -1,6 +1,6 @@
 # AI Startup
 
-新しいチャットや実行環境で開発を始めるときの最小入口です。
+新しいチャットや実行環境で開発を始めるときの最小入口です。正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) です。
 
 ## 1. 最初に読むもの
 
@@ -10,54 +10,26 @@
 
 新しいチャットという理由だけでDevelopment文書一式を読みません。
 
-`AGENT_EFFICIENCY_POLICY.md` のT0〜T3、読み込み予算、CI必須ゲートは現在の必須運用ではありません。
-
-## 2. 通常はA — ChatGPT fast path
+## 2. 開始点は常にDCCのAI依頼欄
 
 ```text
-ChatGPTがGitHub上で調査・実装・テスト追加
-→ 利用可能な自動検証
-→ GitHub candidate SHA
-→ ユーザーが正式同期入口でWindowsへ反映
-→ ユーザー実機確認
-→ OKならBUILD / 配布
+GPTが要望・優先順位・受入条件をAI依頼へ整理
+→ DCCで対象repoを選択（development-management自身も同じ）
+→ AI依頼欄 + テスト欄 → 「AI開発開始」
+→ Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate
+→ ユーザー実機確認（RUN_DEV）→ OKなら同じSHAをpush → BUILD / 配布
 ```
 
-GitHub Actionsは補助であり、利用不能だけを理由に開発を止めません。
+GPTは標準運用でGitHub上のコード・設定を直接編集しません。
 
-## 3. 面倒になったらB — Debug escape path
+## 3. 新規repo
 
-ユーザーがCodex / Claude等を明示した場合、その指定エージェントがWindowsローカルrepoで連続デバッグします。
-
-```text
-開始時にlocal HEAD / origin / branch確認
-→ working treeで調査・実装・テスト・デバッグ
-→ local candidate commit
-→ tracked clean + 実差分レビュー
-→ ユーザー実機確認
-→ OKなら同じSHAをfast-forward push
-→ BUILD / 配布
-```
-
-Bの詳細条件は `OPERATING_CONTRACT.md` を正とします。
+DCCの「セットアップ開始」が正式ローカルへのcloneを確認し、`development-management` のAI依頼欄へ登録タスクをセットします。「AI開発開始」で同じ経路により登録し、DCC更新後は新repoの `initial_ai_tasks` / `initial_tests` が自動入力されます。
 
 ## 4. 初回ローカル準備
 
-ローカルrepo、runtime、依存関係、`RUN_DEV`、BUILD / UPDATE入口等の初回準備が必要なら、今回必要な範囲だけ整えます。
-
-- 外部実機AIを自動的な必須担当にしません。
-- ユーザーがCodex / Claude等を指定した場合は、その指定を維持します。
-- ユーザーへ長いGit / PowerShell手順を覚えさせるより、既存の安全なワンクリック入口を優先します。
-- 初回準備のためだけに、将来工程すべての入口監査を必須にしません。
+ローカルrepo、runtime、依存関係、`RUN_DEV` 等の初回準備は [STARTUP_HANDOFF_POLICY.md](STARTUP_HANDOFF_POLICY.md) を参照します。初回準備でも別の開発開始経路は作りません。
 
 ## 5. 境界で確認すること
 
-毎ターンではなく、主に次の境界で `OPERATING_CONTRACT.md` を再確認します。
-
-- A → Bへ切り替えるとき
-- candidateを確定するとき
-- pushするとき
-- BUILDするとき
-- deploy / update / 本番反映するとき
-
-常に、実行していない検証を「確認済み」と扱わず、本番データ・秘密情報・既存変更を保護します。
+candidate確定、push、BUILD、deploy / update / 本番反映の境界で `OPERATING_CONTRACT.md` を再確認します。実行していない検証を「確認済み」と扱わず、本番データ・秘密情報・既存変更を保護します。
