@@ -14,9 +14,7 @@ from scripts.dev_control_center.core import (
     RepoState,
     active_repo_definitions,
     apply_local_candidate,
-    build_debug_handoff_prompt,
-    build_new_repo_setup_prompt,
-    build_startup_prompt,
+    build_new_repo_registration_task,
     candidate_sha_is_valid,
     decide_lifecycle,
     discover_entrypoints,
@@ -505,36 +503,20 @@ class LifecycleDecisionTests(unittest.TestCase):
 
 
 class PromptTests(unittest.TestCase):
-    def test_startup_handoff_uses_unified_orchestrator_route(self):
-        text = build_startup_prompt(RepoDefinition("demo", "desktop", "main", owner="example"))
-        self.assertIn("OPERATING_CONTRACT.md", text)
-        self.assertIn("Claude", text)
-        self.assertIn("GPT-6 Astra", text)
-        self.assertIn("ChatGPTは実装担当にならず", text)
-        self.assertIn("development-management自身も同じルート", text)
-        self.assertNotIn("A — ChatGPT fast path", text)
-        self.assertNotIn("T0", text)
-
-    def test_debug_handoff_uses_b_path_and_local_candidate(self):
-        text = build_debug_handoff_prompt(
-            RepoDefinition("demo", "desktop", "main", owner="example"),
-            Path(r"C:\repos\demo"),
-            "b" * 40,
-        )
-        self.assertIn("B — Debug escape path", text)
-        self.assertIn("b" * 40, text)
-        self.assertIn("fast-forward push", text)
-
-    def test_new_repo_setup_requests_central_registration_and_ai_handoff(self):
+    def test_new_repo_registration_task_targets_development_orchestrator(self):
         remote = RemoteRepo("new-app", default_branch="main", owner="example")
-        text = build_new_repo_setup_prompt(remote, Path(r"C:\repos\new-app"))
+        text = build_new_repo_registration_task(remote, Path(r"C:\repos\new-app"))
+        self.assertIn("development-management", text)
         self.assertIn("scripts/repo_types.toml", text)
         self.assertIn("scripts/dev_control_center_repos.toml", text)
         self.assertIn("[initial_ai_tasks]", text)
         self.assertIn("[initial_tests]", text)
         self.assertIn("Claude", text)
-        self.assertIn("対象アプリ本体を実装・修正・検証しません", text)
+        self.assertIn("Astra", text)
+        self.assertIn("新規repo本体は編集しません", text)
+        self.assertIn("推測で埋めず", text)
         self.assertNotIn("A — ChatGPT fast path", text)
+        self.assertNotIn("B — Debug escape path", text)
 
 
 class DarkThemeContractTests(unittest.TestCase):
@@ -576,7 +558,22 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertNotIn('text="Bデバッグ指示"', build)
         self.assertNotIn('text="GitHub更新"', build)
         self.assertNotIn('text="STARTUP SET"', build)
+        self.assertNotIn('text="Bデバッグ指示"', build)
         self.assertNotIn('self.sync_button.grid(', build)
+        self.assertNotIn("def copy_startup_set", text)
+        self.assertNotIn("def copy_debug_handoff", text)
+
+    def test_new_repo_setup_enters_development_ai_request(self):
+        text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
+        start = text.index("    def setup_new_repo(self) -> None:")
+        end = text.index("    def check_self_update(self) -> None:", start)
+        setup = text[start:end]
+        self.assertIn('definition.name == "development-management"', setup)
+        self.assertIn("build_new_repo_registration_task(remote, dest)", setup)
+        self.assertIn('self.ai_task.insert("1.0", task)', setup)
+        self.assertIn('"AI開発開始"', setup)
+        self.assertNotIn("_copy_to_clipboard", setup)
+        self.assertNotIn("現在のChatGPTへ貼り付け", setup)
 
     def test_gui_prefills_registered_initial_ai_task(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
