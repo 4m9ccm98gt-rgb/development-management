@@ -617,15 +617,41 @@ class App(ttk.Frame):
             except RuntimeError as exc:
                 messagebox.showerror("セットアップ停止", str(exc))
                 return
-        self._copy_to_clipboard(build_new_repo_setup_prompt(remote, dest))
-        self._log(f"{remote.name}: clone確認 + 管理登録/初期AIタスク設計指示をコピーしました。")
+
+        try:
+            dev_index = next(
+                index
+                for index, definition in enumerate(self.definitions)
+                if definition.name == "development-management"
+            )
+        except StopIteration:
+            messagebox.showerror(
+                "セットアップ停止",
+                "development-management がManaged Repositoriesにありません。Control Centerを更新してください。",
+            )
+            return
+
+        task = build_new_repo_setup_prompt(remote, dest)
+        self.repo_list.selection_clear(0, "end")
+        self.repo_list.selection_set(dev_index)
+        self.repo_list.activate(dev_index)
+        self.repo_list.see(dev_index)
+        self._select_repo()
+        self.ai_task.delete("1.0", "end")
+        self.ai_task.insert("1.0", task)
+        self.ai_task_by_repo["development-management"] = task
+        self.ai_status_var.set("新規repo登録タスクを準備済み")
+
+        self._log(
+            f"{remote.name}: clone確認 → development-management のAI依頼欄へ登録タスクをセットしました。"
+        )
         messagebox.showinfo(
             "新規repo",
             "正式ローカルrepoを確認しました。\n"
-            "管理登録と初期AIタスク設計の指示をコピーしました。\n"
-            "現在のChatGPTへ貼り付けてください。\n\n"
-            "登録反映後はDCCが初期AI依頼を自動入力します。"
-            "対象repoを選んで「AI開発開始」を押せば、Claude実装 → Tests → Astraレビューへ進みます。",
+            "development-management を選択し、AI依頼欄へ登録タスクをセットしました。\n\n"
+            "必要ならGPTでrepo種別や最初のデモ要件をAI依頼へ追記し、"
+            "そのまま「AI開発開始」を押してください。\n"
+            "以後は Claude実装 → Tests → Astraレビュー → local candidate の通常ルートです。",
         )
 
     def check_self_update(self) -> None:
