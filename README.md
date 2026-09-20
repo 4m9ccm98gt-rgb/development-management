@@ -18,7 +18,7 @@
 
 - [AGENTS.md](AGENTS.md) — AI向け短い入口ガイド
 - [AI_STARTUP.md](AI_STARTUP.md) — 新しい環境での最小開始手順
-- [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — A/B運用の補助説明
+- [AI_OPERATING_MANUAL.md](AI_OPERATING_MANUAL.md) — AI Orchestrator運用の補助説明
 - [AI_CHECKLIST.md](AI_CHECKLIST.md) — candidate / push / BUILD等の境界チェック
 - [CAPABILITIES.md](CAPABILITIES.md) — GitHub / Windows / 周辺機器等の能力整理
 - [DEVELOPMENT_RULES.md](DEVELOPMENT_RULES.md) — Git・テスト・配布・データ保護の補助ルール
