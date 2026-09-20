@@ -29,6 +29,8 @@
 
 Development Control Centerでは **AI開発を標準ルート** とします。
 
+**実装・設定変更の開始点は常にDCCのAI依頼欄です。** 通常repo、`development-management`、新規repo登録のどれも別のChatGPT/GitHub編集経路へ分岐しません。ChatGPTはユーザー意図をAI依頼へ整理し、Git上の変更はClaude → Tests → Astraへ渡します。
+
 ```text
 要望 / 実機フィードバック
 → ChatGPTが意図・受入条件をAI依頼へ整理
