@@ -45,19 +45,9 @@ GitHubだけで実装してcandidateを作る旧A-path、および手動でCodex
 
 ### development-management 自身の更新
 
-Development管理repoだけは通常アプリのDCC開発ルートとは分離します。
+Development管理repoも例外ルートへ分けません。DCCで `development-management` を選び、通常と同じ **Claude実装 → Tests → GPT-6 Astraレビュー → local candidate** を使います。
 
-```text
-ChatGPTがGitHub上で実装
-→ Codex独立レビュー
-→ Claude独立レビュー
-→ 指摘があればChatGPT修正
-→ 両方approve
-→ merge
-→ WindowsへSYNC
-```
-
-DevelopmentではChatGPTが実装担当、CodexとClaudeが独立reviewerです。両reviewerのapprove前にmergeしません。
+ChatGPTはユーザー意図を開発タスクへ変換します。実行コードの実装や、ユーザーによるCodex / Claude間の手動受け渡しは標準運用にしません。
 
 ## AI Development Orchestrator
 
