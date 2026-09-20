@@ -31,11 +31,11 @@
 
 ## 3. 新規repo
 
-DCCの「セットアップ開始」で正式ローカルへcloneし、生成された指示をChatGPTへ渡します。
+DCCの「セットアップ開始」は正式ローカルへのcloneまでを行い、その後 `development-management` を選択してAI依頼欄へ登録タスクをセットします。
 
-ChatGPTはrepo種別、expected branch、初期デモの意図・受入条件、初期AI依頼、独立テストコマンドを中央registryへ登録します。対象アプリのコードは実装しません。
+ChatGPT / ユーザーはそのAI依頼へrepo種別、expected branch、初期デモの意図・受入条件を整理します。中央registryの変更自体は「AI開発開始」からClaude → Tests → Astraで行います。ChatGPTはGitHub上のコード・設定を直接編集しません。
 
-DCC更新後、対象repoを選ぶと初期AI依頼とテストが自動入力されます。ユーザーは「AI開発開始」を押し、Claude → Tests → Astraへ進めます。
+Development candidate反映後にControl Centerを更新すると、新repoを選択でき、登録済みの初期AI依頼とテストが自動入力されます。そこから再び同じ「AI開発開始」でClaude → Tests → Astraへ進めます。
 
 ## 4. 境界
 
