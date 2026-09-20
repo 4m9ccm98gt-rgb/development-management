@@ -513,18 +513,18 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
 def build_startup_prompt(definition: RepoDefinition) -> str:
     """Create the standard ChatGPT-to-Orchestrator handoff prompt."""
     return (
-        f"対象repo: {definition.full_name}\n"
-        f"expected branch: {definition.branch}\n\n"
-        "development-management/OPERATING_CONTRACT.md を開発運用の正本として扱ってください。\n"
+        f"対象repo: {definition.full_name}\\n"
+        f"expected branch: {definition.branch}\\n\\n"
+        "development-management/OPERATING_CONTRACT.md を開発運用の正本として扱ってください。\\n"
         "ChatGPTは実装担当にならず、ユーザーの要望・違和感・優先順位を抽出して、"
-        "Claudeへ渡すAI開発タスクと受入条件へ整理してください。\n"
+        "Claudeへ渡すAI開発タスクと受入条件へ整理してください。\\n"
         "実装はDCC / AI Orchestratorの Claude → Tests → GPT-6 Astra read-onlyレビュー → "
-        "local candidate の標準ルートへ渡してください。development-management自身も同じルートです。\n"
-        "ユーザーへCodex / Claude間の手動受け渡しを要求しないでください。\n"
+        "local candidate の標準ルートへ渡してください。development-management自身も同じルートです。\\n"
+        "ユーザーへCodex / Claude間の手動受け渡しを要求しないでください。\\n"
         "開始時はOperating Contract、対象repoのREADMEまたは今回の変更に直接関係する説明、"
-        "変更対象コードと直接のconsumer / producerだけを必要範囲で確認してください。\n"
+        "変更対象コードと直接のconsumer / producerだけを必要範囲で確認してください。\\n"
         "candidate確定後はユーザー確認 → local expected branchへfast-forward → RUN_DEV / 必要な実機確認 → "
-        "OKなら同じSHAをpush → BUILD / UPDATE・DEPLOYの安全境界を維持してください。\n"
+        "OKなら同じSHAをpush → BUILD / UPDATE・DEPLOYの安全境界を維持してください。\\n"
         "このあとユーザーの変更要望をAI依頼へ整理してください。"
     )
 
