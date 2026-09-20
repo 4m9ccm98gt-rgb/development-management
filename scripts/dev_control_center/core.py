@@ -553,28 +553,26 @@ def build_debug_handoff_prompt(
 
 
 def build_new_repo_setup_prompt(remote: RemoteRepo, local_path: Path) -> str:
-    branch_text = remote.default_branch or "未確定（GitHub上で確認して明示設定すること）"
+    """Build the development-management AI task used to register a new repo."""
+    branch_text = remote.default_branch or "未確定"
     return (
-        "新規repoをDevelopmentへ正式登録し、最初のAI開発タスクを設計してください。\n"
+        "新規repoをDevelopmentの正式管理対象へ登録してください。\n"
+        "このAI依頼の実装対象は development-management です。新規repo本体は編集しません。\n"
         f"GitHub: {remote.github_url}\n"
-        f"正式ローカル候補: {local_path}\n"
+        f"正式ローカル: {local_path}\n"
         f"GitHub default branch: {branch_text}\n\n"
-        "development-management/OPERATING_CONTRACT.md を正本としてください。\n"
-        "この段階でChatGPTは対象アプリ本体を実装・修正・検証しません。"
-        "RUN_DEV / BUILD / UPDATE・DEPLOYの仮実装やplaceholderも追加しません。\n"
-        "ユーザーとの会話から、最初に実機で触れる最小デモに必要な意図・優先順位・受入条件を抽出してください。"
-        "不足があっても安全に仮定できる範囲は最小限のデモ仕様へ落とし、実装判断はClaudeへ渡してください。\n"
-        "repo種別とexpected branchを確定し、scripts/repo_types.toml と "
-        "scripts/dev_control_center_repos.toml へ正式登録してください。candidate branchは推測しません。\n"
-        "scripts/dev_control_center_repos.toml の [initial_ai_tasks] にClaudeへ渡す初期AI依頼、"
-        "[initial_tests] に独立テストコマンドを登録してください。"
-        "DCCは更新後、その内容をAI依頼欄とテスト欄へ自動入力します。\n"
-        "秘密情報・実運用データ・ローカル設定はGit管理しません。"
-        "新規repo登録だけの定型config変更では、ユーザーへCodex/Claudeの手動レビュー操作を要求しません。\n"
-        "完了時は管理登録内容、expected branch、development-management側の完全40桁candidate SHA、"
-        "そしてユーザーが次にDCCで押すボタンだけを明示してください。"
+        "OPERATING_CONTRACT.md を正本として、通常のClaude実装 → Tests → Astra read-onlyレビュー → "
+        "local candidateで進めてください。\n"
+        "新規repo側のREADME、DCC_SETUP.md、tracked metadata、およびこのAI依頼へ追記されたユーザー要件を確認し、"
+        "repo種別、expected branch、最初のAI開発タスク、独立テストコマンドを確定してください。"
+        "情報が足りない項目は推測で埋めず、candidateを作らず不足内容を明示してください。\n"
+        "確定できる場合は scripts/repo_types.toml と scripts/dev_control_center_repos.toml へ登録し、"
+        "[initial_ai_tasks] に対象repoの最初のClaude向け開発タスク、"
+        "[initial_tests] に独立テストコマンドを設定してください。"
+        "未実装repoなら [unimplemented] も整合させてください。\n"
+        "秘密情報、実運用データ、ローカル設定はGit管理しません。"
+        "対象repoのRUN_DEV / BUILD / UPDATE・DEPLOYをこの登録タスク内で直接実装しません。"
     )
-
 
 def clone_new_repository(remote: RemoteRepo, repos_root: Path) -> Path:
     """Clone an unmanaged repository into canonical repos root without overwriting."""
