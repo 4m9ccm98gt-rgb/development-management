@@ -1,7 +1,9 @@
 """Claude implementation + Codex/Astra review orchestrator.
 
-v0.2 intentionally stops at a local candidate commit. It never pushes, builds,
-deploys, or updates production resources.
+v0.3 HOL orchestrates implementation, tests, independent review, bounded
+implementer/reviewer deliberation, and repair loops. It intentionally stops at
+a local candidate commit and never pushes, builds, deploys, or updates production
+resources.
 """
 
 from __future__ import annotations
@@ -13,11 +15,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from typing import Iterable
 
 
@@ -25,8 +30,12 @@ HERE = Path(__file__).resolve().parent
 PROMPTS = HERE / "prompts"
 DEFAULT_TIMEOUT = 1800
 MAX_DIFF_CHARS = 200_000
+REVIEW_BUNDLE_CHARS = 90_000
 DEFAULT_REVIEW_MODEL = "gpt-6-astra"
-DEFAULT_MAX_ROUNDS = 2
+DEFAULT_MAX_ROUNDS = 30
+DEFAULT_TEST_TIMEOUT = 600
+PROVIDER_RETRIES = 30
+DELIBERATION_EXCHANGES = 2
 API_BILLING_ENV_VARS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -179,6 +188,25 @@ def _tracked_dirty(repo: Path) -> bool:
     return bool(_git(repo, "status", "--porcelain", "--untracked-files=no").stdout.strip())
 
 
+def _fetch_expected_origin_branch(root: Path, branch: str, *, label: str = "git fetch") -> None:
+    refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+    fetch = _run(
+        [
+            *_resolved_command("git"),
+            "-C",
+            str(root),
+            "fetch",
+            "--prune",
+            "origin",
+            refspec,
+        ],
+        timeout=300,
+    )
+    if fetch.returncode != 0:
+        detail = (fetch.stderr or fetch.stdout).strip()
+        raise OrchestratorError(f"{label} failed for origin/{branch}: {detail}")
+
+
 def _repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) -> RepoBaseline:
     repo_arg = repo_arg.expanduser().resolve()
     root_text = _git(repo_arg, "rev-parse", "--show-toplevel").stdout.strip()
@@ -194,13 +222,7 @@ def _repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) 
         raise OrchestratorError(f"wrong branch: expected {expected_branch}, got {branch}")
 
     if do_fetch:
-        fetch = _run(
-            [*_resolved_command("git"), "-C", str(root), "fetch", "--prune", "origin"],
-            timeout=300,
-        )
-        if fetch.returncode != 0:
-            detail = (fetch.stderr or fetch.stdout).strip()
-            raise OrchestratorError(f"git fetch failed: {detail}")
+        _fetch_expected_origin_branch(root, branch)
 
     head_sha = _git(root, "rev-parse", "HEAD").stdout.strip().lower()
     origin_sha = _git(root, "rev-parse", f"origin/{branch}").stdout.strip().lower()
@@ -230,13 +252,11 @@ def _assert_source_unchanged(baseline: RepoBaseline) -> None:
 
 def _assert_origin_unchanged(baseline: RepoBaseline, do_fetch: bool) -> None:
     if do_fetch:
-        fetch = _run(
-            [*_resolved_command("git"), "-C", str(baseline.root), "fetch", "--prune", "origin"],
-            timeout=300,
+        _fetch_expected_origin_branch(
+            baseline.root,
+            baseline.branch,
+            label="final git fetch",
         )
-        if fetch.returncode != 0:
-            detail = (fetch.stderr or fetch.stdout).strip()
-            raise OrchestratorError(f"final git fetch failed: {detail}")
     origin_sha = _git(
         baseline.root, "rev-parse", f"origin/{baseline.branch}"
     ).stdout.strip().lower()
@@ -281,6 +301,7 @@ CLAUDE_ALLOWED_BASH_TOOLS: tuple[str, ...] = tuple(
         "head",
         "tail",
         "wc",
+        "sed",
         "grep",
         "rg",
         "find",
@@ -306,7 +327,22 @@ def _claude_implementation_command() -> list[str]:
         "--allowedTools",
         ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
         "--max-turns",
-        "30",
+        "80",
+    ]
+
+
+def _claude_readonly_command() -> list[str]:
+    return [
+        *_resolved_command("claude"),
+        "-p",
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "plan",
+        "--allowedTools",
+        ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
+        "--max-turns",
+        "40",
     ]
 
 
@@ -323,6 +359,15 @@ def _codex_review_command(model: str) -> list[str]:
     ]
 
 
+def _looks_like_max_turns(result: CommandResult) -> bool:
+    text = (result.stdout + "\n" + result.stderr).lower()
+    return (
+        "error_max_turns" in text
+        or "reached maximum number of turns" in text
+        or "maximum number of turns" in text
+    )
+
+
 def _run_claude_implementation(
     worktree: Path,
     prompt: str,
@@ -335,10 +380,41 @@ def _run_claude_implementation(
         timeout=timeout,
         env=_agent_env(),
     )
-    if result.returncode != 0:
+    if result.returncode != 0 and not _looks_like_max_turns(result):
         detail = (result.stderr or result.stdout).strip()
         raise OrchestratorError(f"Claude implementation failed: {detail}")
+    if result.returncode != 0:
+        print(
+            "[Claude] max-turns reached; partial worktree is preserved and will be evaluated.",
+            flush=True,
+        )
     return result
+
+
+def _run_claude_readonly(
+    worktree: Path,
+    prompt: str,
+    timeout: int,
+) -> CommandResult:
+    last_detail = ""
+    for attempt in range(1, PROVIDER_RETRIES + 1):
+        result = _run(
+            _claude_readonly_command(),
+            cwd=worktree,
+            input_text=prompt,
+            timeout=timeout,
+            env=_agent_env(),
+        )
+        if result.returncode == 0:
+            return result
+        last_detail = (result.stderr or result.stdout).strip()
+        print(
+            f"[Claude readonly] attempt {attempt}/{PROVIDER_RETRIES} failed; retrying...",
+            flush=True,
+        )
+        if attempt < PROVIDER_RETRIES:
+            time.sleep(min(60, 5 * attempt))
+    raise OrchestratorError(f"Claude readonly analysis failed: {last_detail}")
 
 
 def _run_codex_review(
@@ -347,17 +423,25 @@ def _run_codex_review(
     timeout: int,
     model: str,
 ) -> CommandResult:
-    result = _run(
-        _codex_review_command(model),
-        cwd=worktree,
-        input_text=prompt,
-        timeout=timeout,
-        env=_agent_env(),
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise OrchestratorError(f"Codex review failed: {detail}")
-    return result
+    last_detail = ""
+    for attempt in range(1, PROVIDER_RETRIES + 1):
+        result = _run(
+            _codex_review_command(model),
+            cwd=worktree,
+            input_text=prompt,
+            timeout=timeout,
+            env=_agent_env(),
+        )
+        if result.returncode == 0:
+            return result
+        last_detail = (result.stderr or result.stdout).strip()
+        print(
+            f"[Astra] provider attempt {attempt}/{PROVIDER_RETRIES} failed; retrying...",
+            flush=True,
+        )
+        if attempt < PROVIDER_RETRIES:
+            time.sleep(min(30, 5 * attempt))
+    raise OrchestratorError(f"Codex/Astra provider failed after retries: {last_detail}")
 
 
 def _claude_result_text(stdout: str) -> str:
@@ -365,7 +449,13 @@ def _claude_result_text(stdout: str) -> str:
         payload = json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise OrchestratorError("Claude did not return valid CLI JSON") from exc
-    if not isinstance(payload, dict) or payload.get("is_error"):
+    if not isinstance(payload, dict):
+        raise OrchestratorError("Claude CLI JSON must be an object")
+    if payload.get("is_error"):
+        subtype = str(payload.get("subtype", "")).lower()
+        errors = " ".join(str(item) for item in (payload.get("errors") or []))
+        if subtype == "error_max_turns" or "maximum number of turns" in errors.lower():
+            return "Claude reached max-turns. Partial worktree preserved for tests/review."
         raise OrchestratorError("Claude returned an error result")
     text = payload.get("result")
     if not isinstance(text, str) or not text.strip():
@@ -396,6 +486,16 @@ def _extract_json_object(text: str) -> dict[str, object]:
 
 def _review_from_value(value: dict[str, object], reviewer: str) -> Review:
     verdict = str(value.get("verdict", "")).strip().lower()
+    verdict = verdict.replace("-", "_").replace(" ", "_")
+    if verdict in {"approved", "pass", "passed", "ok"}:
+        verdict = "approve"
+    elif verdict in {
+        "change_requested",
+        "request_changes",
+        "requested_changes",
+        "changes_required",
+    }:
+        verdict = "changes_requested"
     if verdict not in {"approve", "changes_requested"}:
         raise OrchestratorError(
             f"invalid {reviewer} verdict: {verdict or '<missing>'}"
@@ -416,22 +516,128 @@ def _parse_codex_review(stdout: str) -> Review:
     return _review_from_value(_extract_json_object(stdout), "Codex")
 
 
+def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(proc.pid, 15)
+        except (OSError, ProcessLookupError):
+            proc.kill()
+
+
+def _run_test_command(
+    worktree: Path,
+    command: str,
+    timeout: int,
+) -> tuple[bool, str]:
+    if os.name == "nt":
+        args = ["cmd.exe", "/d", "/s", "/c", command]
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        start_new_session = False
+    else:
+        args = ["/bin/sh", "-lc", command]
+        creationflags = 0
+        start_new_session = True
+
+    proc = subprocess.Popen(
+        args,
+        cwd=str(worktree),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        env=_agent_env(),
+        creationflags=creationflags,
+        start_new_session=start_new_session,
+    )
+    lines: list[str] = []
+    output_queue: queue.Queue[str] = queue.Queue()
+
+    def reader() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            output_queue.put(line)
+
+    thread = threading.Thread(target=reader, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    last_heartbeat = started
+
+    while True:
+        drained = False
+        while True:
+            try:
+                line = output_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained = True
+            lines.append(line)
+            text = line.rstrip()
+            if text:
+                print(f"[Tests] {text}", flush=True)
+
+        rc = proc.poll()
+        if rc is not None:
+            thread.join(timeout=1)
+            while True:
+                try:
+                    line = output_queue.get_nowait()
+                except queue.Empty:
+                    break
+                lines.append(line)
+                text = line.rstrip()
+                if text:
+                    print(f"[Tests] {text}", flush=True)
+            return rc == 0, "".join(lines)
+
+        now = time.monotonic()
+        elapsed = int(now - started)
+        if now - last_heartbeat >= 10:
+            print(
+                f"[Tests] still running — elapsed={elapsed}s command={command}",
+                flush=True,
+            )
+            last_heartbeat = now
+
+        if now - started >= timeout:
+            print(
+                f"[Tests] HANG/TIMEOUT after {timeout}s — terminating process tree",
+                flush=True,
+            )
+            _terminate_process_tree(proc)
+            thread.join(timeout=2)
+            while True:
+                try:
+                    lines.append(output_queue.get_nowait())
+                except queue.Empty:
+                    break
+            lines.append(f"\nTEST TIMEOUT/HANG after {timeout}s: {command}\n")
+            return False, "".join(lines)
+
+        if not drained:
+            time.sleep(0.1)
+
+
 def _run_tests(worktree: Path, commands: Iterable[str], timeout: int) -> tuple[bool, str]:
     outputs: list[str] = []
-    ok = True
     for command in commands:
-        if os.name == "nt":
-            args = ["cmd.exe", "/d", "/s", "/c", command]
-        else:
-            args = ["/bin/sh", "-lc", command]
-        result = _run(args, cwd=worktree, timeout=timeout, env=_agent_env())
-        outputs.append(
-            f"$ {command}\n[rc={result.returncode}]\n{result.stdout}\n{result.stderr}".rstrip()
-        )
-        if result.returncode != 0:
-            ok = False
-            break
-    return ok, "\n\n".join(outputs)
+        print(f"[Tests] START {command}", flush=True)
+        ok, text = _run_test_command(worktree, command, timeout)
+        outputs.append(f"$ {command}\n{text}".rstrip())
+        if not ok:
+            return False, "\n\n".join(outputs)
+    return True, "\n\n".join(outputs)
 
 
 def _diff_for_review(worktree: Path) -> tuple[str, str]:
@@ -449,11 +655,59 @@ def _diff_for_review(worktree: Path) -> tuple[str, str]:
                     content = "<binary or unreadable>"
                 pieces.append(f"\n# Untracked: {rel}\n{content}")
         diff = "\n".join(pieces)
-    if len(diff) > MAX_DIFF_CHARS:
-        raise OrchestratorError(
-            f"review diff is too large ({len(diff)} chars); split the task before continuing"
-        )
     return stat, diff
+
+
+def _split_review_diff(diff_text: str, limit: int = REVIEW_BUNDLE_CHARS) -> list[str]:
+    if len(diff_text) <= limit:
+        return [diff_text]
+    bundles: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in diff_text.splitlines(keepends=True):
+        if current and size + len(line) > limit:
+            bundles.append("".join(current))
+            current = []
+            size = 0
+        current.append(line)
+        size += len(line)
+    if current:
+        bundles.append("".join(current))
+    return bundles
+
+
+def _tag_review_findings(review: Review) -> Review:
+    tagged: list[dict[str, object]] = []
+    for index, finding in enumerate(review.findings, 1):
+        item = dict(finding)
+        item.setdefault("finding_id", f"F-{index:03d}")
+        tagged.append(item)
+    return Review(review.verdict, review.summary, tuple(tagged))
+
+
+def _parse_evaluation(stdout: str) -> dict[str, object]:
+    value = _extract_json_object(_claude_result_text(stdout))
+    decisions = value.get("decisions")
+    if not isinstance(decisions, list):
+        raise OrchestratorError("Claude review evaluation did not contain decisions[]")
+    for item in decisions:
+        if not isinstance(item, dict):
+            raise OrchestratorError("Claude review evaluation contains a non-object decision")
+        decision = str(item.get("decision", "")).strip().upper()
+        if decision not in {"ACCEPT", "DISPUTE", "NEEDS_CLARIFICATION"}:
+            raise OrchestratorError(f"invalid Claude finding decision: {decision or '<missing>'}")
+    return value
+
+
+def _evaluation_has_dispute(value: dict[str, object]) -> bool:
+    decisions = value.get("decisions")
+    if not isinstance(decisions, list):
+        return True
+    return any(
+        isinstance(item, dict)
+        and str(item.get("decision", "")).strip().upper() != "ACCEPT"
+        for item in decisions
+    )
 
 
 def _review_fingerprint(diff_text: str) -> str:
@@ -607,7 +861,6 @@ def run(args: argparse.Namespace) -> int:
         max_rounds=args.max_rounds,
         counters=counters,
     )
-
     _resolved_command("git")
     _resolved_command("codex")
     _resolved_command("claude")
@@ -647,7 +900,7 @@ def run(args: argparse.Namespace) -> int:
 
     result_payload: dict[str, object] = {
         "status": "running",
-        "version": "0.2",
+        "version": "0.3-hol",
         "run_id": run_id,
         "repo": str(baseline.root),
         "base_sha": baseline.head_sha,
@@ -658,37 +911,184 @@ def run(args: argparse.Namespace) -> int:
         "billing_env_override": list(active_billing),
     }
 
-    try:
-        for round_no in range(1, args.max_rounds + 1):
-            if round_no == 1:
-                implement_prompt = _read_prompt(
-                    "implement.md",
-                    {
-                        "TASK": task,
-                        "BASE_SHA": baseline.head_sha,
-                        "SOURCE_BRANCH": baseline.branch,
-                    },
-                )
-            else:
-                raise OrchestratorError(
-                    "internal state error: fix round must be entered through feedback path"
-                )
+    def assert_readonly(before: str, label: str) -> None:
+        _, after_diff = _diff_for_review(worktree)
+        if _review_fingerprint(after_diff) != before:
+            raise OrchestratorError(f"worktree changed during read-only stage: {label}")
 
-            _write_log(run_dir, f"round-{round_no:02d}-claude-prompt.md", implement_prompt)
+    def run_independent_review(
+        round_no: int,
+        tests_text: str,
+    ) -> Review:
+        stat, diff = _diff_for_review(worktree)
+        if not diff.strip():
+            raise OrchestratorError("Claude produced no reviewable changes")
+        before = _review_fingerprint(diff)
+        bundles = _split_review_diff(diff)
+        findings: list[dict[str, object]] = []
+        summaries: list[str] = []
+
+        for index, bundle in enumerate(bundles, 1):
+            prompt = _read_prompt(
+                "review.md",
+                {
+                    "TASK": task,
+                    "BASE_SHA": baseline.head_sha,
+                    "DIFF_STAT": (
+                        stat
+                        + f"\n\nReview bundle {index}/{len(bundles)}. "
+                        "Judge only concrete blocking issues; other bundles are reviewed separately."
+                    ),
+                    "DIFF": bundle,
+                    "TEST_RESULTS": tests_text or "(no tests configured)",
+                },
+            )
+            log_name = f"round-{round_no:02d}-astra-{index:02d}-of-{len(bundles):02d}"
+            _write_log(run_dir, log_name + "-prompt.md", prompt)
+
+            parsed: Review | None = None
+            last_parse_error = ""
+            for parse_attempt in range(1, PROVIDER_RETRIES + 1):
+                counters.codex_calls += 1
+                _progress(
+                    run_dir,
+                    stage="astra_review",
+                    message=(
+                        f"Astra reviewing bundle {index}/{len(bundles)} "
+                        f"(parse attempt {parse_attempt}/{PROVIDER_RETRIES})..."
+                    ),
+                    round_no=round_no,
+                    max_rounds=args.max_rounds,
+                    counters=counters,
+                )
+                codex = _run_codex_review(
+                    worktree,
+                    prompt,
+                    args.agent_timeout,
+                    args.review_model,
+                )
+                _write_log(
+                    run_dir,
+                    log_name + f"-attempt-{parse_attempt}.txt",
+                    codex.stdout + "\n" + codex.stderr,
+                )
+                try:
+                    parsed = _parse_codex_review(codex.stdout)
+                    break
+                except OrchestratorError as exc:
+                    last_parse_error = str(exc)
+                    print(
+                        f"[Astra] review protocol parse failed: {exc}; retrying same bundle",
+                        flush=True,
+                    )
+                    prompt += (
+                        "\n\nIMPORTANT: Your previous response could not be parsed. "
+                        "Return ONLY the exact JSON review object requested above."
+                    )
+            if parsed is None:
+                raise OrchestratorError(
+                    f"Astra review protocol failed after retries: {last_parse_error}"
+                )
+            summaries.append(parsed.summary)
+            findings.extend(dict(item) for item in parsed.findings)
+
+        assert_readonly(before, "Astra review")
+        if findings:
+            review = Review(
+                "changes_requested",
+                " | ".join(summary for summary in summaries if summary),
+                tuple(findings),
+            )
+        else:
+            review = Review(
+                "approve",
+                " | ".join(summary for summary in summaries if summary) or "All review bundles approved.",
+                (),
+            )
+        return _tag_review_findings(review)
+
+    def create_candidate(round_no: int, review: Review) -> int:
+        _progress(
+            run_dir,
+            stage="candidate",
+            message="Creating local candidate commit...",
+            round_no=round_no,
+            max_rounds=args.max_rounds,
+            counters=counters,
+        )
+        branch, sha = _create_candidate(
+            worktree,
+            baseline,
+            task,
+            run_id,
+            verify_origin=not args.no_fetch,
+        )
+        result_payload.update(
+            {
+                "status": "candidate_ready",
+                "candidate_branch": branch,
+                "candidate_sha": sha,
+                "review": asdict(review),
+                "tests": list(args.test),
+                "claude_calls": counters.claude_calls,
+                "codex_calls": counters.codex_calls,
+                "rounds_used": round_no,
+            }
+        )
+        _write_log(
+            run_dir,
+            "result.json",
+            json.dumps(result_payload, ensure_ascii=False, indent=2),
+        )
+        _write_external_result(args.result_file, result_payload)
+        _write_status(
+            run_dir,
+            stage="candidate_ready",
+            round_no=round_no,
+            max_rounds=args.max_rounds,
+            counters=counters,
+            detail=f"candidate {sha}",
+        )
+        print("AI ORCHESTRATOR: CANDIDATE READY", flush=True)
+        print(f"branch: {branch}", flush=True)
+        print(f"sha:    {sha}", flush=True)
+        print(
+            f"usage:  Claude calls={counters.claude_calls}, "
+            f"Codex calls={counters.codex_calls}",
+            flush=True,
+        )
+        print(f"logs:   {run_dir}", flush=True)
+        print("STOP: push / BUILD / UPDATE have not been performed.", flush=True)
+        return 0
+
+    current_prompt = _read_prompt(
+        "implement.md",
+        {
+            "TASK": task,
+            "BASE_SHA": baseline.head_sha,
+            "SOURCE_BRANCH": baseline.branch,
+        },
+    )
+    current_stage = "implementation"
+
+    try:
+        round_no = 1
+        while round_no <= args.max_rounds:
+            _write_log(run_dir, f"round-{round_no:02d}-claude-prompt.md", current_prompt)
             counters.claude_calls += 1
             _progress(
                 run_dir,
-                stage="claude_implementation",
-                message="Claude implementing...",
+                stage=f"claude_{current_stage}",
+                message=f"Claude {current_stage}...",
                 round_no=round_no,
                 max_rounds=args.max_rounds,
                 counters=counters,
             )
-            claude = _run_claude_implementation(worktree, implement_prompt, args.agent_timeout)
+            claude = _run_claude_implementation(worktree, current_prompt, args.agent_timeout)
             _write_log(
                 run_dir,
                 f"round-{round_no:02d}-claude-raw.json",
-                claude.stdout,
+                claude.stdout + "\n" + claude.stderr,
             )
             _write_log(
                 run_dir,
@@ -698,336 +1098,285 @@ def run(args: argparse.Namespace) -> int:
             _assert_agent_did_not_commit(worktree, baseline.head_sha)
             _assert_source_unchanged(baseline)
 
-            while True:
-                _progress(
-                    run_dir,
-                    stage="tests",
-                    message="Running automated tests...",
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                tests_ok, tests_text = _run_tests(worktree, args.test, args.test_timeout)
-                _write_log(run_dir, f"round-{round_no:02d}-tests.txt", tests_text)
-                if tests_ok:
-                    print(
-                        f"[Round {round_no}/{args.max_rounds}] Tests: PASS",
-                        flush=True,
-                    )
-                    break
-
-                print(
-                    f"[Round {round_no}/{args.max_rounds}] Tests: FAIL",
-                    flush=True,
-                )
-                if round_no >= args.max_rounds:
-                    raise OrchestratorError("tests still failing after final round")
-
-                round_no += 1
-                fix_prompt = _read_prompt(
-                    "fix_review.md",
-                    {
-                        "TASK": task,
-                        "FEEDBACK": (
-                            "Automated tests failed. Fix the failures without changing Git history.\n\n"
-                            + tests_text
-                        ),
-                    },
-                )
-                _write_log(run_dir, f"round-{round_no:02d}-claude-prompt.md", fix_prompt)
-                counters.claude_calls += 1
-                _progress(
-                    run_dir,
-                    stage="claude_fix",
-                    message="Claude fixing test failures...",
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                claude = _run_claude_implementation(worktree, fix_prompt, args.agent_timeout)
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-claude-raw.json",
-                    claude.stdout,
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-claude.txt",
-                    _claude_result_text(claude.stdout),
-                )
-                _assert_agent_did_not_commit(worktree, baseline.head_sha)
-                _assert_source_unchanged(baseline)
-
-            stat, diff = _diff_for_review(worktree)
-            if not diff.strip():
-                raise OrchestratorError("Claude produced no reviewable changes")
-
-            reviewed_fingerprint = _review_fingerprint(diff)
-            review_prompt = _read_prompt(
-                "review.md",
-                {
-                    "TASK": task,
-                    "BASE_SHA": baseline.head_sha,
-                    "DIFF_STAT": stat,
-                    "DIFF": diff,
-                    "TEST_RESULTS": tests_text or "(no tests configured)",
-                },
-            )
-            _write_log(run_dir, f"round-{round_no:02d}-codex-review-prompt.md", review_prompt)
-            counters.codex_calls += 1
             _progress(
                 run_dir,
-                stage="codex_review",
-                message=f"Codex/Astra reviewing with {args.review_model} (read-only)...",
+                stage="tests",
+                message="Running automated tests with live progress / hang watchdog...",
                 round_no=round_no,
                 max_rounds=args.max_rounds,
                 counters=counters,
             )
-            codex = _run_codex_review(
-                worktree,
-                review_prompt,
-                args.agent_timeout,
-                args.review_model,
-            )
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-codex-review.txt",
-                codex.stdout + "\n" + codex.stderr,
-            )
-            review = _parse_codex_review(codex.stdout)
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-review.json",
-                json.dumps(asdict(review), ensure_ascii=False, indent=2),
-            )
-            _assert_agent_did_not_commit(worktree, baseline.head_sha)
-            _, after_review_diff = _diff_for_review(worktree)
-            if _review_fingerprint(after_review_diff) != reviewed_fingerprint:
-                raise OrchestratorError(
-                    "worktree changed during Codex read-only review; refusing unreviewed candidate"
-                )
+            tests_ok, tests_text = _run_tests(worktree, args.test, args.test_timeout)
+            _write_log(run_dir, f"round-{round_no:02d}-tests.txt", tests_text)
 
-            if review.approved:
+            if not tests_ok:
                 print(
-                    f"[Round {round_no}/{args.max_rounds}] Codex/Astra: APPROVE",
+                    f"[Round {round_no}/{args.max_rounds}] Tests: FAIL/HANG",
                     flush=True,
                 )
-                _progress(
-                    run_dir,
-                    stage="candidate",
-                    message="Creating local candidate commit...",
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                branch, sha = _create_candidate(
-                    worktree,
-                    baseline,
-                    task,
-                    run_id,
-                    verify_origin=not args.no_fetch,
-                )
-                result_payload.update(
+                if round_no >= args.max_rounds:
+                    raise OrchestratorError("tests still failing after final HOL round")
+
+                stat, diff = _diff_for_review(worktree)
+                before = _review_fingerprint(diff)
+
+                claude_diag_prompt = _read_prompt(
+                    "diagnose_tests.md",
                     {
-                        "status": "candidate_ready",
-                        "candidate_branch": branch,
-                        "candidate_sha": sha,
-                        "review": asdict(review),
-                        "tests": list(args.test),
-                        "claude_calls": counters.claude_calls,
-                        "codex_calls": counters.codex_calls,
-                        "rounds_used": round_no,
-                    }
+                        "TASK": task,
+                        "TEST_RESULTS": tests_text,
+                        "DIFF_STAT": stat,
+                    },
                 )
                 _write_log(
                     run_dir,
-                    "result.json",
-                    json.dumps(result_payload, ensure_ascii=False, indent=2),
+                    f"round-{round_no:02d}-claude-test-diagnosis-prompt.md",
+                    claude_diag_prompt,
                 )
-                _write_external_result(args.result_file, result_payload)
-                _write_status(
+                _progress(
                     run_dir,
-                    stage="candidate_ready",
+                    stage="test_diagnosis_claude",
+                    message="Claude independently diagnosing test failure (read-only)...",
                     round_no=round_no,
                     max_rounds=args.max_rounds,
                     counters=counters,
-                    detail=f"candidate {sha}",
                 )
-                print("AI ORCHESTRATOR: CANDIDATE READY")
-                print(f"branch: {branch}")
-                print(f"sha:    {sha}")
+                counters.claude_calls += 1
+                claude_diag = _run_claude_readonly(
+                    worktree, claude_diag_prompt, args.agent_timeout
+                )
+                claude_diag_text = _claude_result_text(claude_diag.stdout)
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-claude-test-diagnosis.txt",
+                    claude_diag_text,
+                )
+                assert_readonly(before, "Claude test diagnosis")
+
+                astra_diag_prompt = _read_prompt(
+                    "diagnose_tests_astra.md",
+                    {
+                        "TASK": task,
+                        "TEST_RESULTS": tests_text,
+                        "DIFF_STAT": stat,
+                        "DIFF": diff[:MAX_DIFF_CHARS],
+                    },
+                )
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-astra-test-diagnosis-prompt.md",
+                    astra_diag_prompt,
+                )
+                _progress(
+                    run_dir,
+                    stage="test_diagnosis_astra",
+                    message="Astra independently diagnosing test failure (Claude diagnosis hidden)...",
+                    round_no=round_no,
+                    max_rounds=args.max_rounds,
+                    counters=counters,
+                )
+                counters.codex_calls += 1
+                astra_diag = _run_codex_review(
+                    worktree,
+                    astra_diag_prompt,
+                    args.agent_timeout,
+                    args.review_model,
+                )
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-astra-test-diagnosis.txt",
+                    astra_diag.stdout + "\n" + astra_diag.stderr,
+                )
+                assert_readonly(before, "Astra test diagnosis")
+
+                current_prompt = _read_prompt(
+                    "repair_tests.md",
+                    {
+                        "TASK": task,
+                        "TEST_RESULTS": tests_text,
+                        "CLAUDE_DIAGNOSIS": claude_diag_text,
+                        "ASTRA_DIAGNOSIS": astra_diag.stdout,
+                    },
+                )
+                current_stage = "test repair"
+                round_no += 1
+                continue
+
+            print(f"[Round {round_no}/{args.max_rounds}] Tests: PASS", flush=True)
+            review = run_independent_review(round_no, tests_text)
+
+            if review.approved:
                 print(
-                    f"usage:  Claude calls={counters.claude_calls}, "
-                    f"Codex calls={counters.codex_calls}"
+                    f"[Round {round_no}/{args.max_rounds}] Astra: APPROVE",
+                    flush=True,
                 )
-                print(f"logs:   {run_dir}")
-                print("STOP: push / BUILD / UPDATE have not been performed.")
-                return 0
+                return create_candidate(round_no, review)
 
             print(
                 f"[Round {round_no}/{args.max_rounds}] "
-                f"Codex/Astra: CHANGES_REQUESTED ({len(review.findings)} findings)",
+                f"Astra: CHANGES_REQUESTED ({len(review.findings)} findings)",
                 flush=True,
             )
+
+            current_review = review
+            unresolved_dispute = False
+
+            for exchange in range(1, DELIBERATION_EXCHANGES + 1):
+                stat, diff = _diff_for_review(worktree)
+                before = _review_fingerprint(diff)
+                evaluation_prompt = _read_prompt(
+                    "evaluate_review.md",
+                    {
+                        "TASK": task,
+                        "FEEDBACK": json.dumps(
+                            asdict(current_review), ensure_ascii=False, indent=2
+                        ),
+                    },
+                )
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-deliberation-{exchange}-claude-prompt.md",
+                    evaluation_prompt,
+                )
+                _progress(
+                    run_dir,
+                    stage="review_deliberation",
+                    message=(
+                        f"Claude evaluating Astra findings without code changes "
+                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
+                    ),
+                    round_no=round_no,
+                    max_rounds=args.max_rounds,
+                    counters=counters,
+                )
+                counters.claude_calls += 1
+                evaluation_raw = _run_claude_readonly(
+                    worktree, evaluation_prompt, args.agent_timeout
+                )
+                evaluation = _parse_evaluation(evaluation_raw.stdout)
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-deliberation-{exchange}-claude.json",
+                    json.dumps(evaluation, ensure_ascii=False, indent=2),
+                )
+                assert_readonly(before, "Claude review deliberation")
+
+                decisions = evaluation.get("decisions")
+                accepted_ids = {
+                    str(item.get("finding_id", "")).strip()
+                    for item in decisions
+                    if isinstance(item, dict)
+                    and str(item.get("decision", "")).strip().upper() == "ACCEPT"
+                }
+                accepted_findings = [
+                    dict(item)
+                    for item in current_review.findings
+                    if str(item.get("finding_id", "")).strip() in accepted_ids
+                ]
+
+                if not _evaluation_has_dispute(evaluation):
+                    unresolved_dispute = False
+                    break
+
+                reconsider_prompt = _read_prompt(
+                    "reconsider_review.md",
+                    {
+                        "TASK": task,
+                        "FEEDBACK": json.dumps(
+                            asdict(current_review), ensure_ascii=False, indent=2
+                        ),
+                        "IMPLEMENTER_RESPONSE": json.dumps(
+                            evaluation, ensure_ascii=False, indent=2
+                        ),
+                    },
+                )
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-deliberation-{exchange}-astra-prompt.md",
+                    reconsider_prompt,
+                )
+                _progress(
+                    run_dir,
+                    stage="review_deliberation",
+                    message=(
+                        f"Astra reconsidering Claude's technical objections "
+                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
+                    ),
+                    round_no=round_no,
+                    max_rounds=args.max_rounds,
+                    counters=counters,
+                )
+                counters.codex_calls += 1
+                reconsider_raw = _run_codex_review(
+                    worktree,
+                    reconsider_prompt,
+                    args.agent_timeout,
+                    args.review_model,
+                )
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-deliberation-{exchange}-astra.txt",
+                    reconsider_raw.stdout + "\n" + reconsider_raw.stderr,
+                )
+                reconsidered = _tag_review_findings(
+                    _parse_codex_review(reconsider_raw.stdout)
+                )
+                assert_readonly(before, "Astra review reconsideration")
+
+                if reconsidered.approved:
+                    if accepted_findings:
+                        current_review = Review(
+                            "changes_requested",
+                            "Astra withdrew disputed findings; Claude-accepted findings remain blocking.",
+                            tuple(accepted_findings),
+                        )
+                        unresolved_dispute = False
+                        break
+                    print(
+                        f"[Round {round_no}/{args.max_rounds}] "
+                        "Astra withdrew all disputed findings: APPROVE",
+                        flush=True,
+                    )
+                    return create_candidate(round_no, reconsidered)
+
+                reconsidered_ids = {
+                    str(item.get("finding_id", "")).strip()
+                    for item in reconsidered.findings
+                }
+                merged_findings = accepted_findings + [
+                    dict(item)
+                    for item in reconsidered.findings
+                    if str(item.get("finding_id", "")).strip() not in accepted_ids
+                ]
+                current_review = Review(
+                    "changes_requested",
+                    reconsidered.summary,
+                    tuple(merged_findings),
+                )
+                unresolved_dispute = bool(reconsidered_ids - accepted_ids)
+
+            if unresolved_dispute:
+                raise OrchestratorError(
+                    "Claude and Astra still disagree after bounded deliberation; "
+                    "human technical judgment is required."
+                )
+
             if round_no >= args.max_rounds:
                 raise OrchestratorError(
-                    "Codex/Astra still requests changes after final review round"
+                    "Astra still requests confirmed repairs after final HOL round"
                 )
 
-            next_round = round_no + 1
-            feedback = json.dumps(asdict(review), ensure_ascii=False, indent=2)
-            fix_prompt = _read_prompt(
-                "fix_review.md",
-                {"TASK": task, "FEEDBACK": feedback},
-            )
-            _write_log(run_dir, f"round-{next_round:02d}-claude-prompt.md", fix_prompt)
-            counters.claude_calls += 1
-            _progress(
-                run_dir,
-                stage="claude_fix",
-                message="Claude fixing Codex/Astra review findings...",
-                round_no=next_round,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            claude = _run_claude_implementation(worktree, fix_prompt, args.agent_timeout)
-            _write_log(
-                run_dir,
-                f"round-{next_round:02d}-claude-raw.json",
-                claude.stdout,
-            )
-            _write_log(
-                run_dir,
-                f"round-{next_round:02d}-claude.txt",
-                _claude_result_text(claude.stdout),
-            )
-            _assert_agent_did_not_commit(worktree, baseline.head_sha)
-            _assert_source_unchanged(baseline)
-
-            _progress(
-                run_dir,
-                stage="tests",
-                message="Running automated tests after review fixes...",
-                round_no=next_round,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            tests_ok, tests_text = _run_tests(worktree, args.test, args.test_timeout)
-            _write_log(run_dir, f"round-{next_round:02d}-tests.txt", tests_text)
-            if not tests_ok:
-                raise OrchestratorError(
-                    "tests failed after review fixes; stopped at round limit boundary"
-                )
-            print(
-                f"[Round {next_round}/{args.max_rounds}] Tests: PASS",
-                flush=True,
-            )
-
-            stat, diff = _diff_for_review(worktree)
-            reviewed_fingerprint = _review_fingerprint(diff)
-            review_prompt = _read_prompt(
-                "review.md",
+            current_prompt = _read_prompt(
+                "blocking_repair.md",
                 {
                     "TASK": task,
-                    "BASE_SHA": baseline.head_sha,
-                    "DIFF_STAT": stat,
-                    "DIFF": diff,
-                    "TEST_RESULTS": tests_text or "(no tests configured)",
+                    "FEEDBACK": json.dumps(
+                        asdict(current_review), ensure_ascii=False, indent=2
+                    ),
                 },
             )
-            _write_log(run_dir, f"round-{next_round:02d}-codex-review-prompt.md", review_prompt)
-            counters.codex_calls += 1
-            _progress(
-                run_dir,
-                stage="codex_review",
-                message=f"Codex/Astra re-reviewing with {args.review_model} (read-only)...",
-                round_no=next_round,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            codex = _run_codex_review(
-                worktree,
-                review_prompt,
-                args.agent_timeout,
-                args.review_model,
-            )
-            _write_log(
-                run_dir,
-                f"round-{next_round:02d}-codex-review.txt",
-                codex.stdout + "\n" + codex.stderr,
-            )
-            review = _parse_codex_review(codex.stdout)
-            _write_log(
-                run_dir,
-                f"round-{next_round:02d}-review.json",
-                json.dumps(asdict(review), ensure_ascii=False, indent=2),
-            )
-            _assert_agent_did_not_commit(worktree, baseline.head_sha)
-            _, after_review_diff = _diff_for_review(worktree)
-            if _review_fingerprint(after_review_diff) != reviewed_fingerprint:
-                raise OrchestratorError(
-                    "worktree changed during Codex read-only review; refusing unreviewed candidate"
-                )
-            if not review.approved:
-                raise OrchestratorError(
-                    "Codex/Astra still requests changes after final review round"
-                )
-
-            print(
-                f"[Round {next_round}/{args.max_rounds}] Codex/Astra: APPROVE",
-                flush=True,
-            )
-            _progress(
-                run_dir,
-                stage="candidate",
-                message="Creating local candidate commit...",
-                round_no=next_round,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            branch, sha = _create_candidate(
-                worktree,
-                baseline,
-                task,
-                run_id,
-                verify_origin=not args.no_fetch,
-            )
-            result_payload.update(
-                {
-                    "status": "candidate_ready",
-                    "candidate_branch": branch,
-                    "candidate_sha": sha,
-                    "review": asdict(review),
-                    "tests": list(args.test),
-                    "claude_calls": counters.claude_calls,
-                    "codex_calls": counters.codex_calls,
-                    "rounds_used": next_round,
-                }
-            )
-            _write_log(
-                run_dir,
-                "result.json",
-                json.dumps(result_payload, ensure_ascii=False, indent=2),
-            )
-            _write_external_result(args.result_file, result_payload)
-            _write_status(
-                run_dir,
-                stage="candidate_ready",
-                round_no=next_round,
-                max_rounds=args.max_rounds,
-                counters=counters,
-                detail=f"candidate {sha}",
-            )
-            print("AI ORCHESTRATOR: CANDIDATE READY")
-            print(f"branch: {branch}")
-            print(f"sha:    {sha}")
-            print(
-                f"usage:  Claude calls={counters.claude_calls}, "
-                f"Codex calls={counters.codex_calls}"
-            )
-            print(f"logs:   {run_dir}")
-            print("STOP: push / BUILD / UPDATE have not been performed.")
-            return 0
+            current_stage = "blocking review repair"
+            round_no += 1
 
         raise OrchestratorError("orchestration ended without a candidate")
     except Exception as exc:
@@ -1039,7 +1388,11 @@ def run(args: argparse.Namespace) -> int:
                 "codex_calls": counters.codex_calls,
             }
         )
-        _write_log(run_dir, "result.json", json.dumps(result_payload, ensure_ascii=False, indent=2))
+        _write_log(
+            run_dir,
+            "result.json",
+            json.dumps(result_payload, ensure_ascii=False, indent=2),
+        )
         _write_external_result(args.result_file, result_payload)
         _write_status(
             run_dir,
@@ -1061,7 +1414,14 @@ def run(args: argparse.Namespace) -> int:
     finally:
         if result_payload.get("status") == "candidate_ready":
             try:
-                _git(baseline.root, "worktree", "remove", "--force", str(worktree), timeout=300)
+                _git(
+                    baseline.root,
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree),
+                    timeout=300,
+                )
                 shutil.rmtree(parent, ignore_errors=True)
             except OrchestratorError:
                 pass
@@ -1107,7 +1467,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional JSON result path for machine callers such as DCC",
     )
     run_parser.add_argument("--agent-timeout", type=int, default=DEFAULT_TIMEOUT)
-    run_parser.add_argument("--test-timeout", type=int, default=900)
+    run_parser.add_argument("--test-timeout", type=int, default=DEFAULT_TEST_TIMEOUT)
     run_parser.add_argument("--no-fetch", action="store_true", help="skip origin fetch (not recommended)")
     return parser
 
@@ -1118,8 +1478,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "doctor":
             return doctor()
-        if args.max_rounds < 1 or args.max_rounds > 2:
-            raise OrchestratorError("--max-rounds must be 1 or 2 in v0.2")
+        if args.max_rounds < 1 or args.max_rounds > 30:
+            raise OrchestratorError("--max-rounds must be between 1 and 30")
         return run(args)
     except (OSError, OrchestratorError) as exc:
         print(f"AI ORCHESTRATOR STOPPED: {exc}", file=sys.stderr)

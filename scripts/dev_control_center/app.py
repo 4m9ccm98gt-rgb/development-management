@@ -726,6 +726,10 @@ class App(ttk.Frame):
             test_command,
             "--result-file",
             str(result_path),
+            "--max-rounds",
+            "30",
+            "--test-timeout",
+            "600",
         ]
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -756,8 +760,8 @@ class App(ttk.Frame):
             "base_sha": self.repo_state.head.lower(),
         }
         self.active_process = (process, self.current.name, "ai_orchestrator")
-        self.ai_status_var.set("実行中 — Claude実装 → Tests → Astraレビュー")
-        self._log(f"{self.current.name}: AI Orchestrator開始")
+        self.ai_status_var.set("実行中 — HOL最大30round / Claude ↔ Tests ↔ Astra")
+        self._log(f"{self.current.name}: AI Orchestrator HOL開始（最大30round）")
         self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
         self._set_button_states()
 

@@ -1,0 +1,24 @@
+name: HOL Orchestrator Tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile changed Python
+        run: |
+          python -m py_compile tools/ai_orchestrator/orchestrator.py
+          python -m py_compile scripts/dev_control_center/app.py
+      - name: HOL contract tests
+        run: python -m unittest tests.test_ai_orchestrator_hol_contract -v
+      - name: Existing DCC tests
+        run: python -m unittest tests.test_dev_control_center -v
