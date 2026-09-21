@@ -68,19 +68,33 @@
 
 ## 3. AI Orchestrator
 
-AI Orchestrator v0.2の標準役割は次です。
+AI Orchestrator v0.3 HOLの標準役割は次です。
 
 - 実装・修正: Claude
 - 自動テスト: 対象repoの独立テストコマンド
 - 独立レビュー: GPT-6 Astra / read-only
-- 最大ラウンド: 2
+- 最大ラウンド: 30（進捗がある限り自動継続。candidate完成または真に人間判断が必要な停滞まで人間へ返さない）
 - 作業場所: source repoではなく一時detached worktree
 - 完了点: local candidate
 - 自動では行わないもの: push / BUILD / UPDATE / DEPLOY
 - Claudeの権限: `--permission-mode acceptEdits` + `--allowedTools` で許可した検査・テスト・interpreter系Bashのみ（`bypassPermissions` / `--dangerously-skip-permissions` は使わない）。agent側のgit pushは無効化し、git履歴を変える操作は許可しない
-- Claudeの `--max-turns` は30
+- Claude実装の `--max-turns` は80。max-turns到達は即失敗扱いにせず、途中worktreeをTests / Astraで評価して継続する
 
 Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。
+
+### Human-on-the-loop 自動ループ
+
+- Claude = Implementer / Technical Owner。実装と技術判断を担当し、Astraの指摘を無条件に受け入れない。
+- Astra = Independent Reviewer。安全性・正しさ・regressionを独立に検証し、Claudeの説明を無条件に受け入れない。
+- Orchestrator = Moderator / State Machine。両者の役割、finding、議論、修正、Tests、retryを管理する。
+- Tests FAIL / HANG時はClaude自己診断とAstra独立診断を別々に取得し、両診断とraw test logをClaudeへ渡して修正する。
+- AstraがCHANGES_REQUESTEDを返した場合、まずコードを変更しない議論stageを入れる。ClaudeはACCEPT / DISPUTE / NEEDS_CLARIFICATIONを判断し、異議があればAstraがWITHDRAW / MODIFY / UPHOLDを再判断する。
+- 議論後も残ったfindingだけを正式なBLOCKING_REPAIR_REQUESTとしてClaudeへ渡す。
+- 大きなdiffは自動分割reviewし、単純なdiff size超過だけで人間へ返さない。
+- Testsは進捗をstdoutへ流し、10秒heartbeatを表示する。timeout/hang時はprocess treeを終了し、通常のtest failure診断ループへ移る。
+- parser揺れ（approved / approve等）は安全に正規化する。Astra provider / protocol failureは同じstage内でretryする。
+- 通常運用の目標は、ユーザーがPowerShellでClaude / Tests / Astraのループを手動仲介しないこと。
+
 
 ## 4. DCCでのcandidate受け渡し
 
