@@ -1,7 +1,7 @@
 """Claude implementation + Codex/Astra review orchestrator.
 
-v0.3 HOL orchestrates implementation, tests, independent review, bounded
-implementer/reviewer deliberation, and repair loops. It intentionally stops at
+v0.4 HOL orchestrates read-only investigation/design, independent design review,
+implementer/reviewer deliberation, implementation, tests, review, and repair loops. It intentionally stops at
 a local candidate commit and never pushes, builds, deploys, or updates production
 resources.
 """
@@ -699,6 +699,17 @@ def _parse_evaluation(stdout: str) -> dict[str, object]:
     return value
 
 
+def _parse_design(stdout: str) -> dict[str, object]:
+    value = _extract_json_object(_claude_result_text(stdout))
+    design = value.get("design")
+    if not isinstance(design, list) or not design:
+        raise OrchestratorError("Claude design result must contain a non-empty design[]")
+    evidence = value.get("evidence")
+    if not isinstance(evidence, list):
+        raise OrchestratorError("Claude design result must contain evidence[]")
+    return value
+
+
 def _evaluation_has_dispute(value: dict[str, object]) -> bool:
     decisions = value.get("decisions")
     if not isinstance(decisions, list):
@@ -1061,18 +1072,285 @@ def run(args: argparse.Namespace) -> int:
         print("STOP: push / BUILD / UPDATE have not been performed.", flush=True)
         return 0
 
-    current_prompt = _read_prompt(
-        "implement.md",
-        {
-            "TASK": task,
-            "BASE_SHA": baseline.head_sha,
-            "SOURCE_BRANCH": baseline.branch,
-        },
-    )
-    current_stage = "implementation"
-
     try:
         round_no = 1
+        final_design: dict[str, object] | None = None
+        design_prompt = _read_prompt(
+            "investigate_design.md",
+            {
+                "TASK": task,
+                "BASE_SHA": baseline.head_sha,
+                "SOURCE_BRANCH": baseline.branch,
+            },
+        )
+
+        while round_no <= args.max_rounds:
+            _, design_before_diff = _diff_for_review(worktree)
+            design_before = _review_fingerprint(design_before_diff)
+
+            counters.claude_calls += 1
+            _progress(
+                run_dir,
+                stage="investigate_design",
+                message="Claude investigating repository and producing a read-only design...",
+                round_no=round_no,
+                max_rounds=args.max_rounds,
+                counters=counters,
+            )
+            _write_log(
+                run_dir,
+                f"round-{round_no:02d}-design-claude-prompt.md",
+                design_prompt,
+            )
+            design_raw = _run_claude_readonly(
+                worktree,
+                design_prompt,
+                args.agent_timeout,
+            )
+            design_value = _parse_design(design_raw.stdout)
+            final_design = design_value
+            design_text = json.dumps(
+                design_value,
+                ensure_ascii=False,
+                indent=2,
+            )
+            _write_log(
+                run_dir,
+                f"round-{round_no:02d}-design-claude.json",
+                design_text,
+            )
+            assert_readonly(design_before, "Claude investigation/design")
+
+            review_prompt = _read_prompt(
+                "design_review.md",
+                {
+                    "TASK": task,
+                    "DESIGN": design_text,
+                },
+            )
+            counters.codex_calls += 1
+            _progress(
+                run_dir,
+                stage="design_review",
+                message="Astra independently reviewing Claude investigation/design...",
+                round_no=round_no,
+                max_rounds=args.max_rounds,
+                counters=counters,
+            )
+            _write_log(
+                run_dir,
+                f"round-{round_no:02d}-design-astra-prompt.md",
+                review_prompt,
+            )
+            review_raw = _run_codex_review(
+                worktree,
+                review_prompt,
+                args.agent_timeout,
+                args.review_model,
+            )
+            _write_log(
+                run_dir,
+                f"round-{round_no:02d}-design-astra.txt",
+                review_raw.stdout + "\n" + review_raw.stderr,
+            )
+            design_review = _tag_review_findings(
+                _parse_codex_review(review_raw.stdout)
+            )
+            assert_readonly(design_before, "Astra design review")
+
+            if design_review.approved:
+                print(
+                    f"[Round {round_no}/{args.max_rounds}] Design: APPROVED",
+                    flush=True,
+                )
+                round_no += 1
+                break
+
+            current_design_review = design_review
+
+            for exchange in range(1, DELIBERATION_EXCHANGES + 1):
+                _, deliberation_diff = _diff_for_review(worktree)
+                deliberation_before = _review_fingerprint(deliberation_diff)
+
+                evaluation_prompt = _read_prompt(
+                    "design_evaluate.md",
+                    {
+                        "TASK": task,
+                        "DESIGN": design_text,
+                        "FEEDBACK": json.dumps(
+                            asdict(current_design_review),
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                    },
+                )
+                counters.claude_calls += 1
+                _progress(
+                    run_dir,
+                    stage="design_deliberation",
+                    message=(
+                        "Claude judging Astra design findings "
+                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
+                    ),
+                    round_no=round_no,
+                    max_rounds=args.max_rounds,
+                    counters=counters,
+                )
+                evaluation_raw = _run_claude_readonly(
+                    worktree,
+                    evaluation_prompt,
+                    args.agent_timeout,
+                )
+                evaluation = _parse_evaluation(evaluation_raw.stdout)
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-design-deliberation-{exchange}-claude.json",
+                    json.dumps(evaluation, ensure_ascii=False, indent=2),
+                )
+                assert_readonly(
+                    deliberation_before,
+                    "Claude design judgment",
+                )
+
+                decisions = evaluation.get("decisions")
+                accepted_ids = {
+                    str(item.get("finding_id", "")).strip()
+                    for item in decisions
+                    if isinstance(item, dict)
+                    and str(item.get("decision", "")).strip().upper() == "ACCEPT"
+                }
+                accepted_findings = [
+                    dict(item)
+                    for item in current_design_review.findings
+                    if str(item.get("finding_id", "")).strip() in accepted_ids
+                ]
+
+                if not _evaluation_has_dispute(evaluation):
+                    current_design_review = Review(
+                        "changes_requested",
+                        current_design_review.summary,
+                        tuple(accepted_findings),
+                    )
+                    break
+
+                reconsider_prompt = _read_prompt(
+                    "design_reconsider.md",
+                    {
+                        "TASK": task,
+                        "DESIGN": design_text,
+                        "FEEDBACK": json.dumps(
+                            asdict(current_design_review),
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        "IMPLEMENTER_RESPONSE": json.dumps(
+                            evaluation,
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                    },
+                )
+                counters.codex_calls += 1
+                _progress(
+                    run_dir,
+                    stage="design_deliberation",
+                    message=(
+                        "Astra reconsidering Claude design judgment "
+                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
+                    ),
+                    round_no=round_no,
+                    max_rounds=args.max_rounds,
+                    counters=counters,
+                )
+                reconsider_raw = _run_codex_review(
+                    worktree,
+                    reconsider_prompt,
+                    args.agent_timeout,
+                    args.review_model,
+                )
+                _write_log(
+                    run_dir,
+                    f"round-{round_no:02d}-design-deliberation-{exchange}-astra.txt",
+                    reconsider_raw.stdout + "\n" + reconsider_raw.stderr,
+                )
+                reconsidered = _tag_review_findings(
+                    _parse_codex_review(reconsider_raw.stdout)
+                )
+                assert_readonly(
+                    deliberation_before,
+                    "Astra design reconsideration",
+                )
+
+                if reconsidered.approved:
+                    if accepted_findings:
+                        current_design_review = Review(
+                            "changes_requested",
+                            "Disputed design findings withdrawn; accepted findings remain.",
+                            tuple(accepted_findings),
+                        )
+                    else:
+                        current_design_review = reconsidered
+                    break
+
+                merged = accepted_findings + [
+                    dict(item)
+                    for item in reconsidered.findings
+                    if str(item.get("finding_id", "")).strip() not in accepted_ids
+                ]
+                current_design_review = Review(
+                    "changes_requested",
+                    reconsidered.summary,
+                    tuple(merged),
+                )
+
+            if current_design_review.approved:
+                print(
+                    f"[Round {round_no}/{args.max_rounds}] Design: APPROVED after deliberation",
+                    flush=True,
+                )
+                round_no += 1
+                break
+
+            if round_no >= args.max_rounds:
+                raise OrchestratorError(
+                    "design still has confirmed findings after final HOL round"
+                )
+
+            design_prompt = _read_prompt(
+                "revise_design.md",
+                {
+                    "TASK": task,
+                    "DESIGN": design_text,
+                    "FEEDBACK": json.dumps(
+                        asdict(current_design_review),
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                },
+            )
+            round_no += 1
+
+        if final_design is None:
+            raise OrchestratorError("design phase ended without a design")
+        if round_no > args.max_rounds:
+            raise OrchestratorError("no round budget remains for implementation")
+
+        final_design_text = json.dumps(
+            final_design,
+            ensure_ascii=False,
+            indent=2,
+        )
+        _write_log(run_dir, "confirmed-design.json", final_design_text)
+
+        current_prompt = _read_prompt(
+            "implement_from_design.md",
+            {
+                "TASK": task,
+                "DESIGN": final_design_text,
+            },
+        )
+        current_stage = "implementation"
+
         while round_no <= args.max_rounds:
             _write_log(run_dir, f"round-{round_no:02d}-claude-prompt.md", current_prompt)
             counters.claude_calls += 1
@@ -1429,7 +1707,7 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Claude implementation + Codex/Astra review orchestrator"
+        description="Claude investigation/design + implementation with Codex/Astra review orchestrator"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1437,7 +1715,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = sub.add_parser(
         "run",
-        help="develop in an isolated worktree and stop at candidate",
+        help="investigate, design, develop in an isolated worktree, and stop at candidate",
     )
     run_parser.add_argument("--repo", required=True, help="target Git repository")
     task_group = run_parser.add_mutually_exclusive_group(required=True)
@@ -1450,7 +1728,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-rounds",
         type=int,
         default=DEFAULT_MAX_ROUNDS,
-        help=f"maximum Claude->Codex review rounds (default {DEFAULT_MAX_ROUNDS})",
+        help=f"maximum total HOL rounds including design and implementation (default {DEFAULT_MAX_ROUNDS})",
     )
     run_parser.add_argument(
         "--review-model",
