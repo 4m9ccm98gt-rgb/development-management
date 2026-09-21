@@ -911,7 +911,7 @@ def run(args: argparse.Namespace) -> int:
 
     result_payload: dict[str, object] = {
         "status": "running",
-        "version": "0.3-hol",
+        "version": "0.4-hol-design",
         "run_id": run_id,
         "repo": str(baseline.root),
         "base_sha": baseline.head_sha,
