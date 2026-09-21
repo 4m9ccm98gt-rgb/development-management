@@ -115,6 +115,36 @@ class HolOrchestratorContractTests(unittest.TestCase):
         self.assertIn('"--test-timeout"', text)
         self.assertIn("HOL最大30round", text)
 
+    def test_design_first_prompts_exist(self):
+        prompts = ROOT / "tools" / "ai_orchestrator" / "prompts"
+        expected = {
+            "investigate_design.md": "INVESTIGATE_AND_DESIGN",
+            "design_review.md": "DESIGN_REVIEW",
+            "design_evaluate.md": "DESIGN_REVIEW_EVALUATION",
+            "design_reconsider.md": "DESIGN_REVIEWER_RECONSIDERATION",
+            "revise_design.md": "REVISE_INVESTIGATION_AND_DESIGN",
+            "implement_from_design.md": "IMPLEMENT_CONFIRMED_DESIGN",
+        }
+        for name, marker in expected.items():
+            with self.subTest(name=name):
+                text = (prompts / name).read_text(encoding="utf-8")
+                self.assertIn(marker, text)
+
+    def test_orchestrator_runs_design_before_implementation(self):
+        text = ORCH_PATH.read_text(encoding="utf-8")
+        design_pos = text.index('"investigate_design.md"')
+        implementation_pos = text.index('"implement_from_design.md"')
+        tests_pos = text.index('stage="tests"', implementation_pos)
+        self.assertLess(design_pos, implementation_pos)
+        self.assertLess(implementation_pos, tests_pos)
+        self.assertIn('assert_readonly(design_before, "Claude investigation/design")', text)
+        self.assertIn('assert_readonly(design_before, "Astra design review")', text)
+
+    def test_round_budget_includes_design_and_implementation(self):
+        text = ORCH_PATH.read_text(encoding="utf-8")
+        self.assertIn("maximum total HOL rounds including design and implementation", text)
+        self.assertIn("no round budget remains for implementation", text)
+
     def test_live_test_progress_and_hang_watchdog_are_present(self):
         text = ORCH_PATH.read_text(encoding="utf-8")
         self.assertIn("[Tests] still running", text)

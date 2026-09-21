@@ -78,7 +78,7 @@ class RoleBoundaryTests(unittest.TestCase):
         self.assertIn("--permission-mode", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
         self.assertNotIn("plan", command)
-        self.assertEqual(command[command.index("--max-turns") + 1], "30")
+        self.assertEqual(command[command.index("--max-turns") + 1], "80")
 
     @mock.patch(
         "tools.ai_orchestrator.orchestrator._resolved_command",
@@ -110,8 +110,8 @@ class RoleBoundaryTests(unittest.TestCase):
         self.assertIn("-m", command)
         self.assertEqual(command[command.index("-m") + 1], "gpt-6-astra")
 
-    def test_default_round_limit_is_two(self):
-        self.assertEqual(DEFAULT_MAX_ROUNDS, 2)
+    def test_default_round_limit_is_thirty(self):
+        self.assertEqual(DEFAULT_MAX_ROUNDS, 30)
 
     def test_implementation_prompt_names_codex_review(self):
         text = _read_prompt(
