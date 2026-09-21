@@ -2,6 +2,17 @@
 
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
+## Unreleased
+
+### Changed（DCC repo選択の非同期化）
+
+- repo選択・全状態更新・起動時のself-update / 未登録repo確認で、git / gh / ファイル走査をUIスレッドから外した
+  （`loader.py` のdaemon worker、`selection.py` のepoch stamp・candidate由来管理・確認dialog snapshot）。
+  repoを離れると、そのrepoのPENDING/RUNNING読込を取り消し、古い結果が新しいrepo表示を上書きしない。
+- git / gh / 走査にcooperative cancelと期限を追加。非Git走査は `os.walk` の枝刈り（結果は従来と同一）。
+- `DCC_TIMING=1` と `scripts/measure_dcc_selection.py` を追加。詳細は [docs/dev_control_center.md](docs/dev_control_center.md)。
+- 確認状況: 自動テスト（未確認→開発環境確認済み）。実機での応答速度は**未確認**（計測手順は上記文書）。
+
 ## v1.4.0 - 2026-09-05
 
 ### Changed（Claude Code 退役前整備 完了）

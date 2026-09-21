@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import webbrowser
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -25,22 +26,33 @@ from .core import (
     candidate_sha_is_valid,
     choice_text,
     clone_new_repository,
-    discover_entrypoints,
     decide_lifecycle,
     fetch_github_state,
     inspect_repo,
     list_github_repositories,
     load_repo_definitions,
     short_sha,
-    suggest_test_command,
     unmanaged_github_repositories,
 )
+from .loader import Coordinator, NoticeKind
+from .selection import (
+    DEV_MANAGEMENT,
+    GLOBAL_REMOTE_REPOS,
+    GLOBAL_SELF_UPDATE,
+    IntentSnapshot,
+    Loaders,
+    SelectionState,
+)
+from .timing import TIMING, HeartbeatMonitor
 
 DM_ROOT = Path(__file__).resolve().parents[2]
 REPOS_ROOT = DM_ROOT.parent
 TYPES_PATH = DM_ROOT / "scripts" / "repo_types.toml"
 BRANCHES_PATH = DM_ROOT / "scripts" / "dev_control_center_repos.toml"
 LAUNCHER_PATH = DM_ROOT / "DEV_CONTROL_CENTER.pyw"
+HEARTBEAT_MS = 50
+LOADING_TEXT = "読込中..."
+STATE_CHANGED_TEXT = "CONFIRMEDの後に状態が変わったため中止しました。再確認してください"
 
 DARK_BG = "#0f1419"
 DARK_SURFACE = "#171c22"
@@ -155,6 +167,19 @@ def configure_dark_text(widget: tk.Text) -> None:
     )
 
 
+class _TkScheduler:
+    """Adapter so SelectionState can debounce through Tk's after()."""
+
+    def __init__(self, master: tk.Tk) -> None:
+        self.master = master
+
+    def after(self, ms: int, fn):
+        return self.master.after(ms, fn)
+
+    def cancel(self, handle) -> None:
+        self.master.after_cancel(handle)
+
+
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         configure_dark_theme(master)
@@ -162,18 +187,22 @@ class App(ttk.Frame):
         self.master = master
         self.all_definitions = load_repo_definitions(TYPES_PATH, BRANCHES_PATH)
         self.definitions = active_repo_definitions(TYPES_PATH, BRANCHES_PATH)
-        self.current: RepoDefinition | None = None
-        self.repo_state = None
-        self.entrypoints = None
+        self.coordinator = Coordinator(timing=TIMING)
+        self.selection = SelectionState(
+            self.coordinator,
+            self.definitions,
+            self,
+            Loaders(REPOS_ROOT),
+            scheduler=_TkScheduler(master),
+        )
+        self._heartbeat = HeartbeatMonitor(HEARTBEAT_MS / 1000)
+        self._suggest_seed = ""
         self.active_process = None
         self.ai_output_queue: queue.Queue[str] = queue.Queue()
         self.ai_context: dict[str, object] | None = None
         self.ai_task_by_repo: dict[str, str] = {}
         self.ai_test_by_repo: dict[str, str] = {}
         self.unmanaged_repos: list[RemoteRepo] = []
-        self.github_states: dict[str, GitHubState] = {}
-        self.candidate_by_repo = {item.name: "" for item in self.definitions}
-        self.auto_candidate_by_repo = {item.name: "" for item in self.definitions}
         self._applying_lifecycle = False
         self.self_update_sha = ""
         self.self_update_ci_state = "UNKNOWN"
@@ -202,11 +231,51 @@ class App(ttk.Frame):
 
         self._build()
         self.candidate_var.trace_add("write", lambda *_: self._candidate_changed())
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.master.after(HEARTBEAT_MS, self._heartbeat_tick)
         if self.definitions:
             self.repo_list.selection_set(0)
             self._select_repo()
+        # No subprocess or scan runs on the UI thread: these only submit background requests.
         self.master.after(150, self.scan_remote_repos)
         self.master.after(300, self.check_self_update)
+
+    # --- state read only through the epoch-stamped accessors -----------------
+    @property
+    def current(self) -> RepoDefinition | None:
+        return self.selection.current
+
+    @property
+    def repo_state(self):
+        snapshot = self.selection.authoritative_local(self.current.name) if self.current else None
+        return snapshot.repo_state if snapshot else None
+
+    @property
+    def entrypoints(self):
+        snapshot = self.selection.authoritative_local(self.current.name) if self.current else None
+        return snapshot.entrypoints if snapshot else None
+
+    def _github_state(self) -> GitHubState | None:
+        return self.selection.authoritative_github(self.current.name) if self.current else None
+
+    def _on_close(self) -> None:
+        if TIMING.enabled:
+            TIMING.event("ui-lag-summary", **self._heartbeat.stats())
+        self.selection.close()
+        self.master.destroy()
+
+    def _heartbeat_tick(self) -> None:
+        lag = self._heartbeat.beat(time.perf_counter())
+        if TIMING.enabled and lag > 0.1:
+            TIMING.event("ui-lag", ms=round(lag * 1000))
+        TIMING.since_mark("startup", record_as="startup-to-operable")
+        try:
+            self.selection.pump()
+        except Exception:  # noqa: BLE001 - keep the heartbeat alive
+            import logging
+
+            logging.getLogger(__name__).exception("selection pump failed")
+        self.master.after(HEARTBEAT_MS, self._heartbeat_tick)
 
     def _build(self) -> None:
         self.master.title("Development Control Center")
@@ -391,42 +460,52 @@ class App(ttk.Frame):
         if not selection:
             return
         if self.current:
-            self.candidate_by_repo[self.current.name] = self.candidate_var.get().strip()
             self.ai_task_by_repo[self.current.name] = self.ai_task.get("1.0", "end").strip()
             self.ai_test_by_repo[self.current.name] = self.ai_test_var.get().strip()
-        self.current = self.definitions[selection[0]]
-        self.candidate_var.set(self.candidate_by_repo[self.current.name])
+        # leave(outgoing) + enter(new): no subprocess or file scan on the UI thread.
+        self.selection.select(self.definitions[selection[0]].name)
+
+    # --- view interface used by SelectionState (all run on the UI thread) ----
+    def on_loading(self, name: str) -> None:
+        definition = self.current
+        repo_root = REPOS_ROOT / name
+        self.title_var.set(name)
+        self.meta_var.set(f"{repo_root}   |   type={definition.repo_type}   |   expected branch={definition.branch}")
+        self._set_candidate_text(self.selection.provenance.text(name))
         self.ai_task.delete("1.0", "end")
-        saved_task = self.ai_task_by_repo.get(self.current.name) or self.current.initial_ai_task
+        saved_task = self.ai_task_by_repo.get(name) or definition.initial_ai_task
         if saved_task:
             self.ai_task.insert("1.0", saved_task)
-        repo_root = REPOS_ROOT / self.current.name
-        self.ai_test_var.set(
-            self.ai_test_by_repo.get(self.current.name)
-            or self.current.initial_test
-            or suggest_test_command(repo_root)
-        )
+        self.ai_test_var.set(self.ai_test_by_repo.get(name) or definition.initial_test or "")
+        self._suggest_seed = self.ai_test_var.get()
         self.ai_status_var.set("待機")
-        self.refresh()
-        self.master.after(50, self.refresh_github)
+        self._show_local_loading()
+        self._show_github_loading()
+        self.banner_var.set(LOADING_TEXT)
+        self._apply_lifecycle_state()
 
-    def refresh_all(self) -> None:
-        self.refresh()
-        self.refresh_github()
+    def _show_local_loading(self) -> None:
+        for var in (self.branch_var, self.head_var, self.origin_var, self.clean_var,
+                    self.sync_var, self.run_var, self.build_var, self.release_var):
+            var.set(LOADING_TEXT)
 
-    def refresh(self) -> None:
-        if not self.current:
-            return
-        repo_root = REPOS_ROOT / self.current.name
-        self.repo_state = inspect_repo(repo_root, self.current)
-        self.entrypoints = discover_entrypoints(
-            repo_root, self.current.repo_type,
-            application_implemented=self.current.application_implemented,
-        )
-        state = self.repo_state
-        entries = self.entrypoints
-        self.title_var.set(self.current.name)
-        self.meta_var.set(f"{repo_root}   |   type={self.current.repo_type}   |   expected branch={self.current.branch}")
+    def _show_github_loading(self) -> None:
+        self.github_head_var.set("取得中...")
+        self.ci_var.set("取得中...")
+        self.pr_var.set("取得中...")
+        self.candidate_source_var.set("-")
+
+    def on_request_suggestion(self, name: str) -> None:
+        if not self.ai_test_var.get().strip():
+            self.selection.submit_suggest(name)
+
+    def on_suggestion(self, name: str, value: str) -> None:
+        if value and self.ai_test_var.get() == self._suggest_seed:
+            self.ai_test_var.set(value)
+
+    def on_local(self, name: str, snapshot) -> None:
+        state, entries = snapshot.repo_state, snapshot.entrypoints
+        repo_root = REPOS_ROOT / name
         self.branch_var.set(state.branch or "-")
         self.head_var.set(short_sha(state.head))
         self.origin_var.set(f"{short_sha(state.origin_head)}   ({state.origin_repo or 'origin不明'})")
@@ -436,24 +515,20 @@ class App(ttk.Frame):
         self.build_var.set(choice_text(entries.build, repo_root))
         self.release_var.set(choice_text(entries.release, repo_root))
         self.release_button_var.set(entries.release_label)
-        self._apply_lifecycle_state()
 
-    def refresh_github(self) -> None:
-        if not self.current:
-            return
-        self.github_head_var.set("取得中...")
-        self.ci_var.set("取得中...")
-        self.pr_var.set("取得中...")
-        self.master.update_idletasks()
-        state = fetch_github_state(self.current)
-        self.github_states[self.current.name] = state
+    def on_local_unavailable(self, name: str, text: str) -> None:
+        for var in (self.branch_var, self.head_var, self.origin_var,
+                    self.sync_var, self.run_var, self.build_var, self.release_var):
+            var.set("-")
+        self.clean_var.set(f"STOP: {text}")
+        self.banner_var.set(text)
+
+    def on_github(self, name: str, state: GitHubState) -> None:
         if state.error:
             self.github_head_var.set("-")
             self.ci_var.set(f"ERROR: {state.error}")
             self.pr_var.set("-")
-            self._set_button_states()
             return
-
         self.github_head_var.set(short_sha(state.branch_sha))
         self.ci_var.set(f"{state.ci_target or '-'}: {state.ci_state}   checks={state.check_count}")
         if state.latest_pr:
@@ -462,82 +537,122 @@ class App(ttk.Frame):
         else:
             self.pr_var.set("なし")
 
-        old_auto = self.auto_candidate_by_repo.get(self.current.name, "")
-        current_value = self.candidate_var.get().strip()
-        if state.candidate_ready and (not current_value or current_value == old_auto):
-            self._applying_lifecycle = True
-            try:
-                self.candidate_var.set(state.branch_sha)
-                self.candidate_by_repo[self.current.name] = state.branch_sha
-                self.auto_candidate_by_repo[self.current.name] = state.branch_sha
-            finally:
-                self._applying_lifecycle = False
-            self._log(
-                f"{self.current.name}: expected branch HEADをcandidateへ自動反映 "
-                f"{short_sha(state.branch_sha)} / CI={state.ci_state}"
-            )
-        if state.candidate_blocked_by_pr and state.latest_pr:
-            self._log(
-                f"{self.current.name}: open PR #{state.latest_pr.number} は表示のみ。"
-                f"candidateはexpected branch HEAD {short_sha(state.branch_sha)} を使用します。"
-            )
+    def on_candidate_text(self, text: str) -> None:
+        self._set_candidate_text(text)
+
+    def on_lifecycle(self) -> None:
+        self._apply_lifecycle_state()
+
+    def on_log(self, text: str) -> None:
+        self._log(text)
+
+    def on_post_notice(self, text: str) -> None:
+        self.banner_var.set(text)
+
+    def _set_candidate_text(self, text: str) -> None:
+        self._applying_lifecycle = True
+        try:
+            self.candidate_var.set(text)
+        finally:
+            self._applying_lifecycle = False
+
+    def refresh_all(self) -> None:
+        """Manual reload: one new epoch for the whole local+GitHub batch."""
+        if not self.current:
+            return
+        self._reload_batch("manual")
+
+    def _reload_batch(self, reason: str) -> None:
+        name = self.current.name
+        self.selection.new_epoch(name, reason)
+        self._set_candidate_text(self.selection.provenance.text(name))
+        self.refresh()
+        self.refresh_github()
+
+    def refresh(self) -> None:
+        """Submit a LOCAL load under the current epoch (never runs git on the UI thread)."""
+        if not self.current:
+            return
+        self.selection.reload_local(self.current.name)
+        self._show_local_loading()
+        self._apply_lifecycle_state()
+
+    def refresh_github(self) -> None:
+        if not self.current:
+            return
+        self._show_github_loading()
+        self.selection.submit_github(self.current.name)
         self._apply_lifecycle_state()
 
     def _candidate_changed(self) -> None:
         if self._applying_lifecycle or not self.current:
             return
-        self.candidate_by_repo[self.current.name] = self.candidate_var.get().strip()
+        self.selection.provenance.user_edit(self.current.name, self.candidate_var.get())
         self._apply_lifecycle_state()
+
+    def _self_update_enabled(self) -> bool:
+        return bool(
+            self.self_update_sha
+            and self.active_process is None
+            and self.self_update_var.get() != "確認中"
+        )
 
     def _apply_lifecycle_state(self) -> None:
         busy = self.active_process is not None
         has_current = self.current is not None
+        repo_state = self.repo_state
+        entrypoints = self.entrypoints
         ai_ready = bool(
             has_current
             and not busy
-            and self.repo_state
+            and repo_state
             and self.current
-            and self.repo_state.safe_for_lifecycle(self.current)
-            and self.repo_state.head
-            and self.repo_state.head.lower() == self.repo_state.origin_head.lower()
+            and repo_state.safe_for_lifecycle(self.current)
+            and repo_state.head
+            and repo_state.head.lower() == repo_state.origin_head.lower()
         )
         self.ai_start_button.configure(state="normal" if ai_ready else "disabled")
+        update_state = "normal" if self._self_update_enabled() else "disabled"
 
-        if not self.current or not self.repo_state or not self.entrypoints:
+        if not self.current or not repo_state or not entrypoints:
             for button in (self.sync_button, self.run_button, self.build_button, self.release_button):
                 button.configure(state="disabled")
             self.candidate_source_var.set("-")
-            self.self_update_button.configure(state="normal" if self.self_update_sha and not busy else "disabled")
+            self.self_update_button.configure(state=update_state)
             return
 
+        name = self.current.name
+        github_state = self._github_state()
         decision = decide_lifecycle(
             self.current,
-            self.repo_state,
-            self.entrypoints,
-            self.github_states.get(self.current.name),
+            repo_state,
+            entrypoints,
+            github_state,
             self.candidate_var.get(),
             busy=busy,
         )
 
+        # Write-back is split: case normalisation vs. auto reflection (single writer).
         current_value = self.candidate_var.get().strip()
-        if decision.candidate_sha and decision.candidate_sha != current_value:
-            self._applying_lifecycle = True
-            try:
-                self.candidate_var.set(decision.candidate_sha)
-                self.candidate_by_repo[self.current.name] = decision.candidate_sha
-            finally:
-                self._applying_lifecycle = False
+        if decision.candidate_sha:
+            if current_value and decision.candidate_sha != current_value:
+                if self.selection.provenance.normalize(name, decision.candidate_sha):
+                    self._set_candidate_text(self.selection.provenance.text(name))
+            elif not current_value:
+                if self.selection.provenance.auto_reflect(name, decision.candidate_sha, github_state):
+                    self._set_candidate_text(self.selection.provenance.text(name))
 
-        if decision.candidate_source == "AUTO / branch HEAD":
-            self.auto_candidate_by_repo[self.current.name] = decision.candidate_sha
         self.candidate_source_var.set(decision.candidate_source)
-        self.banner_var.set(decision.banner)
+        if not decision.candidate_sha and github_state is None and self.selection.github_loading and not busy:
+            self.banner_var.set("GitHub状態取得中")
+        else:
+            self.banner_var.set(decision.banner)
 
         self.sync_button.configure(state="normal" if decision.sync_enabled else "disabled")
         self.run_button.configure(state="normal" if decision.run_enabled else "disabled")
         self.build_button.configure(state="normal" if decision.build_enabled else "disabled")
         self.release_button.configure(state="normal" if decision.release_enabled else "disabled")
-        self.self_update_button.configure(state="normal" if self.self_update_sha and not busy else "disabled")
+        self.self_update_button.configure(state=update_state)
 
     def _candidate_matches_local(self) -> bool:
         if not self.repo_state:
@@ -552,7 +667,7 @@ class App(ttk.Frame):
     def open_pr_or_ci(self) -> None:
         if not self.current:
             return
-        state = self.github_states.get(self.current.name)
+        state = self._github_state()
         if state and state.latest_pr and state.latest_pr.url:
             webbrowser.open_new_tab(state.latest_pr.url)
             return
@@ -563,35 +678,64 @@ class App(ttk.Frame):
 
     def scan_remote_repos(self) -> None:
         self.remote_status_var.set("GitHub確認中...")
-        self.master.update_idletasks()
-        try:
-            remote = list_github_repositories()
-        except RuntimeError as exc:
-            self.remote_status_var.set(f"取得失敗: {exc}")
-            return
+        self.selection.submit_global(
+            GLOBAL_REMOTE_REPOS, lambda cancel: list_github_repositories(cancel=cancel)
+        )
+
+    def _apply_remote_repos(self, remote) -> None:
+        selected = self._selected_unmanaged()
         managed = {item.name for item in self.all_definitions}
         self.unmanaged_repos = unmanaged_github_repositories(managed, remote)
         self.new_repo_list.delete(0, "end")
         for repo in self.unmanaged_repos:
             branch = repo.default_branch or "no branch"
             self.new_repo_list.insert("end", f"NEW  {repo.name}   [{branch}]")
+        if selected is not None:
+            for index, repo in enumerate(self.unmanaged_repos):
+                if repo.full_name == selected.full_name:
+                    self.new_repo_list.selection_set(index)
+                    break
         self.remote_status_var.set("未登録repoなし" if not self.unmanaged_repos else f"未登録 {len(self.unmanaged_repos)} repo")
 
-    def setup_new_repo(self) -> None:
+    def _selected_unmanaged(self) -> RemoteRepo | None:
         selection = self.new_repo_list.curselection()
-        if not selection:
+        if selection and selection[0] < len(self.unmanaged_repos):
+            return self.unmanaged_repos[selection[0]]
+        return None
+
+    def _confirm_with_guard(self, kind: str, capture, ask) -> tuple[bool, bool]:
+        """Run a confirmation dialog with result application held. (approved, unchanged)"""
+        guard = self.selection.guard
+        guard.begin(IntentSnapshot(kind, capture()))
+        approved = False
+        try:
+            approved = bool(ask())
+        finally:
+            unchanged = guard.finish(capture)
+        return approved, unchanged
+
+    def setup_new_repo(self) -> None:
+        remote = self._selected_unmanaged()
+        if remote is None:
             messagebox.showinfo("新規repo", "セットアップするrepoを選択してください。")
             return
-        remote = self.unmanaged_repos[selection[0]]
         dest = REPOS_ROOT / remote.name
         if not (dest / ".git").exists():
             if dest.exists():
                 messagebox.showerror("セットアップ停止", f"{dest} が存在しますがGit repoではありません。自動変更しません。")
                 return
-            if not messagebox.askyesno(
-                "新規repoセットアップ",
-                f"{remote.full_name} を正式パスへcloneします。\n\n{dest}\n\n既存ファイルの上書き・branch変更・buildは行いません。",
-            ):
+            approved, unchanged = self._confirm_with_guard(
+                "setup_new_repo",
+                lambda: {"remote": remote, "dest_exists": dest.exists()},
+                lambda: messagebox.askyesno(
+                    "新規repoセットアップ",
+                    f"{remote.full_name} を正式パスへcloneします。\n\n{dest}\n\n既存ファイルの上書き・branch変更・buildは行いません。",
+                ),
+            )
+            if not approved:
+                return
+            if not unchanged:
+                messagebox.showinfo("新規repo", STATE_CHANGED_TEXT)
                 return
             try:
                 clone_new_repository(remote, REPOS_ROOT)
@@ -621,19 +765,27 @@ class App(ttk.Frame):
         )
 
     def check_self_update(self) -> None:
-        definition = RepoDefinition("development-management", "management", "main")
-        local_state = inspect_repo(DM_ROOT, definition)
-        if not local_state.safe_for_lifecycle(definition):
+        self.self_update_sha = ""
+        self.self_update_var.set("確認中")
+        self._set_button_states()
+
+        def work(cancel):
+            definition = RepoDefinition(DEV_MANAGEMENT, "management", "main")
+            local_state = inspect_repo(DM_ROOT, definition, cancel=cancel)
+            if not local_state.safe_for_lifecycle(definition):
+                return local_state, None
+            return local_state, fetch_github_state(definition, cancel=cancel)
+
+        self.selection.submit_global(GLOBAL_SELF_UPDATE, work)
+
+    def _apply_self_update_result(self, local_state, github_state) -> None:
+        definition = RepoDefinition(DEV_MANAGEMENT, "management", "main")
+        self.self_update_sha = ""
+        if github_state is None:
             detail = local_state.error or "main / 正式origin / tracked cleanを確認してください"
             self.self_update_var.set(f"更新停止: {detail}")
-            self.self_update_sha = ""
             self._set_button_states()
             return
-
-        self.self_update_var.set("GitHub確認中...")
-        self.master.update_idletasks()
-        github_state = fetch_github_state(definition)
-        self.self_update_sha = ""
         self.self_update_ci_state = github_state.ci_state
         if github_state.error:
             self.self_update_var.set(f"確認失敗: {github_state.error}")
@@ -646,16 +798,48 @@ class App(ttk.Frame):
             self.self_update_var.set(f"更新あり → {short_sha(self.self_update_sha)} / CI {github_state.ci_state}")
         self._set_button_states()
 
+    def on_global_result(self, kind: str, message) -> None:
+        if kind == GLOBAL_REMOTE_REPOS:
+            if message.error is not None:
+                self.remote_status_var.set(f"取得失敗: {message.error}")
+            else:
+                self._apply_remote_repos(message.payload)
+        elif kind == GLOBAL_SELF_UPDATE:
+            if message.error is not None:
+                self.self_update_sha = ""
+                self.self_update_var.set(f"確認失敗: {message.error}")
+                self._set_button_states()
+            else:
+                self._apply_self_update_result(*message.payload)
+
+    def on_global_notice(self, kind: str, notice) -> None:
+        if kind == GLOBAL_REMOTE_REPOS:
+            self.remote_status_var.set("GitHub確認: タイムアウト")
+        elif kind == GLOBAL_SELF_UPDATE:
+            self.self_update_sha = ""
+            self.self_update_var.set("確認失敗: タイムアウト")
+            self._set_button_states()
+
     def apply_self_update(self) -> None:
-        if not self.self_update_sha:
+        if not self.self_update_sha or not self._self_update_enabled():
             return
-        if not messagebox.askyesno(
-            "Control Center更新",
-            f"development-managementを {self.self_update_sha} へSYNCします。\nCI: {self.self_update_ci_state}\n\n成功後はControl Centerを自動再起動します。",
-        ):
+        sha = self.self_update_sha
+        ci_state = self.self_update_ci_state
+        approved, unchanged = self._confirm_with_guard(
+            "self_update",
+            lambda: {"sha": self.self_update_sha, "epoch": self.selection.self_update_epoch},
+            lambda: messagebox.askyesno(
+                "Control Center更新",
+                f"development-managementを {sha} へSYNCします。\nCI: {ci_state}\n\n成功後はControl Centerを自動再起動します。",
+            ),
+        )
+        if not approved:
+            return
+        if not unchanged:
+            messagebox.showinfo("Control Center更新", STATE_CHANGED_TEXT)
             return
         sync_path = DM_ROOT / "SYNC_CLICK_ME.cmd"
-        command = ["cmd.exe", "/c", "call", str(sync_path), self.self_update_sha, "--no-pause"]
+        command = ["cmd.exe", "/c", "call", str(sync_path), sha, "--no-pause"]
         try:
             completed = subprocess.run(command, cwd=DM_ROOT, check=False)
         except OSError as exc:
@@ -664,14 +848,15 @@ class App(ttk.Frame):
         if completed.returncode != 0:
             messagebox.showerror("更新停止", f"SYNCが rc={completed.returncode} で停止しました。SYNC_RESULT.txtを確認してください。")
             return
-        self._log(f"Control Center: self update完了 → {short_sha(self.self_update_sha)}")
+        self.selection.self_update_epoch += 1
+        self._log(f"Control Center: self update完了 → {short_sha(sha)}")
         try:
             flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if sys.executable.lower().endswith("python.exe") else 0
             subprocess.Popen([sys.executable, str(LAUNCHER_PATH)], cwd=DM_ROOT, creationflags=flags)
         except OSError as exc:
             messagebox.showwarning("更新完了", f"更新は完了しましたが自動再起動に失敗しました。\n{exc}\n\nDEV_CONTROL_CENTER.pyw を開き直してください。")
             return
-        self.master.destroy()
+        self._on_close()
 
     def launch_ai_orchestrator(self) -> None:
         if not self.current or not self.repo_state or self.active_process is not None:
@@ -759,7 +944,7 @@ class App(ttk.Frame):
             "result_path": result_path,
             "base_sha": self.repo_state.head.lower(),
         }
-        self.active_process = (process, self.current.name, "ai_orchestrator")
+        self._begin_process(process, self.current.name, "ai_orchestrator")
         self.ai_status_var.set("実行中 — HOL最大30round / Claude ↔ Tests ↔ Astra")
         self._log(f"{self.current.name}: AI Orchestrator HOL開始（最大30round）")
         self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
@@ -790,6 +975,22 @@ class App(ttk.Frame):
             self._log(f"AI: {line}")
             self.ai_status_var.set(line)
 
+    def _reload_after(self, repo_name: str) -> None:
+        """Forced LOCAL+GITHUB reload for the repo, or defer it until it is selected."""
+        if self.current and self.current.name == repo_name:
+            self._reload_batch("post-action")
+        else:
+            self.selection.needs_reload.add(repo_name)
+
+    def _ai_apply_fields(self, repo_name: str) -> dict[str, object]:
+        return {
+            "repo": self.current.name if self.current else None,
+            "epoch": self.selection.lifecycle_epoch.get(repo_name),
+            "idle": self.active_process is None,
+            "candidate": self.selection.provenance.text(repo_name),
+            "closed": self.selection.closed,
+        }
+
     def _finish_ai_orchestrator(self, repo_name: str, rc: int) -> None:
         context = self.ai_context or {}
         self.ai_context = None
@@ -818,9 +1019,10 @@ class App(ttk.Frame):
                 "AI開発停止",
                 f"candidateは作成されませんでした。\n\n{error}",
             )
+            self._reload_after(repo_name)
             return
 
-        self.candidate_by_repo[repo_name] = candidate
+        self.selection.provenance.ai_result(repo_name, candidate)
         claude_calls = payload.get("claude_calls", "?")
         codex_calls = payload.get("codex_calls", "?")
         rounds = payload.get("rounds_used", "?")
@@ -834,29 +1036,37 @@ class App(ttk.Frame):
         )
 
         if not self.current or self.current.name != repo_name:
+            self.selection.needs_reload.add(repo_name)
             return
 
-        self._applying_lifecycle = True
-        try:
-            self.candidate_var.set(candidate)
-            self.candidate_by_repo[repo_name] = candidate
-        finally:
-            self._applying_lifecycle = False
-
+        self._set_candidate_text(self.selection.provenance.text(repo_name))
         base_sha = str(payload.get("base_sha", "") or context.get("base_sha", "")).lower()
-        if not messagebox.askyesno(
-            "AI candidate ready",
-            f"candidate {candidate}\n\n"
-            "このcandidateをローカルexpected branchへfast-forwardして、"
-            "RUN_DEVで実機確認できる状態にしますか？\n\n"
-            "push / BUILD / UPDATEは行いません。",
-        ):
-            self.banner_var.set(
-                f"AI candidate {short_sha(candidate)} は作成済み。ローカル適用は未実施です。"
-            )
-            self._set_button_states()
+        approved, unchanged = self._confirm_with_guard(
+            "ai_apply",
+            lambda: self._ai_apply_fields(repo_name),
+            lambda: messagebox.askyesno(
+                "AI candidate ready",
+                f"candidate {candidate}\n\n"
+                "このcandidateをローカルexpected branchへfast-forwardして、"
+                "RUN_DEVで実機確認できる状態にしますか？\n\n"
+                "push / BUILD / UPDATEは行いません。",
+            ),
+        )
+        if not unchanged:
+            text = "AI candidate適用は中止されました（状態が変わりました）"
+            self.selection.post_action_notice[repo_name] = text
+            self.banner_var.set(text)
+            self._reload_after(repo_name)
+            return
+        if not approved:
+            text = f"AI candidate {short_sha(candidate)} は作成済み。ローカル適用は未実施です。"
+            self.selection.post_action_notice[repo_name] = text
+            self.banner_var.set(text)
+            self._reload_after(repo_name)
             return
 
+        # Bump the epoch and invalidate BEFORE the apply; the AI-origin candidate is kept.
+        self.selection.new_epoch(repo_name, "ai-apply")
         try:
             apply_local_candidate(
                 REPOS_ROOT / repo_name,
@@ -868,19 +1078,31 @@ class App(ttk.Frame):
             self.banner_var.set(f"AI candidate適用停止: {exc}")
             self._log(f"{repo_name}: local candidate適用停止 — {exc}")
             messagebox.showerror("candidate適用停止", str(exc))
-            self.refresh()
+            self._reload_after(repo_name)
             return
 
         self._log(f"{repo_name}: local expected branchをAI candidateへfast-forward {short_sha(candidate)}")
-        self.refresh()
-        self.banner_var.set(
-            f"AI candidate {short_sha(candidate)} をローカル適用済み。RUN_DEVで実機確認してください。"
-        )
+        done = f"AI candidate {short_sha(candidate)} をローカル適用済み。RUN_DEVで実機確認してください。"
+        self.selection.post_action_notice[repo_name] = done
+        self._reload_after(repo_name)
+        self.banner_var.set(done)
         messagebox.showinfo(
             "AI candidate ready",
             f"ローカルcandidateを適用しました。\n\n{candidate}\n\n"
             "次はRUN_DEVで実機確認してください。push / BUILD / UPDATEは未実施です。",
         )
+
+    def _launch_fields(self, action: str) -> dict[str, object]:
+        choice = getattr(self.entrypoints, action, None) if self.entrypoints else None
+        return {
+            "repo": self.current.name if self.current else None,
+            "candidate": self.candidate_var.get().strip(),
+            "entrypoint": str(choice.path) if choice and choice.path else None,
+            "head": self.repo_state.head if self.repo_state else None,
+            "state_generation": self.selection.state_generation,
+            "epoch": self.selection.lifecycle_epoch.get(self.current.name) if self.current else None,
+            "idle": self.active_process is None,
+        }
 
     def launch(self, action: str) -> None:
         if not self.current or not self.entrypoints or not self.repo_state or self.active_process is not None:
@@ -904,12 +1126,40 @@ class App(ttk.Frame):
             messagebox.showerror("STOP", "ローカルHEADがcandidate SHAと一致していません。先にSYNCしてください。")
             return
 
-        if action == "release" and not messagebox.askyesno(
-            self.entrypoints.release_label,
-            f"candidate {candidate}\n\nこのSHAをユーザー実機確認済みで、必要なBUILDも完了していますか？\n正式な配布/更新入口を起動します。",
-        ):
-            return
+        if action == "release":
+            approved, unchanged = self._confirm_with_guard(
+                "release",
+                lambda: self._launch_fields(action),
+                lambda: messagebox.askyesno(
+                    self.entrypoints.release_label,
+                    f"candidate {candidate}\n\nこのSHAをユーザー実機確認済みで、必要なBUILDも完了していますか？\n正式な配布/更新入口を起動します。",
+                ),
+            )
+            if not approved:
+                return
+            if not unchanged:
+                messagebox.showinfo("STOP", STATE_CHANGED_TEXT)
+                self.refresh_all()
+                return
         self._launch_cmd(choice.path, args, action)
+
+    def _begin_process(self, process, repo_name: str, action: str) -> None:
+        """The ONLY place that sets active_process: new epoch, invalidate, cancel old loads."""
+        self.active_process = (process, repo_name, action)
+        if self.selection.process_boundary(repo_name, f"process-start:{action}"):
+            self.self_update_sha = ""
+        if self.current and self.current.name == repo_name:
+            self._set_candidate_text(self.selection.provenance.text(repo_name))
+
+    def _end_process(self, repo_name: str) -> None:
+        self.active_process = None
+        if self.selection.process_boundary(repo_name, "process-end"):
+            self.self_update_sha = ""
+            self.self_update_var.set("未確認（更新確認を押してください）")
+        if self.current and self.current.name == repo_name:
+            self._set_candidate_text(self.selection.provenance.text(repo_name))
+        else:
+            self.selection.needs_reload.add(repo_name)
 
     def _launch_cmd(self, path: Path, args: list[str], action: str) -> None:
         if path.suffix.lower() not in {".cmd", ".bat"}:
@@ -923,7 +1173,7 @@ class App(ttk.Frame):
         except OSError as exc:
             messagebox.showerror("起動失敗", str(exc))
             return
-        self.active_process = (process, self.current.name, action)
+        self._begin_process(process, self.current.name, action)
         self._log(f"{self.current.name}: {action.upper()} → {path.relative_to(repo_root)}")
         self.banner_var.set(f"{action.upper()} 実行中。完了まで別工程はロックします。")
         self._set_button_states()
@@ -942,10 +1192,11 @@ class App(ttk.Frame):
 
         if action == "ai_orchestrator":
             self._drain_ai_output()
-        self.active_process = None
+        self._end_process(repo_name)
         self._log(f"{repo_name}: {action.upper()} 終了 rc={rc}")
 
         if action == "ai_orchestrator":
+            self.banner_var.set("AI完了処理中")
             self._finish_ai_orchestrator(repo_name, rc)
             if self.current and self.current.name == repo_name:
                 self._set_button_states()

@@ -58,6 +58,54 @@ Control Centerは `development-management/main` とローカルHEADを比較し�
 
 通常のダブルクリックSYNCでは従来どおりpauseします。
 
+## repo選択の非同期読込
+
+repo選択・全状態更新・起動時のself-update確認・未登録repo確認では、git / gh / ファイル走査をUIスレッドで実行しません。
+すべて `scripts/dev_control_center/loader.py` のdaemon workerで実行し、結果だけを50ms周期のheartbeatでUIへ反映します。
+
+- **根本原因（コード追跡で確認済み）**: 従来は `<<ListboxSelect>>` のたびに `inspect_repo`（git 6回）、`discover_entrypoints`
+  （`git ls-files` + ファイルstat）、`fetch_github_state`（gh 4回、各timeout 20s）をUIスレッドで直列実行していました。
+  起動時も約12 git + 9 gh が直列でした。どの項が実機で支配的かは**未確認**です（`gh` が有力な仮説）。
+  下記の計測で確認します。
+- **scope**: repo scope（local / github / suggest）は `(repo, kind)` ごとにlatest-wins。GLOBAL scope（`remote_repos` / `self_update`）は
+  repo切替で取り消しません。
+- **cancel_repo_scope**: repoを離れる・工程開始/終了・同repo再選択は単一の `cancel_repo_scope(repo, reason)` を通り、
+  そのrepoのPENDINGとRUNNINGを取り消します（通知は出しません）。cancel対応worker（git/gh/走査はcancel Eventを約0.2s周期で確認）は
+  すぐ空き、新しいrepoは古い処理の期限を待ちません。cancelを無視するworkerだけは、cancel時刻から
+  `SUPERSEDE_GRACE`（暫定10s）後に放棄され、置換workerが起動します。この最悪待ち時間（grace + 1 tick）は通常経路の目標とは分けて扱います。
+- **期限とresource**: LOCAL 30s / GITHUB 60s / GLOBAL 90s（暫定）。PENDING期限はworkerに触れず、RUNNING期限はそのworkerだけを放棄し、
+  timeoutは `TerminalNotice` として1回だけ通知（fail closed）。上限は放棄数ではなく総live thread数（pool size + 4）。
+  放棄workerが戻れば復帰（rehabilitate）または退役。resultとnoticeは1つのlockで排他的に決まります。
+- **整合性**: 表示stateは `lifecycle_epoch` のstamp付きで、accessor（`authoritative_local/github`）経由でのみ参照します。
+  repo選択・全状態更新・工程開始/終了・AI適用の直前で必ずepochを進め、古い結果・古いGitHub状態は判断に使いません。
+  candidateの由来（NONE/USER/AI/AUTO）は `CandidateProvenance` だけが書き、`NONE iff 空` を守ります。
+  AUTOのcandidateは選択のたびにクリアされ、新しいGitHub結果で再反映されます（GitHub結果が届くまで一時的に空）。
+  USER / AIのcandidateは切替後も保持されます。
+- **確認dialog**: RELEASE確認・AI candidate適用確認・新規repo clone確認・self-update確認は、開始時にsnapshotを取り、
+  dialog中は結果適用を保留し、承認後にsnapshotが変わっていれば実行せず中止します。
+- **安全条件は変更なし**: `decide_lifecycle`、`launch()` の条件、`apply_local_candidate` の自己検証、CMD/BAT限定、
+  push / BUILD / UPDATEを自動化しない点は従来どおりです。GitHub状態が無くても手入力candidateで動く従来仕様も同じです。
+- **未対応（従来どおり同期）**: `apply_local_candidate`、self-updateのSYNC実行、`clone_new_repository` はユーザー操作起点の同期処理のままです。
+  GitHub状態表示キャッシュ（設計step 16）と gh 並列化（step 17）は、計測結果で必要性が出た場合のみ入れる設計のため未実装です。
+
+### 計測（DCC_TIMING）
+
+`DCC_TIMING=1` でDCCを起動すると、標準エラーへ次を出力します（無効時は無出力）。
+
+- `startup-to-operable`、`select-to-LOCAL-shown`、`select-to-GITHUB-shown`
+- gh呼び出しごとの所要時間（`gh:api repos/.../branches/...`、`gh:pr list`、check-runs、status、`gh:repo list`）
+- UI heartbeat遅延（`ui-lag`、終了時 `ui-lag-summary` の p95 / max）
+- `repo-scope-cancel`（取消したPENDING/RUNNING数）、`superseded-worker-returned`、`superseded-worker-abandoned`、`timeout-*`、`abandon` など
+
+実機手順:
+
+1. `python scripts/measure_dcc_selection.py --iterations 5` で各repoのgit / 走査 / `fetch_github_state`（endpoint別）を測る（読み取りのみ）。
+2. `DCC_TIMING=1` でDCCを起動し、最大repoを5回選択、遅いネットワーク条件、非Git/低速FSのrepoがあればそれ、
+   さらに遅い2repoを跨ぐ A→B→C の連続切替（最後のクリックからCのLOCAL表示まで）を記録する。
+3. 目標（暫定・実機測定前は未確認）: 起動から1s以内に操作可能、選択・読込中のheartbeat遅延 p95 ≤ 100ms / max ≤ 250ms、
+   典型repoでLOCAL表示 ≤ 1s。cancel無視workerが残る場合の追加待ち（≤ grace + 1 tick）は別枠で報告する。
+   この目標を超えた場合は「目標未達」と報告する。
+
 ## 安全条件
 
 - origin一致

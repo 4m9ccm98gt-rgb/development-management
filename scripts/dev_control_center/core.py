@@ -8,12 +8,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import threading
+import time
 import tomllib
 from typing import Callable, Iterable
 from urllib.parse import quote
+
+from .timing import TIMING
 
 DEFAULT_OWNER = "4m9ccm98gt-rgb"
 ACTIVE_TYPES = {"desktop", "web", "service", "management"}
@@ -26,8 +31,16 @@ GITHUB_REMOTE_RE = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://
 CI_SUCCESS_CONCLUSIONS = {"success", "neutral", "skipped"}
 
 
+GIT_TIMEOUT_SECONDS = 15
+CANCEL_POLL_SECONDS = 0.2
+
+
 class ControlCenterConfigError(ValueError):
     """Raised when the central repository registry is incomplete."""
+
+
+class Cancelled(Exception):
+    """Cooperative cancellation of a background load (deliberately not a RuntimeError)."""
 
 
 @dataclass(frozen=True)
@@ -324,7 +337,69 @@ def parse_github_repo(remote_url: str) -> str:
     return match.group(1) if match else ""
 
 
-def _run_process(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
+_CHILDREN: set[subprocess.Popen] = set()
+_CHILDREN_LOCK = threading.Lock()
+
+
+def kill_registered_children() -> None:
+    """Kill every cancellable child still running (used when the app closes)."""
+    with _CHILDREN_LOCK:
+        children = list(_CHILDREN)
+    for child in children:
+        try:
+            child.kill()
+        except OSError:
+            pass
+
+
+def _run_cancellable(
+    args: list[str],
+    timeout: float,
+    cancel: threading.Event,
+    *,
+    text: bool,
+) -> subprocess.CompletedProcess:
+    """Popen + communicate polling so a cancel Event or timeout terminates the child."""
+    kwargs: dict[str, object] = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    if text:
+        kwargs.update(text=True, encoding="utf-8", errors="replace")
+    try:
+        proc = subprocess.Popen(args, **kwargs)
+    except OSError as exc:
+        raise RuntimeError(f"command unavailable: {args[0]}: {exc}") from exc
+    with _CHILDREN_LOCK:
+        _CHILDREN.add(proc)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            if cancel.is_set():
+                raise Cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"command timed out: {' '.join(args[:4])}")
+            try:
+                out, err = proc.communicate(timeout=min(CANCEL_POLL_SECONDS, remaining))
+            except subprocess.TimeoutExpired:
+                continue
+            return subprocess.CompletedProcess(args, proc.returncode, out, err)
+    finally:
+        with _CHILDREN_LOCK:
+            _CHILDREN.discard(proc)
+        if proc.poll() is None:
+            try:
+                proc.kill()
+                proc.communicate(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
+def _run_process(
+    args: list[str],
+    timeout: int = 20,
+    cancel: threading.Event | None = None,
+) -> subprocess.CompletedProcess[str]:
+    if cancel is not None:
+        return _run_cancellable(args, timeout, cancel, text=True)
     try:
         return subprocess.run(
             args,
@@ -341,8 +416,13 @@ def _run_process(args: list[str], timeout: int = 20) -> subprocess.CompletedProc
         raise RuntimeError(f"command unavailable: {args[0]}: {exc}") from exc
 
 
-def _run_gh_json(args: list[str]) -> object:
-    proc = _run_process(["gh", *args])
+def _gh_label(args: list[str]) -> str:
+    return "gh:" + " ".join(args[:2])
+
+
+def _run_gh_json(args: list[str], cancel: threading.Event | None = None) -> object:
+    with TIMING.span(_gh_label(args)):
+        proc = _run_process(["gh", *args], cancel=cancel)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
         raise RuntimeError(detail)
@@ -352,13 +432,18 @@ def _run_gh_json(args: list[str]) -> object:
         raise RuntimeError("GitHub CLI returned invalid JSON") from exc
 
 
-def list_github_repositories(owner: str = DEFAULT_OWNER) -> list[RemoteRepo]:
+def list_github_repositories(
+    owner: str = DEFAULT_OWNER,
+    *,
+    cancel: threading.Event | None = None,
+) -> list[RemoteRepo]:
     """List non-archived, non-fork repositories visible to authenticated gh."""
-    payload = _run_gh_json([
+    args = [
         "repo", "list", owner,
         "--limit", "200",
         "--json", "name,isArchived,isFork,defaultBranchRef",
-    ])
+    ]
+    payload = _run_gh_json(args, cancel=cancel) if cancel is not None else _run_gh_json(args)
     if not isinstance(payload, list):
         raise RuntimeError("GitHub repository list had an unexpected shape")
     result: list[RemoteRepo] = []
@@ -429,15 +514,20 @@ def summarize_ci_state(check_runs_payload: object, status_payload: object) -> tu
     return "GREEN", total
 
 
-def _latest_open_pr(full_name: str, base_branch: str) -> PullRequestInfo | None:
-    payload = _run_gh_json([
+def _latest_open_pr(
+    full_name: str,
+    base_branch: str,
+    runner: Callable[..., object],
+    cancel: threading.Event | None,
+) -> PullRequestInfo | None:
+    payload = runner([
         "pr", "list",
         "--repo", full_name,
         "--state", "open",
         "--base", base_branch,
         "--limit", "1",
         "--json", "number,title,headRefName,headRefOid,baseRefName,isDraft,url",
-    ])
+    ], cancel=cancel)
     if not isinstance(payload, list) or not payload:
         return None
     item = payload[0]
@@ -454,23 +544,38 @@ def _latest_open_pr(full_name: str, base_branch: str) -> PullRequestInfo | None:
     )
 
 
-def _ci_for_sha(full_name: str, sha: str) -> tuple[str, int]:
-    check_runs = _run_gh_json([
+def _ci_for_sha(
+    full_name: str,
+    sha: str,
+    runner: Callable[..., object],
+    cancel: threading.Event | None,
+) -> tuple[str, int]:
+    check_runs = runner([
         "api", f"repos/{full_name}/commits/{sha}/check-runs?per_page=100",
-    ])
-    combined_status = _run_gh_json([
+    ], cancel=cancel)
+    combined_status = runner([
         "api", f"repos/{full_name}/commits/{sha}/status",
-    ])
+    ], cancel=cancel)
     return summarize_ci_state(check_runs, combined_status)
 
 
-def fetch_github_state(definition: RepoDefinition) -> GitHubState:
-    """Fetch expected-branch HEAD, relevant PR and best-effort CI state."""
+def fetch_github_state(
+    definition: RepoDefinition,
+    *,
+    cancel: threading.Event | None = None,
+    runner: Callable[..., object] | None = None,
+) -> GitHubState:
+    """Fetch expected-branch HEAD, relevant PR and best-effort CI state.
+
+    ``cancel`` raises Cancelled (never swallowed as a GitHub error); ``runner``
+    is injectable for tests and defaults to the ``gh`` JSON runner.
+    """
+    runner = runner or _run_gh_json
     try:
         branch_name = quote(definition.branch, safe="")
-        branch_payload = _run_gh_json([
+        branch_payload = runner([
             "api", f"repos/{definition.full_name}/branches/{branch_name}",
-        ])
+        ], cancel=cancel)
         if not isinstance(branch_payload, dict):
             raise RuntimeError("branch response had an unexpected shape")
         commit = branch_payload.get("commit") or {}
@@ -479,7 +584,7 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
             raise RuntimeError(f"expected branch '{definition.branch}' has no usable HEAD SHA")
 
         try:
-            latest_pr = _latest_open_pr(definition.full_name, definition.branch)
+            latest_pr = _latest_open_pr(definition.full_name, definition.branch, runner, cancel)
         except RuntimeError:
             latest_pr = None
 
@@ -493,7 +598,7 @@ def fetch_github_state(definition: RepoDefinition) -> GitHubState:
             candidate_blocked_by_pr = False
 
         try:
-            ci_state, check_count = _ci_for_sha(definition.full_name, ci_sha)
+            ci_state, check_count = _ci_for_sha(definition.full_name, ci_sha, runner, cancel)
         except RuntimeError:
             ci_state, check_count = "UNAVAILABLE", 0
 
@@ -545,20 +650,44 @@ def clone_new_repository(remote: RemoteRepo, repos_root: Path) -> Path:
     return dest
 
 
-def _filesystem_scripts(repo_root: Path) -> list[Path]:
-    return [path for path in repo_root.rglob("*") if path.is_file()]
+def _filesystem_scripts(
+    repo_root: Path,
+    max_depth: int = 3,
+    cancel: threading.Event | None = None,
+) -> list[Path]:
+    """Files of a non-Git tree, pruning skipped and too-deep directories.
+
+    Result-equivalent to a full rglob followed by the SKIP_DIR_NAMES / depth
+    filters in _iter_scripts, without descending into node_modules and friends.
+    """
+    found: list[Path] = []
+    root_text = str(repo_root)
+    for dirpath, dirnames, filenames in os.walk(root_text):
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        depth = 0 if dirpath == root_text else len(Path(dirpath).relative_to(repo_root).parts)
+        dirnames[:] = [
+            name for name in dirnames
+            if name not in SKIP_DIR_NAMES and depth + 1 <= max_depth
+        ]
+        found.extend(Path(dirpath) / name for name in filenames)
+    return found
 
 
-def _tracked_files(repo_root: Path) -> list[Path] | None:
+def _tracked_files(repo_root: Path, cancel: threading.Event | None = None) -> list[Path] | None:
     """Return tracked files for a Git repo; None means this is not a Git repo."""
     if not (repo_root / ".git").exists():
         return None
+    args = ["git", "-C", str(repo_root), "ls-files", "-z"]
     try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "ls-files", "-z"],
-            capture_output=True,
-            check=False,
-        )
+        if cancel is not None:
+            proc = _run_cancellable(args, GIT_TIMEOUT_SECONDS, cancel, text=False)
+        else:
+            proc = subprocess.run(
+                args, capture_output=True, check=False, timeout=GIT_TIMEOUT_SECONDS
+            )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git ls-files timed out") from exc
     except OSError:
         return []
     if proc.returncode != 0:
@@ -567,13 +696,19 @@ def _tracked_files(repo_root: Path) -> list[Path] | None:
     return [repo_root / item for item in items if item]
 
 
-def _iter_scripts(repo_root: Path, max_depth: int = 3) -> list[Path]:
+def _iter_scripts(
+    repo_root: Path,
+    max_depth: int = 3,
+    cancel: threading.Event | None = None,
+) -> list[Path]:
     if not repo_root.is_dir():
         return []
-    source = _tracked_files(repo_root)
-    candidates = source if source is not None else _filesystem_scripts(repo_root)
+    source = _tracked_files(repo_root, cancel)
+    candidates = source if source is not None else _filesystem_scripts(repo_root, max_depth, cancel)
     found: list[Path] = []
-    for path in candidates:
+    for index, path in enumerate(candidates):
+        if cancel is not None and index % 256 == 0 and cancel.is_set():
+            raise Cancelled()
         if not path.is_file() or path.suffix.lower() not in SCRIPT_SUFFIXES:
             continue
         try:
@@ -619,9 +754,15 @@ def _regex(pattern: str) -> Callable[[str], bool]:
     return lambda name: bool(rx.fullmatch(name))
 
 
-def discover_entrypoints(repo_root: Path, repo_type: str, *, application_implemented: bool = True) -> RepoEntrypoints:
+def discover_entrypoints(
+    repo_root: Path,
+    repo_type: str,
+    *,
+    application_implemented: bool = True,
+    cancel: threading.Event | None = None,
+) -> RepoEntrypoints:
     """Conservatively find formal user-facing lifecycle entrypoints."""
-    scripts = _iter_scripts(repo_root)
+    scripts = _iter_scripts(repo_root, cancel=cancel)
     sync = _choose(repo_root, scripts, [
         _exact("SYNC_CLICK_ME.cmd"),
         _regex(r"SYNC.*CLICK_ME\.(?:CMD|BAT)"),
@@ -677,15 +818,28 @@ def discover_entrypoints(repo_root: Path, repo_type: str, *, application_impleme
     return RepoEntrypoints(sync, run, build, release, release_label)
 
 
-def _run_git(repo_root: Path, *args: str, allow_fail: bool = False) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+def _run_git(
+    repo_root: Path,
+    *args: str,
+    allow_fail: bool = False,
+    cancel: threading.Event | None = None,
+) -> str:
+    command = ["git", "-C", str(repo_root), *args]
+    if cancel is not None:
+        proc = _run_cancellable(command, GIT_TIMEOUT_SECONDS, cancel, text=True)
+    else:
+        try:
+            proc = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"git {' '.join(args)}: timed out") from exc
     output = (proc.stdout or "").strip()
     if proc.returncode != 0 and not allow_fail:
         detail = (proc.stderr or output or f"exit {proc.returncode}").strip()
@@ -693,25 +847,30 @@ def _run_git(repo_root: Path, *args: str, allow_fail: bool = False) -> str:
     return output if proc.returncode == 0 else ""
 
 
-def inspect_repo(repo_root: Path, definition: RepoDefinition) -> RepoState:
+def inspect_repo(
+    repo_root: Path,
+    definition: RepoDefinition,
+    cancel: threading.Event | None = None,
+) -> RepoState:
     if not repo_root.is_dir():
         return RepoState(False, False, error="local repository directory is missing")
     if not (repo_root / ".git").exists():
         return RepoState(True, False, error=".git is missing")
     try:
-        branch = _run_git(repo_root, "branch", "--show-current")
+        branch = _run_git(repo_root, "branch", "--show-current", cancel=cancel)
         if not branch:
             return RepoState(True, True, error="detached HEAD")
-        head = _run_git(repo_root, "rev-parse", "HEAD")
-        origin_repo = parse_github_repo(_run_git(repo_root, "remote", "get-url", "origin"))
-        tracked = _run_git(repo_root, "status", "--porcelain", "--untracked-files=no")
-        all_status = _run_git(repo_root, "status", "--porcelain", "--untracked-files=all")
+        head = _run_git(repo_root, "rev-parse", "HEAD", cancel=cancel)
+        origin_repo = parse_github_repo(_run_git(repo_root, "remote", "get-url", "origin", cancel=cancel))
+        tracked = _run_git(repo_root, "status", "--porcelain", "--untracked-files=no", cancel=cancel)
+        all_status = _run_git(repo_root, "status", "--porcelain", "--untracked-files=all", cancel=cancel)
         untracked_count = sum(1 for line in all_status.splitlines() if line.startswith("?? "))
         origin_head = _run_git(
             repo_root,
             "rev-parse",
             f"refs/remotes/origin/{definition.branch}",
             allow_fail=True,
+            cancel=cancel,
         )
         return RepoState(
             True,
