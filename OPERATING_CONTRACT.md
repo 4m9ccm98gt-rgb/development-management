@@ -68,7 +68,7 @@
 
 ## 3. AI Orchestrator
 
-AI Orchestrator v0.3 HOLの標準役割は次です。
+AI Orchestrator v0.4 HOLの標準役割は次です。
 
 - 実装・修正: Claude
 - 自動テスト: 対象repoの独立テストコマンド
@@ -84,16 +84,61 @@ Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時�
 
 ### Human-on-the-loop 自動ループ
 
-- Claude = Implementer / Technical Owner。実装と技術判断を担当し、Astraの指摘を無条件に受け入れない。
-- Astra = Independent Reviewer。安全性・正しさ・regressionを独立に検証し、Claudeの説明を無条件に受け入れない。
-- Orchestrator = Moderator / State Machine。両者の役割、finding、議論、修正、Tests、retryを管理する。
+正式進行は次の順序とする。
+
+```text
+User request
+↓
+GPT
+症状・目的・期待結果・制約・受入条件をTaskSpec化
+原因・修正方法は推測で確定しない
+ユーザーの提案/気付きは、明示要件でない限りoptional observationとして分離
+↓
+Claude: INVESTIGATE / DESIGN（read-only）
+実repo・コード・テスト・契約を調査し、根拠付きで原因と設計を作る
+↓
+Astra: DESIGN REVIEW（read-only）
+調査根拠・誤診・別原因・安全性・regression・過剰設計を独立レビュー
+↓
+Claude: DESIGN JUDGMENT（read-only）
+ACCEPT / DISPUTE / NEEDS_CLARIFICATION をfindingごとに判断
+↓
+Astra: RECONSIDERATION（read-only）
+WITHDRAW / MODIFY / UPHOLD
+↓
+必要ならClaudeが追加調査・設計改訂
+↓
+設計承認
+↓
+Claude IMPLEMENTATION
+↓
+Tests
+↓
+Astra implementation review
+↓
+Claude judgment
+↓
+必要ならAstra reconsideration / Claude repair
+↓
+candidate
+```
+
+- 調査/設計stageではコード変更を禁止し、diff fingerprint不変をOrchestratorが検証する。
+- GPTは原因や実装修正を症状から推測で確定しない。
+- 「調査して直して」は正式な1タスクとして扱う。
+- Claude = Implementer / Technical Owner。調査・設計・実装・技術判断を担当する。
+- Astra = Independent Reviewer。調査設計と実装の両方を独立に疑う。
+- Orchestrator = Moderator / State Machine。設計議論、実装、Tests、review、retryを管理する。
+- Astraのfindingは即実装命令ではなく、まずClaudeが技術判断する。
+- Claudeの反論はAstraが再評価する。
+- 設計段階で残ったfindingは設計改訂へ戻し、承認された設計だけ実装へ進む。
 - Tests FAIL / HANG時はClaude自己診断とAstra独立診断を別々に取得し、両診断とraw test logをClaudeへ渡して修正する。
-- AstraがCHANGES_REQUESTEDを返した場合、まずコードを変更しない議論stageを入れる。ClaudeはACCEPT / DISPUTE / NEEDS_CLARIFICATIONを判断し、異議があればAstraがWITHDRAW / MODIFY / UPHOLDを再判断する。
-- 議論後も残ったfindingだけを正式なBLOCKING_REPAIR_REQUESTとしてClaudeへ渡す。
+- 実装reviewで議論後も残ったfindingだけをBLOCKING_REPAIR_REQUESTとしてClaudeへ渡す。
 - 大きなdiffは自動分割reviewし、単純なdiff size超過だけで人間へ返さない。
 - Testsは進捗をstdoutへ流し、10秒heartbeatを表示する。timeout/hang時はprocess treeを終了し、通常のtest failure診断ループへ移る。
-- parser揺れ（approved / approve等）は安全に正規化する。Astra provider / protocol failureは同じstage内でretryする。
-- 通常運用の目標は、ユーザーがPowerShellでClaude / Tests / Astraのループを手動仲介しないこと。
+- parser揺れ（approved / approve等）は安全に正規化する。provider/protocol failureは同じstage内でretryする。
+- 最大30roundは調査設計と実装を合わせた総予算とする。
+- 通常運用ではユーザーがClaude / Tests / Astraのループを手動仲介しない。
 
 
 ## 4. DCCでのcandidate受け渡し
