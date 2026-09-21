@@ -1261,6 +1261,19 @@ def run(args: argparse.Namespace) -> int:
                 )
                 assert_readonly(before, "Claude review deliberation")
 
+                decisions = evaluation.get("decisions")
+                accepted_ids = {
+                    str(item.get("finding_id", "")).strip()
+                    for item in decisions
+                    if isinstance(item, dict)
+                    and str(item.get("decision", "")).strip().upper() == "ACCEPT"
+                }
+                accepted_findings = [
+                    dict(item)
+                    for item in current_review.findings
+                    if str(item.get("finding_id", "")).strip() in accepted_ids
+                ]
+
                 if not _evaluation_has_dispute(evaluation):
                     unresolved_dispute = False
                     break
@@ -1305,20 +1318,42 @@ def run(args: argparse.Namespace) -> int:
                     f"round-{round_no:02d}-deliberation-{exchange}-astra.txt",
                     reconsider_raw.stdout + "\n" + reconsider_raw.stderr,
                 )
-                current_review = _tag_review_findings(
+                reconsidered = _tag_review_findings(
                     _parse_codex_review(reconsider_raw.stdout)
                 )
                 assert_readonly(before, "Astra review reconsideration")
 
-                if current_review.approved:
+                if reconsidered.approved:
+                    if accepted_findings:
+                        current_review = Review(
+                            "changes_requested",
+                            "Astra withdrew disputed findings; Claude-accepted findings remain blocking.",
+                            tuple(accepted_findings),
+                        )
+                        unresolved_dispute = False
+                        break
                     print(
                         f"[Round {round_no}/{args.max_rounds}] "
                         "Astra withdrew all disputed findings: APPROVE",
                         flush=True,
                     )
-                    return create_candidate(round_no, current_review)
+                    return create_candidate(round_no, reconsidered)
 
-                unresolved_dispute = True
+                reconsidered_ids = {
+                    str(item.get("finding_id", "")).strip()
+                    for item in reconsidered.findings
+                }
+                merged_findings = accepted_findings + [
+                    dict(item)
+                    for item in reconsidered.findings
+                    if str(item.get("finding_id", "")).strip() not in accepted_ids
+                ]
+                current_review = Review(
+                    "changes_requested",
+                    reconsidered.summary,
+                    tuple(merged_findings),
+                )
+                unresolved_dispute = bool(reconsidered_ids - accepted_ids)
 
             if unresolved_dispute:
                 raise OrchestratorError(
