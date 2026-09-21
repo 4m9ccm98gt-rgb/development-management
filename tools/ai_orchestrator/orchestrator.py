@@ -188,6 +188,25 @@ def _tracked_dirty(repo: Path) -> bool:
     return bool(_git(repo, "status", "--porcelain", "--untracked-files=no").stdout.strip())
 
 
+def _fetch_expected_origin_branch(root: Path, branch: str, *, label: str = "git fetch") -> None:
+    refspec = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
+    fetch = _run(
+        [
+            *_resolved_command("git"),
+            "-C",
+            str(root),
+            "fetch",
+            "--prune",
+            "origin",
+            refspec,
+        ],
+        timeout=300,
+    )
+    if fetch.returncode != 0:
+        detail = (fetch.stderr or fetch.stdout).strip()
+        raise OrchestratorError(f"{label} failed for origin/{branch}: {detail}")
+
+
 def _repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) -> RepoBaseline:
     repo_arg = repo_arg.expanduser().resolve()
     root_text = _git(repo_arg, "rev-parse", "--show-toplevel").stdout.strip()
@@ -203,13 +222,7 @@ def _repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) 
         raise OrchestratorError(f"wrong branch: expected {expected_branch}, got {branch}")
 
     if do_fetch:
-        fetch = _run(
-            [*_resolved_command("git"), "-C", str(root), "fetch", "--prune", "origin"],
-            timeout=300,
-        )
-        if fetch.returncode != 0:
-            detail = (fetch.stderr or fetch.stdout).strip()
-            raise OrchestratorError(f"git fetch failed: {detail}")
+        _fetch_expected_origin_branch(root, branch)
 
     head_sha = _git(root, "rev-parse", "HEAD").stdout.strip().lower()
     origin_sha = _git(root, "rev-parse", f"origin/{branch}").stdout.strip().lower()
@@ -239,13 +252,11 @@ def _assert_source_unchanged(baseline: RepoBaseline) -> None:
 
 def _assert_origin_unchanged(baseline: RepoBaseline, do_fetch: bool) -> None:
     if do_fetch:
-        fetch = _run(
-            [*_resolved_command("git"), "-C", str(baseline.root), "fetch", "--prune", "origin"],
-            timeout=300,
+        _fetch_expected_origin_branch(
+            baseline.root,
+            baseline.branch,
+            label="final git fetch",
         )
-        if fetch.returncode != 0:
-            detail = (fetch.stderr or fetch.stdout).strip()
-            raise OrchestratorError(f"final git fetch failed: {detail}")
     origin_sha = _git(
         baseline.root, "rev-parse", f"origin/{baseline.branch}"
     ).stdout.strip().lower()
