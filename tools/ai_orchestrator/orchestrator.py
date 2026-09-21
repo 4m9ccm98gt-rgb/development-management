@@ -34,7 +34,7 @@ REVIEW_BUNDLE_CHARS = 90_000
 DEFAULT_REVIEW_MODEL = "gpt-6-astra"
 DEFAULT_MAX_ROUNDS = 30
 DEFAULT_TEST_TIMEOUT = 600
-PROVIDER_RETRIES = 3
+PROVIDER_RETRIES = 30
 DELIBERATION_EXCHANGES = 2
 API_BILLING_ENV_VARS = (
     "OPENAI_API_KEY",
@@ -413,7 +413,7 @@ def _run_claude_readonly(
             flush=True,
         )
         if attempt < PROVIDER_RETRIES:
-            time.sleep(min(30, 5 * attempt))
+            time.sleep(min(60, 5 * attempt))
     raise OrchestratorError(f"Claude readonly analysis failed: {last_detail}")
 
 
