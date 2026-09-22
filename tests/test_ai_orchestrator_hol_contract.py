@@ -94,10 +94,7 @@ class HolOrchestratorContractTests(unittest.TestCase):
     def test_role_specific_prompts_exist(self):
         prompts = ROOT / "tools" / "ai_orchestrator" / "prompts"
         expected = {
-            "diagnose_tests.md": "DIAGNOSIS-ONLY",
             "diagnose_tests_astra.md": "independent reviewer",
-            "evaluate_review.md": "REVIEW_EVALUATION",
-            "reconsider_review.md": "REVIEWER_RECONSIDERATION",
             "blocking_repair.md": "BLOCKING_REPAIR_REQUEST",
             "repair_tests.md": "TEST_FAILURE_REPAIR",
         }
@@ -118,11 +115,7 @@ class HolOrchestratorContractTests(unittest.TestCase):
     def test_design_first_prompts_exist(self):
         prompts = ROOT / "tools" / "ai_orchestrator" / "prompts"
         expected = {
-            "investigate_design.md": "INVESTIGATE_AND_DESIGN",
-            "design_review.md": "DESIGN_REVIEW",
-            "design_evaluate.md": "DESIGN_REVIEW_EVALUATION",
-            "design_reconsider.md": "DESIGN_REVIEWER_RECONSIDERATION",
-            "revise_design.md": "REVISE_INVESTIGATION_AND_DESIGN",
+            "investigate_design_astra.md": "ASTRA_INVESTIGATE_AND_DESIGN",
             "implement_from_design.md": "IMPLEMENT_CONFIRMED_DESIGN",
         }
         for name, marker in expected.items():
@@ -130,15 +123,32 @@ class HolOrchestratorContractTests(unittest.TestCase):
                 text = (prompts / name).read_text(encoding="utf-8")
                 self.assertIn(marker, text)
 
-    def test_orchestrator_runs_design_before_implementation(self):
+    def test_orchestrator_runs_astra_design_before_claude_implementation(self):
         text = ORCH_PATH.read_text(encoding="utf-8")
-        design_pos = text.index('"investigate_design.md"')
+        design_pos = text.index('"investigate_design_astra.md"')
         implementation_pos = text.index('"implement_from_design.md"')
         tests_pos = text.index('stage="tests"', implementation_pos)
         self.assertLess(design_pos, implementation_pos)
         self.assertLess(implementation_pos, tests_pos)
-        self.assertIn('assert_readonly(design_before, "Claude investigation/design")', text)
-        self.assertIn('assert_readonly(design_before, "Astra design review")', text)
+        self.assertIn('assert_readonly(design_before, "Astra investigation/design")', text)
+        self.assertNotIn("_run_claude_readonly", text)
+        for obsolete in (
+            '"investigate_design.md"',
+            '"design_evaluate.md"',
+            '"design_reconsider.md"',
+            '"revise_design.md"',
+            '"evaluate_review.md"',
+            '"reconsider_review.md"',
+        ):
+            self.assertNotIn(obsolete, text)
+
+    def test_claude_is_only_used_for_implementation_or_repair(self):
+        text = ORCH_PATH.read_text(encoding="utf-8")
+        self.assertIn("CLAUDE_IMPLEMENTATION_MAX_TURNS = 12", text)
+        self.assertNotIn('"--max-turns",\n        "40"', text)
+        self.assertNotIn('"--max-turns",\n        "80"', text)
+        self.assertIn('"diagnose_tests_astra.md"', text)
+        self.assertNotIn('"diagnose_tests.md"', text)
 
     def test_round_budget_includes_design_and_implementation(self):
         text = ORCH_PATH.read_text(encoding="utf-8")

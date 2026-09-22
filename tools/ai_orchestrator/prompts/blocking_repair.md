@@ -15,7 +15,7 @@ You MUST:
 - address the root cause, not only the cited line
 - preserve the original task intent and unrelated behavior
 - add or update focused regression tests when appropriate
-- re-read affected producer/consumer paths before editing
+- inspect only the files necessary to repair the confirmed findings; do not restart broad repository investigation
 
 You MUST NOT:
 - silently skip a finding

@@ -78,7 +78,7 @@ class RoleBoundaryTests(unittest.TestCase):
         self.assertIn("--permission-mode", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "acceptEdits")
         self.assertNotIn("plan", command)
-        self.assertEqual(command[command.index("--max-turns") + 1], "80")
+        self.assertEqual(command[command.index("--max-turns") + 1], "12")
 
     @mock.patch(
         "tools.ai_orchestrator.orchestrator._resolved_command",

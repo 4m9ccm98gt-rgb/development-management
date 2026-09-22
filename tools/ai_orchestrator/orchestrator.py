@@ -35,7 +35,7 @@ DEFAULT_REVIEW_MODEL = "gpt-6-astra"
 DEFAULT_MAX_ROUNDS = 30
 DEFAULT_TEST_TIMEOUT = 600
 PROVIDER_RETRIES = 30
-DELIBERATION_EXCHANGES = 2
+CLAUDE_IMPLEMENTATION_MAX_TURNS = 12
 API_BILLING_ENV_VARS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -327,22 +327,7 @@ def _claude_implementation_command() -> list[str]:
         "--allowedTools",
         ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
         "--max-turns",
-        "80",
-    ]
-
-
-def _claude_readonly_command() -> list[str]:
-    return [
-        *_resolved_command("claude"),
-        "-p",
-        "--output-format",
-        "json",
-        "--permission-mode",
-        "plan",
-        "--allowedTools",
-        ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
-        "--max-turns",
-        "40",
+        str(CLAUDE_IMPLEMENTATION_MAX_TURNS),
     ]
 
 
@@ -389,32 +374,6 @@ def _run_claude_implementation(
             flush=True,
         )
     return result
-
-
-def _run_claude_readonly(
-    worktree: Path,
-    prompt: str,
-    timeout: int,
-) -> CommandResult:
-    last_detail = ""
-    for attempt in range(1, PROVIDER_RETRIES + 1):
-        result = _run(
-            _claude_readonly_command(),
-            cwd=worktree,
-            input_text=prompt,
-            timeout=timeout,
-            env=_agent_env(),
-        )
-        if result.returncode == 0:
-            return result
-        last_detail = (result.stderr or result.stdout).strip()
-        print(
-            f"[Claude readonly] attempt {attempt}/{PROVIDER_RETRIES} failed; retrying...",
-            flush=True,
-        )
-        if attempt < PROVIDER_RETRIES:
-            time.sleep(min(60, 5 * attempt))
-    raise OrchestratorError(f"Claude readonly analysis failed: {last_detail}")
 
 
 def _run_codex_review(
@@ -700,13 +659,13 @@ def _parse_evaluation(stdout: str) -> dict[str, object]:
 
 
 def _parse_design(stdout: str) -> dict[str, object]:
-    value = _extract_json_object(_claude_result_text(stdout))
+    value = _extract_json_object(stdout)
     design = value.get("design")
     if not isinstance(design, list) or not design:
-        raise OrchestratorError("Claude design result must contain a non-empty design[]")
+        raise OrchestratorError("Astra design result must contain a non-empty design[]")
     evidence = value.get("evidence")
     if not isinstance(evidence, list):
-        raise OrchestratorError("Claude design result must contain evidence[]")
+        raise OrchestratorError("Astra design result must contain evidence[]")
     return value
 
 
@@ -911,7 +870,7 @@ def run(args: argparse.Namespace) -> int:
 
     result_payload: dict[str, object] = {
         "status": "running",
-        "version": "0.4-hol-design",
+        "version": "0.5-astra-design",
         "run_id": run_id,
         "repo": str(baseline.root),
         "base_sha": baseline.head_sha,
@@ -1074,264 +1033,60 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         round_no = 1
-        final_design: dict[str, object] | None = None
+        _, design_before_diff = _diff_for_review(worktree)
+        design_before = _review_fingerprint(design_before_diff)
+
         design_prompt = _read_prompt(
-            "investigate_design.md",
+            "investigate_design_astra.md",
             {
                 "TASK": task,
                 "BASE_SHA": baseline.head_sha,
                 "SOURCE_BRANCH": baseline.branch,
             },
         )
+        counters.codex_calls += 1
+        _progress(
+            run_dir,
+            stage="astra_investigate_design",
+            message="Astra investigating repository and producing a read-only design...",
+            round_no=round_no,
+            max_rounds=args.max_rounds,
+            counters=counters,
+        )
+        _write_log(
+            run_dir,
+            f"round-{round_no:02d}-design-astra-prompt.md",
+            design_prompt,
+        )
+        design_raw = _run_codex_review(
+            worktree,
+            design_prompt,
+            args.agent_timeout,
+            args.review_model,
+        )
+        _write_log(
+            run_dir,
+            f"round-{round_no:02d}-design-astra.txt",
+            design_raw.stdout + "\n" + design_raw.stderr,
+        )
+        final_design = _parse_design(design_raw.stdout)
+        design_text = json.dumps(
+            final_design,
+            ensure_ascii=False,
+            indent=2,
+        )
+        _write_log(
+            run_dir,
+            f"round-{round_no:02d}-design-astra.json",
+            design_text,
+        )
+        assert_readonly(design_before, "Astra investigation/design")
+        print(
+            f"[Round {round_no}/{args.max_rounds}] Design: READY BY ASTRA",
+            flush=True,
+        )
+        round_no += 1
 
-        while round_no <= args.max_rounds:
-            _, design_before_diff = _diff_for_review(worktree)
-            design_before = _review_fingerprint(design_before_diff)
-
-            counters.claude_calls += 1
-            _progress(
-                run_dir,
-                stage="investigate_design",
-                message="Claude investigating repository and producing a read-only design...",
-                round_no=round_no,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-design-claude-prompt.md",
-                design_prompt,
-            )
-            design_raw = _run_claude_readonly(
-                worktree,
-                design_prompt,
-                args.agent_timeout,
-            )
-            design_value = _parse_design(design_raw.stdout)
-            final_design = design_value
-            design_text = json.dumps(
-                design_value,
-                ensure_ascii=False,
-                indent=2,
-            )
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-design-claude.json",
-                design_text,
-            )
-            assert_readonly(design_before, "Claude investigation/design")
-
-            review_prompt = _read_prompt(
-                "design_review.md",
-                {
-                    "TASK": task,
-                    "DESIGN": design_text,
-                },
-            )
-            counters.codex_calls += 1
-            _progress(
-                run_dir,
-                stage="design_review",
-                message="Astra independently reviewing Claude investigation/design...",
-                round_no=round_no,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-design-astra-prompt.md",
-                review_prompt,
-            )
-            review_raw = _run_codex_review(
-                worktree,
-                review_prompt,
-                args.agent_timeout,
-                args.review_model,
-            )
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-design-astra.txt",
-                review_raw.stdout + "\n" + review_raw.stderr,
-            )
-            design_review = _tag_review_findings(
-                _parse_codex_review(review_raw.stdout)
-            )
-            assert_readonly(design_before, "Astra design review")
-
-            if design_review.approved:
-                print(
-                    f"[Round {round_no}/{args.max_rounds}] Design: APPROVED",
-                    flush=True,
-                )
-                round_no += 1
-                break
-
-            current_design_review = design_review
-
-            for exchange in range(1, DELIBERATION_EXCHANGES + 1):
-                _, deliberation_diff = _diff_for_review(worktree)
-                deliberation_before = _review_fingerprint(deliberation_diff)
-
-                evaluation_prompt = _read_prompt(
-                    "design_evaluate.md",
-                    {
-                        "TASK": task,
-                        "DESIGN": design_text,
-                        "FEEDBACK": json.dumps(
-                            asdict(current_design_review),
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                    },
-                )
-                counters.claude_calls += 1
-                _progress(
-                    run_dir,
-                    stage="design_deliberation",
-                    message=(
-                        "Claude judging Astra design findings "
-                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
-                    ),
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                evaluation_raw = _run_claude_readonly(
-                    worktree,
-                    evaluation_prompt,
-                    args.agent_timeout,
-                )
-                evaluation = _parse_evaluation(evaluation_raw.stdout)
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-design-deliberation-{exchange}-claude.json",
-                    json.dumps(evaluation, ensure_ascii=False, indent=2),
-                )
-                assert_readonly(
-                    deliberation_before,
-                    "Claude design judgment",
-                )
-
-                decisions = evaluation.get("decisions")
-                accepted_ids = {
-                    str(item.get("finding_id", "")).strip()
-                    for item in decisions
-                    if isinstance(item, dict)
-                    and str(item.get("decision", "")).strip().upper() == "ACCEPT"
-                }
-                accepted_findings = [
-                    dict(item)
-                    for item in current_design_review.findings
-                    if str(item.get("finding_id", "")).strip() in accepted_ids
-                ]
-
-                if not _evaluation_has_dispute(evaluation):
-                    current_design_review = Review(
-                        "changes_requested",
-                        current_design_review.summary,
-                        tuple(accepted_findings),
-                    )
-                    break
-
-                reconsider_prompt = _read_prompt(
-                    "design_reconsider.md",
-                    {
-                        "TASK": task,
-                        "DESIGN": design_text,
-                        "FEEDBACK": json.dumps(
-                            asdict(current_design_review),
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        "IMPLEMENTER_RESPONSE": json.dumps(
-                            evaluation,
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                    },
-                )
-                counters.codex_calls += 1
-                _progress(
-                    run_dir,
-                    stage="design_deliberation",
-                    message=(
-                        "Astra reconsidering Claude design judgment "
-                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
-                    ),
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                reconsider_raw = _run_codex_review(
-                    worktree,
-                    reconsider_prompt,
-                    args.agent_timeout,
-                    args.review_model,
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-design-deliberation-{exchange}-astra.txt",
-                    reconsider_raw.stdout + "\n" + reconsider_raw.stderr,
-                )
-                reconsidered = _tag_review_findings(
-                    _parse_codex_review(reconsider_raw.stdout)
-                )
-                assert_readonly(
-                    deliberation_before,
-                    "Astra design reconsideration",
-                )
-
-                if reconsidered.approved:
-                    if accepted_findings:
-                        current_design_review = Review(
-                            "changes_requested",
-                            "Disputed design findings withdrawn; accepted findings remain.",
-                            tuple(accepted_findings),
-                        )
-                    else:
-                        current_design_review = reconsidered
-                    break
-
-                merged = accepted_findings + [
-                    dict(item)
-                    for item in reconsidered.findings
-                    if str(item.get("finding_id", "")).strip() not in accepted_ids
-                ]
-                current_design_review = Review(
-                    "changes_requested",
-                    reconsidered.summary,
-                    tuple(merged),
-                )
-
-            if current_design_review.approved:
-                print(
-                    f"[Round {round_no}/{args.max_rounds}] Design: APPROVED after deliberation",
-                    flush=True,
-                )
-                round_no += 1
-                break
-
-            if round_no >= args.max_rounds:
-                raise OrchestratorError(
-                    "design still has confirmed findings after final HOL round"
-                )
-
-            design_prompt = _read_prompt(
-                "revise_design.md",
-                {
-                    "TASK": task,
-                    "DESIGN": design_text,
-                    "FEEDBACK": json.dumps(
-                        asdict(current_design_review),
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                },
-            )
-            round_no += 1
-
-        if final_design is None:
-            raise OrchestratorError("design phase ended without a design")
         if round_no > args.max_rounds:
             raise OrchestratorError("no round budget remains for implementation")
 
@@ -1398,39 +1153,6 @@ def run(args: argparse.Namespace) -> int:
                 stat, diff = _diff_for_review(worktree)
                 before = _review_fingerprint(diff)
 
-                claude_diag_prompt = _read_prompt(
-                    "diagnose_tests.md",
-                    {
-                        "TASK": task,
-                        "TEST_RESULTS": tests_text,
-                        "DIFF_STAT": stat,
-                    },
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-claude-test-diagnosis-prompt.md",
-                    claude_diag_prompt,
-                )
-                _progress(
-                    run_dir,
-                    stage="test_diagnosis_claude",
-                    message="Claude independently diagnosing test failure (read-only)...",
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                counters.claude_calls += 1
-                claude_diag = _run_claude_readonly(
-                    worktree, claude_diag_prompt, args.agent_timeout
-                )
-                claude_diag_text = _claude_result_text(claude_diag.stdout)
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-claude-test-diagnosis.txt",
-                    claude_diag_text,
-                )
-                assert_readonly(before, "Claude test diagnosis")
-
                 astra_diag_prompt = _read_prompt(
                     "diagnose_tests_astra.md",
                     {
@@ -1448,7 +1170,7 @@ def run(args: argparse.Namespace) -> int:
                 _progress(
                     run_dir,
                     stage="test_diagnosis_astra",
-                    message="Astra independently diagnosing test failure (Claude diagnosis hidden)...",
+                    message="Astra diagnosing test failure before Claude repair...",
                     round_no=round_no,
                     max_rounds=args.max_rounds,
                     counters=counters,
@@ -1472,7 +1194,6 @@ def run(args: argparse.Namespace) -> int:
                     {
                         "TASK": task,
                         "TEST_RESULTS": tests_text,
-                        "CLAUDE_DIAGNOSIS": claude_diag_text,
                         "ASTRA_DIAGNOSIS": astra_diag.stdout,
                     },
                 )
@@ -1497,147 +1218,6 @@ def run(args: argparse.Namespace) -> int:
             )
 
             current_review = review
-            unresolved_dispute = False
-
-            for exchange in range(1, DELIBERATION_EXCHANGES + 1):
-                stat, diff = _diff_for_review(worktree)
-                before = _review_fingerprint(diff)
-                evaluation_prompt = _read_prompt(
-                    "evaluate_review.md",
-                    {
-                        "TASK": task,
-                        "FEEDBACK": json.dumps(
-                            asdict(current_review), ensure_ascii=False, indent=2
-                        ),
-                    },
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-deliberation-{exchange}-claude-prompt.md",
-                    evaluation_prompt,
-                )
-                _progress(
-                    run_dir,
-                    stage="review_deliberation",
-                    message=(
-                        f"Claude evaluating Astra findings without code changes "
-                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
-                    ),
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                counters.claude_calls += 1
-                evaluation_raw = _run_claude_readonly(
-                    worktree, evaluation_prompt, args.agent_timeout
-                )
-                evaluation = _parse_evaluation(evaluation_raw.stdout)
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-deliberation-{exchange}-claude.json",
-                    json.dumps(evaluation, ensure_ascii=False, indent=2),
-                )
-                assert_readonly(before, "Claude review deliberation")
-
-                decisions = evaluation.get("decisions")
-                accepted_ids = {
-                    str(item.get("finding_id", "")).strip()
-                    for item in decisions
-                    if isinstance(item, dict)
-                    and str(item.get("decision", "")).strip().upper() == "ACCEPT"
-                }
-                accepted_findings = [
-                    dict(item)
-                    for item in current_review.findings
-                    if str(item.get("finding_id", "")).strip() in accepted_ids
-                ]
-
-                if not _evaluation_has_dispute(evaluation):
-                    unresolved_dispute = False
-                    break
-
-                reconsider_prompt = _read_prompt(
-                    "reconsider_review.md",
-                    {
-                        "TASK": task,
-                        "FEEDBACK": json.dumps(
-                            asdict(current_review), ensure_ascii=False, indent=2
-                        ),
-                        "IMPLEMENTER_RESPONSE": json.dumps(
-                            evaluation, ensure_ascii=False, indent=2
-                        ),
-                    },
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-deliberation-{exchange}-astra-prompt.md",
-                    reconsider_prompt,
-                )
-                _progress(
-                    run_dir,
-                    stage="review_deliberation",
-                    message=(
-                        f"Astra reconsidering Claude's technical objections "
-                        f"({exchange}/{DELIBERATION_EXCHANGES})..."
-                    ),
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                counters.codex_calls += 1
-                reconsider_raw = _run_codex_review(
-                    worktree,
-                    reconsider_prompt,
-                    args.agent_timeout,
-                    args.review_model,
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-deliberation-{exchange}-astra.txt",
-                    reconsider_raw.stdout + "\n" + reconsider_raw.stderr,
-                )
-                reconsidered = _tag_review_findings(
-                    _parse_codex_review(reconsider_raw.stdout)
-                )
-                assert_readonly(before, "Astra review reconsideration")
-
-                if reconsidered.approved:
-                    if accepted_findings:
-                        current_review = Review(
-                            "changes_requested",
-                            "Astra withdrew disputed findings; Claude-accepted findings remain blocking.",
-                            tuple(accepted_findings),
-                        )
-                        unresolved_dispute = False
-                        break
-                    print(
-                        f"[Round {round_no}/{args.max_rounds}] "
-                        "Astra withdrew all disputed findings: APPROVE",
-                        flush=True,
-                    )
-                    return create_candidate(round_no, reconsidered)
-
-                reconsidered_ids = {
-                    str(item.get("finding_id", "")).strip()
-                    for item in reconsidered.findings
-                }
-                merged_findings = accepted_findings + [
-                    dict(item)
-                    for item in reconsidered.findings
-                    if str(item.get("finding_id", "")).strip() not in accepted_ids
-                ]
-                current_review = Review(
-                    "changes_requested",
-                    reconsidered.summary,
-                    tuple(merged_findings),
-                )
-                unresolved_dispute = bool(reconsidered_ids - accepted_ids)
-
-            if unresolved_dispute:
-                raise OrchestratorError(
-                    "Claude and Astra still disagree after bounded deliberation; "
-                    "human technical judgment is required."
-                )
 
             if round_no >= args.max_rounds:
                 raise OrchestratorError(
@@ -1707,7 +1287,7 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Claude investigation/design + implementation with Codex/Astra review orchestrator"
+        description="Astra investigation/design + Claude implementation + Astra review orchestrator"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
