@@ -36,6 +36,7 @@ DEFAULT_MAX_ROUNDS = 30
 DEFAULT_TEST_TIMEOUT = 600
 PROVIDER_RETRIES = 30
 CLAUDE_IMPLEMENTATION_MAX_TURNS = 12
+CLAUDE_NO_DIFF_RESUMES = 2
 API_BILLING_ENV_VARS = (
     "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -47,6 +48,12 @@ API_BILLING_ENV_VARS = (
 
 class OrchestratorError(RuntimeError):
     """Fail-closed orchestration error."""
+
+
+class ClaudeExecutionError(OrchestratorError):
+    def __init__(self, code: str, detail: str):
+        self.code = code
+        super().__init__(f"{code}: {detail}")
 
 
 @dataclass(frozen=True)
@@ -160,6 +167,8 @@ def _agent_env() -> dict[str, str]:
     Git receives an invalid push URL. This does not modify repository config.
     """
     env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     env["AI_ORCHESTRATOR"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_COUNT"] = "1"
@@ -316,8 +325,8 @@ CLAUDE_ALLOWED_BASH_TOOLS: tuple[str, ...] = tuple(
 )
 
 
-def _claude_implementation_command() -> list[str]:
-    return [
+def _claude_implementation_command(session_id: str | None = None) -> list[str]:
+    command = [
         *_resolved_command("claude"),
         "-p",
         "--output-format",
@@ -329,6 +338,11 @@ def _claude_implementation_command() -> list[str]:
         "--max-turns",
         str(CLAUDE_IMPLEMENTATION_MAX_TURNS),
     ]
+    if session_id is not None:
+        if not _valid_claude_session_id(session_id):
+            raise ClaudeExecutionError("SESSION_ID_UNAVAILABLE", "invalid Claude session UUID")
+        command.extend(["--resume", session_id])
+    return command
 
 
 def _codex_review_command(model: str) -> list[str]:
@@ -345,35 +359,150 @@ def _codex_review_command(model: str) -> list[str]:
 
 
 def _looks_like_max_turns(result: CommandResult) -> bool:
-    text = (result.stdout + "\n" + result.stderr).lower()
-    return (
-        "error_max_turns" in text
-        or "reached maximum number of turns" in text
-        or "maximum number of turns" in text
-    )
+    payload = _claude_payload(result)
+    if payload.get("subtype") == "error_max_turns":
+        return True
+    if not (result.returncode or payload.get("is_error")):
+        return False
+    text = (str(payload.get("errors", "")) + "\n" + result.stderr).lower()
+    return "maximum number of turns" in text or "error_max_turns" in text
+
+
+def _claude_payload(result: CommandResult) -> dict[str, object]:
+    try:
+        value = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _valid_claude_session_id(value: object) -> bool:
+    # Claude Code 2.1.278 --help: --resume <session-id>; --session-id is a UUID.
+    # Installed CLI result schema (including error_max_turns) contains session_id.
+    return isinstance(value, str) and re.fullmatch(
+        r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}", value
+    ) is not None
+
+
+def _claude_quota_error(result: CommandResult) -> bool:
+    payload = _claude_payload(result)
+    if not (result.returncode or payload.get("is_error")):
+        return False
+    # Inspect error envelopes, not successful implementation prose about quotas.
+    text = "\n".join(str(payload.get(key, "")) for key in ("subtype", "errors", "result"))
+    text += "\n" + result.stderr
+    if not payload:
+        text += "\n" + result.stdout
+    return bool(re.search(
+        r"credit balance (?:is )?too low|insufficient[_ ](?:quota|credits?)|"
+        r"(?:quota|credits?)[^\n]{0,40}(?:exhausted|exceeded|depleted)|"
+        r"(?:usage|spending) limit|(?:you(?:'|’)?ve |you have )?hit your limit|"
+        r"out of (?:extra usage|credits)|billing[_ ]error|error_max_budget_usd",
+        text, re.IGNORECASE,
+    ))
 
 
 def _run_claude_implementation(
     worktree: Path,
     prompt: str,
     timeout: int,
+    session_id: str | None = None,
 ) -> CommandResult:
-    result = _run(
-        _claude_implementation_command(),
+    # No generic provider retry here, especially for quota/credit failures.
+    # Classification happens after raw output/session metadata have been saved.
+    return _run(
+        _claude_implementation_command(session_id),
         cwd=worktree,
         input_text=prompt,
         timeout=timeout,
         env=_agent_env(),
     )
-    if result.returncode != 0 and not _looks_like_max_turns(result):
-        detail = (result.stderr or result.stdout).strip()
-        raise OrchestratorError(f"Claude implementation failed: {detail}")
-    if result.returncode != 0:
-        print(
-            "[Claude] max-turns reached; partial worktree is preserved and will be evaluated.",
-            flush=True,
+
+
+def _implement_with_progress(
+    worktree: Path, prompt: str, timeout: int, *, baseline: RepoBaseline,
+    run_dir: Path, round_no: int, max_rounds: int, stage: str,
+    counters: UsageCounters, result_payload: dict[str, object],
+) -> CommandResult:
+    """Only resume a turn-limited, empty implementation; never rerun design."""
+    session_id = None
+    state: dict[str, object] = {
+        "stage": stage, "round": round_no, "session_id": None,
+        "resume_count": 0, "max_resumes": CLAUDE_NO_DIFF_RESUMES,
+        "max_turns": CLAUDE_IMPLEMENTATION_MAX_TURNS,
+    }
+    result_payload["claude_state"] = state
+
+    def save(outcome: str) -> None:
+        state["outcome"] = outcome
+        _write_external_result(str(run_dir / "claude-session.json"), {
+            "run_id": result_payload["run_id"], "worktree": str(worktree),
+            "base_sha": baseline.head_sha, **state,
+        })
+
+    def stop(code: str, detail: str) -> None:
+        save(code)
+        raise ClaudeExecutionError(code, detail)
+
+    for resume_no in range(CLAUDE_NO_DIFF_RESUMES + 1):
+        name = f"round-{round_no:02d}-claude"
+        if resume_no:
+            name += f"-resume-{resume_no:02d}"
+        state.update(resume_count=resume_no, prompt_file=name + "-prompt.md")
+        _write_log(run_dir, name + "-prompt.md", prompt)
+        save("RESUMING" if resume_no else "IMPLEMENTING")
+        counters.claude_calls += 1
+        _progress(
+            run_dir, stage=f"claude_{stage}",
+            message=f"Claude {stage}" + (f" resume {resume_no}/{CLAUDE_NO_DIFF_RESUMES}..." if resume_no else "..."),
+            round_no=round_no, max_rounds=max_rounds, counters=counters,
         )
-    return result
+        try:
+            result = _run_claude_implementation(worktree, prompt, timeout, session_id)
+        except OrchestratorError as exc:
+            stop("RESUME_FAILED" if resume_no else "PROVIDER_ERROR", str(exc))
+        _write_log(run_dir, name + "-raw.json", result.stdout + "\n" + result.stderr)
+        payload = _claude_payload(result)
+        returned_id = payload.get("session_id")
+        if _valid_claude_session_id(returned_id):
+            returned_id = returned_id.lower()
+            if session_id and returned_id != session_id:
+                stop("RESUME_FAILED", "Claude returned a different session ID")
+            session_id = returned_id
+            state["session_id"] = session_id
+        save("RECEIVED")
+        _assert_agent_did_not_commit(worktree, baseline.head_sha)
+        _assert_source_unchanged(baseline)
+        _, diff = _diff_for_review(worktree)
+        state["has_diff"] = bool(diff.strip())
+        if _claude_quota_error(result):
+            stop("PROVIDER_QUOTA", "Claude quota/credit exhausted; no automatic retry")
+        max_turns = _looks_like_max_turns(result)
+        if not max_turns and (result.returncode or payload.get("is_error")):
+            stop("RESUME_FAILED" if resume_no else "PROVIDER_ERROR",
+                 (result.stderr or result.stdout).strip())
+        if max_turns:
+            save("MAX_TURNS_RECOVERABLE")
+            text = "Claude reached max-turns; worktree progress checked."
+        else:
+            try:
+                text = _claude_result_text(result.stdout)
+            except OrchestratorError as exc:
+                stop("RESUME_FAILED" if resume_no else "PROVIDER_ERROR", str(exc))
+        _write_log(run_dir, name + ".txt", text)
+        if state["has_diff"]:
+            save("IMPLEMENTATION_DIFF")
+            return result
+        if not max_turns or resume_no == CLAUDE_NO_DIFF_RESUMES:
+            stop("NO_PROGRESS", f"no reviewable diff after {resume_no} resume(s); Tests not started")
+        if not session_id:
+            stop("SESSION_ID_UNAVAILABLE", "max-turns with no diff and no valid session_id; Tests not started")
+        prompt = (
+            "Continue the implementation from the confirmed Astra design/findings already in this session. "
+            "The previous invocation reached max-turns without a reviewable worktree diff. "
+            "Make the required file changes now; do not restart investigation, redesign, or self-review. "
+            "Keep all original scope and safety constraints. Do not commit, push, build, or deploy."
+        )
 
 
 def _run_codex_review(
@@ -1107,29 +1236,11 @@ def run(args: argparse.Namespace) -> int:
         current_stage = "implementation"
 
         while round_no <= args.max_rounds:
-            _write_log(run_dir, f"round-{round_no:02d}-claude-prompt.md", current_prompt)
-            counters.claude_calls += 1
-            _progress(
-                run_dir,
-                stage=f"claude_{current_stage}",
-                message=f"Claude {current_stage}...",
-                round_no=round_no,
-                max_rounds=args.max_rounds,
-                counters=counters,
+            _implement_with_progress(
+                worktree, current_prompt, args.agent_timeout, baseline=baseline,
+                run_dir=run_dir, round_no=round_no, max_rounds=args.max_rounds,
+                stage=current_stage, counters=counters, result_payload=result_payload,
             )
-            claude = _run_claude_implementation(worktree, current_prompt, args.agent_timeout)
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-claude-raw.json",
-                claude.stdout + "\n" + claude.stderr,
-            )
-            _write_log(
-                run_dir,
-                f"round-{round_no:02d}-claude.txt",
-                _claude_result_text(claude.stdout),
-            )
-            _assert_agent_did_not_commit(worktree, baseline.head_sha)
-            _assert_source_unchanged(baseline)
 
             _progress(
                 run_dir,
@@ -1242,6 +1353,7 @@ def run(args: argparse.Namespace) -> int:
             {
                 "status": "stopped",
                 "error": str(exc),
+                "error_code": getattr(exc, "code", "ORCHESTRATOR_ERROR"),
                 "claude_calls": counters.claude_calls,
                 "codex_calls": counters.codex_calls,
             }
@@ -1330,7 +1442,16 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_utf8_stdio() -> None:
+    """Match DCC's UTF-8 pipe reader, including direct Windows CLI launches."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

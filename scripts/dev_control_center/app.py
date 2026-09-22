@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -918,6 +919,9 @@ class App(ttk.Frame):
         ]
         try:
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            child_env = os.environ.copy()
+            child_env["PYTHONUTF8"] = "1"
+            child_env["PYTHONIOENCODING"] = "utf-8"
             process = subprocess.Popen(
                 command,
                 cwd=DM_ROOT,
@@ -928,6 +932,7 @@ class App(ttk.Frame):
                 errors="replace",
                 bufsize=1,
                 creationflags=flags,
+                env=child_env,
             )
         except OSError as exc:
             messagebox.showerror("AI開発起動失敗", str(exc))
