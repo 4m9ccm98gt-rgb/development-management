@@ -276,8 +276,25 @@ def _assert_origin_unchanged(baseline: RepoBaseline, do_fetch: bool) -> None:
         )
 
 
+def _worktree_head_probe(worktree: Path) -> CommandResult:
+    """Retry only an unexplained nonzero exit from this read-only safety probe."""
+    command = [*_resolved_command("git"), "-C", str(worktree), "rev-parse", "HEAD"]
+    for attempt in range(1, 4):
+        result = _run(command, timeout=120)
+        if result.returncode == 0:
+            return result
+        detail = result.stderr.strip() or result.stdout.strip()
+        if detail or attempt == 3:
+            raise OrchestratorError(
+                f"git rev-parse HEAD failed: {detail or '<empty stdout/stderr>'} "
+                f"(return code {result.returncode}, attempt {attempt}/3)"
+            )
+        time.sleep(0.2)
+    raise AssertionError("unreachable")
+
+
 def _assert_agent_did_not_commit(worktree: Path, base_sha: str) -> None:
-    head = _git(worktree, "rev-parse", "HEAD").stdout.strip().lower()
+    head = _worktree_head_probe(worktree).stdout.strip().lower()
     branch = _git(worktree, "branch", "--show-current").stdout.strip()
     if head != base_sha.lower() or branch:
         raise OrchestratorError(
