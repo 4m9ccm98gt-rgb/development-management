@@ -68,17 +68,19 @@
 
 ## 3. AI Orchestrator
 
-AI Orchestrator v0.4 HOLの標準役割は次です。
+AI Orchestrator v0.5 HOLの標準役割は次です。
 
+- 調査・設計: GPT-6 Astra / read-only
 - 実装・修正: Claude
 - 自動テスト: 対象repoの独立テストコマンド
-- 独立レビュー: GPT-6 Astra / read-only
-- 最大ラウンド: 30（進捗がある限り自動継続。candidate完成または真に人間判断が必要な停滞まで人間へ返さない）
+- 実装レビュー・テスト失敗診断: GPT-6 Astra / read-only
+- 最大ラウンド: 30（反復はClaude単体の内側ではなく、Astra → Claude → Tests → Astraの外側ループで行う）
 - 作業場所: source repoではなく一時detached worktree
 - 完了点: local candidate
 - 自動では行わないもの: push / BUILD / UPDATE / DEPLOY
-- Claudeの権限: `--permission-mode acceptEdits` + `--allowedTools` で許可した検査・テスト・interpreter系Bashのみ（`bypassPermissions` / `--dangerously-skip-permissions` は使わない）。agent側のgit pushは無効化し、git履歴を変える操作は許可しない
-- Claude実装の `--max-turns` は80。max-turns到達は即失敗扱いにせず、途中worktreeをTests / Astraで評価して継続する
+- Claudeの権限: `--permission-mode acceptEdits` + `--allowedTools` で許可した実装に必要なBashのみ（`bypassPermissions` / `--dangerously-skip-permissions` は使わない）。agent側のgit pushは無効化し、git履歴を変える操作は許可しない
+- Claudeはread-onlyの調査・設計・自己レビュー・テスト診断には使わない。確定した設計またはAstraの具体的findingを実装/修正する時だけ呼ぶ
+- Claude実装1回の `--max-turns` は12。これは外側のHOLループを食い潰さないための上限で、到達時は途中worktreeをTests / Astraで評価して次roundへ回す
 
 Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。
 
@@ -94,46 +96,44 @@ GPT
 原因・修正方法は推測で確定しない
 ユーザーの提案/気付きは、明示要件でない限りoptional observationとして分離
 ↓
-Claude: INVESTIGATE / DESIGN（read-only）
-実repo・コード・テスト・契約を調査し、根拠付きで原因と設計を作る
+Astra: INVESTIGATE / DESIGN（read-only）
+実repo・コード・テスト・契約を必要十分な範囲だけ調査し、根拠付き設計を1回出す
+十分な根拠が揃ったら単体で深掘りを続けずClaudeへ渡す
 ↓
-Astra: DESIGN REVIEW（read-only）
-調査根拠・誤診・別原因・安全性・regression・過剰設計を独立レビュー
-↓
-Claude: DESIGN JUDGMENT（read-only）
-ACCEPT / DISPUTE / NEEDS_CLARIFICATION をfindingごとに判断
-↓
-Astra: RECONSIDERATION（read-only）
-WITHDRAW / MODIFY / UPHOLD
-↓
-必要ならClaudeが追加調査・設計改訂
-↓
-設計承認
-↓
-Claude IMPLEMENTATION
+Claude: IMPLEMENTATION
+Astraの設計を実装する。広範囲の再調査・自己レビューはしない
 ↓
 Tests
+├─ PASS → Astra implementation review
+└─ FAIL/HANG → Astra diagnosis（read-only）
+                 ↓
+                 Claude repair
+                 ↓
+                 Tests
 ↓
-Astra implementation review
-↓
-Claude judgment
-↓
-必要ならAstra reconsideration / Claude repair
-↓
-candidate
+Astra implementation review（read-only）
+├─ APPROVE → candidate
+└─ CHANGES_REQUESTED → 具体的findingだけClaudeへ渡す
+                        ↓
+                        Claude blocking repair
+                        ↓
+                        Tests
+                        ↓
+                        Astra review
+                        ↓
+                        必要な限り最大30round内で反復
 ```
 
 - 調査/設計stageではコード変更を禁止し、diff fingerprint不変をOrchestratorが検証する。
 - GPTは原因や実装修正を症状から推測で確定しない。
 - 「調査して直して」は正式な1タスクとして扱う。
-- Claude = Implementer / Technical Owner。調査・設計・実装・技術判断を担当する。
-- Astra = Independent Reviewer。調査設計と実装の両方を独立に疑う。
-- Orchestrator = Moderator / State Machine。設計議論、実装、Tests、review、retryを管理する。
-- Astraのfindingは即実装命令ではなく、まずClaudeが技術判断する。
-- Claudeの反論はAstraが再評価する。
-- 設計段階で残ったfindingは設計改訂へ戻し、承認された設計だけ実装へ進む。
-- Tests FAIL / HANG時はClaude自己診断とAstra独立診断を別々に取得し、両診断とraw test logをClaudeへ渡して修正する。
-- 実装reviewで議論後も残ったfindingだけをBLOCKING_REPAIR_REQUESTとしてClaudeへ渡す。
+- Claude = Implementer。確定した設計または具体的findingの実装・修正だけを担当する。
+- Astra = Investigator / Designer / Independent Reviewer。read-only調査設計、テスト失敗診断、実装レビューを担当する。
+- Orchestrator = Moderator / State Machine。Astra → Claude → Tests → Astra の外側ループを管理する。
+- 単一AIの自己深掘りをHOLの代わりにしない。追加の思考が必要なら次roundのAstra/Claude役割分担で行う。
+- Astraの実装findingは具体的なblocking repairとしてClaudeへ渡し、修正後は必ずTestsとAstra再レビューを通す。
+- Tests FAIL / HANG時はAstraがread-only診断し、raw test logと診断をClaudeへ渡して修正する。
+- Claudeにread-only診断・設計判断・Astraへの反論専用callを追加しない。
 - 大きなdiffは自動分割reviewし、単純なdiff size超過だけで人間へ返さない。
 - Testsは進捗をstdoutへ流し、10秒heartbeatを表示する。timeout/hang時はprocess treeを終了し、通常のtest failure診断ループへ移る。
 - parser揺れ（approved / approve等）は安全に正規化する。provider/protocol failureは同じstage内でretryする。
