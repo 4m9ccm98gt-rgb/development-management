@@ -188,6 +188,8 @@ class ExternalResultTests(unittest.TestCase):
 class SafetyContractTests(unittest.TestCase):
     def test_agent_env_disables_git_push_without_mutating_repo_config(self):
         env = _agent_env()
+        self.assertEqual(env["PYTHONUTF8"], "1")
+        self.assertEqual(env["PYTHONIOENCODING"], "utf-8")
         self.assertEqual(env["GIT_CONFIG_COUNT"], "1")
         self.assertEqual(env["GIT_CONFIG_KEY_0"], "remote.origin.pushurl")
         self.assertEqual(env["GIT_CONFIG_VALUE_0"], "disabled://ai-orchestrator")
