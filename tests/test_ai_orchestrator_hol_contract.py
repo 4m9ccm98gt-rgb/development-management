@@ -161,6 +161,17 @@ class HolOrchestratorContractTests(unittest.TestCase):
         self.assertIn("HANG/TIMEOUT", text)
         self.assertIn("_terminate_process_tree", text)
 
+    def test_windows_ai_processes_are_forced_to_utf8(self):
+        orch = ORCH_PATH.read_text(encoding="utf-8")
+        dcc = (
+            ROOT / "scripts" / "dev_control_center" / "app.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('env["PYTHONUTF8"] = "1"', orch)
+        self.assertIn('env["PYTHONIOENCODING"] = "utf-8"', orch)
+        self.assertIn('child_env["PYTHONUTF8"] = "1"', dcc)
+        self.assertIn('child_env["PYTHONIOENCODING"] = "utf-8"', dcc)
+        self.assertIn("env=child_env", dcc)
+
 
 if __name__ == "__main__":
     unittest.main()
