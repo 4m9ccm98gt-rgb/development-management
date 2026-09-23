@@ -17,9 +17,9 @@
 - [ ] Claudeは隔離worktreeで実装している
 - [ ] Claudeはcommit / branch変更 / pushをしていない
 - [ ] tests pass
-- [ ] Astraはread-only review
+- [ ] Final Reviewはprovider非依存で、未接続を承認扱いしない
 - [ ] review後にdiffが変化していない
-- [ ] 最大2ラウンドを超えていない
+- [ ] Recoveryだけを数え、設定した上限（既定30回）を超えていない
 
 ## local candidate確定時
 
@@ -64,6 +64,6 @@
 
 - [ ] 通常repoと同じくDCCのAI依頼欄から開始した
 - [ ] 新規repoは「セットアップ開始」でcloneを確認し、AI依頼欄へ登録タスクがセットされた
-- [ ] Claude → 独立Tests → GPT-6 Astra read-only review を通った
+- [ ] Claude → 独立Tests → Final Review Gate を通った
 - [ ] local candidateの完全SHAをユーザーが確認してから反映した
 - [ ] `[branches]` / `[initial_ai_tasks]` / `[initial_tests]` が登録されている

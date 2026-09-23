@@ -231,3 +231,10 @@
 - 照合: 発注先は名称＋FAX、商品は発注先＋名称＋単位＋入数の一意な完全一致だけを自動紐づけする。表示名は保持し、照合時だけ空白を正規化する。
 - ID: `VENDOR-NNNN`と`SUPPLY-NNNN`をトランザクション内で単調増加させ、欠番を再利用しない。QRは商品ID URLのままとする。
 - 安全性: マクロ・数式・外部リンクを実行せず、一時ファイルを削除し、ファイルSHA-256と判断結果だけを取込監査へ残す。実業者名・FAX・商品情報はGitへ記録しない。
+
+
+## 2026-09-24: HOLを失敗時だけのRecoveryへ変更
+
+TaskSpec確定後はClaude実装 → 独立Verification → provider非依存Final Review Gateを通常経路とする。全タスク必須のAstra調査設計・reviewを外し、一発成功はRecovery 0回とする。失敗時だけClaude diagnosis / repairへ追加能力を投入し、履歴と差分・失敗fingerprintで無意味な反復を停止する。30roundはRecoveryの暴走防止上限へ変更する。
+
+Final Review未接続を自動承認にせず、request_id付きJSONとreview_pending継続interfaceを採用する。Work接続・レビューUIは将来対応。既存のdetached worktree、source/candidate SHA保護、AI安全停止を保持する。契約詳細はOPERATING_CONTRACT.md、実装interfaceはdocs/ai_orchestrator.md。

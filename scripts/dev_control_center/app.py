@@ -434,7 +434,7 @@ class App(ttk.Frame):
 
         ai_box = ttk.LabelFrame(
             right,
-            text="AI開発 — Claude実装 → Tests → Astraレビュー → local candidate",
+            text="AI開発 — Claude実装 → Verification → Final Review → local candidate",
             padding=12,
         )
         ai_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
@@ -1036,8 +1036,8 @@ class App(ttk.Frame):
         }
         self.ai_stop_requested = False
         self._begin_process(process, self.current.name, "ai_orchestrator")
-        self.ai_status_var.set("実行中 — HOL最大30round / Claude ↔ Tests ↔ Astra")
-        self._log(f"{self.current.name}: AI Orchestrator HOL開始（最大30round）")
+        self.ai_status_var.set("実行中 — 失敗時のみRecovery（最大30回）")
+        self._log(f"{self.current.name}: AI Orchestrator開始（Recovery上限30回）")
         self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
         self._set_button_states()
 
@@ -1147,6 +1147,11 @@ class App(ttk.Frame):
                     pass
 
         status = str(payload.get("status", ""))
+        if rc == 0 and status == "review_pending":
+            self.ai_status_var.set("FINAL REVIEW待ち — candidate未作成")
+            self._log(f"{repo_name}: Final Review request: {payload.get('run_dir', '')}")
+            self._reload_after(repo_name)
+            return
         candidate = str(payload.get("candidate_sha", "")).strip().lower()
         if rc != 0 or status != "candidate_ready" or not candidate_sha_is_valid(candidate):
             error = str(payload.get("error", "")).strip() or f"rc={rc}"
@@ -1165,11 +1170,11 @@ class App(ttk.Frame):
         rounds = payload.get("rounds_used", "?")
         self.ai_status_var.set(
             f"CANDIDATE READY {short_sha(candidate)} / "
-            f"rounds={rounds} Claude={claude_calls} Astra={codex_calls}"
+            f"Recovery={rounds} Claude={claude_calls} Codex={codex_calls}"
         )
         self._log(
             f"{repo_name}: AI candidate {candidate} "
-            f"(rounds={rounds}, Claude={claude_calls}, Astra={codex_calls})"
+            f"(Recovery={rounds}, Claude={claude_calls}, Codex={codex_calls})"
         )
 
         if not self.current or self.current.name != repo_name:

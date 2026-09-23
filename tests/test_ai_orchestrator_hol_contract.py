@@ -29,7 +29,7 @@ class HolOrchestratorContractTests(unittest.TestCase):
         text = ORCH_PATH.read_text(encoding="utf-8")
         compile(text, str(ORCH_PATH), "exec")
 
-    def test_default_is_30_round_hol(self):
+    def test_default_recovery_limit_is_30(self):
         self.assertEqual(self.o.DEFAULT_MAX_ROUNDS, 30)
         parser = self.o.build_parser()
         args = parser.parse_args([
@@ -91,69 +91,30 @@ class HolOrchestratorContractTests(unittest.TestCase):
         )
         self.assertIn("_fetch_expected_origin_branch(root, branch)", text)
 
-    def test_role_specific_prompts_exist(self):
-        prompts = ROOT / "tools" / "ai_orchestrator" / "prompts"
-        expected = {
-            "diagnose_tests_astra.md": "independent reviewer",
-            "blocking_repair.md": "BLOCKING_REPAIR_REQUEST",
-            "repair_tests.md": "TEST_FAILURE_REPAIR",
-        }
-        for name, marker in expected.items():
-            with self.subTest(name=name):
-                text = (prompts / name).read_text(encoding="utf-8")
-                self.assertIn(marker, text)
+    def test_recovery_role_prompts_exist(self):
+        for name, marker in (("main_implementation.md", "MAIN IMPLEMENTATION"),
+                             ("recovery_diagnosis.md", "RECOVERY DIAGNOSIS"),
+                             ("recovery_repair.md", "RECOVERY REPAIR")):
+            text = (ROOT / "tools/ai_orchestrator/prompts" / name).read_text(encoding="utf-8")
+            self.assertIn(marker, text)
 
-    def test_dcc_explicitly_launches_30_round_hol(self):
-        text = (
-            ROOT / "scripts" / "dev_control_center" / "app.py"
-        ).read_text(encoding="utf-8")
+    def test_dcc_budget_is_recovery_only(self):
+        text = (ROOT / "scripts/dev_control_center/app.py").read_text(encoding="utf-8")
         self.assertIn('"--max-rounds"', text)
         self.assertIn('"30"', text)
-        self.assertIn('"--test-timeout"', text)
-        self.assertIn("HOL最大30round", text)
+        self.assertNotIn("HOL最大30round", text)
 
-    def test_design_first_prompts_exist(self):
-        prompts = ROOT / "tools" / "ai_orchestrator" / "prompts"
-        expected = {
-            "investigate_design_astra.md": "ASTRA_INVESTIGATE_AND_DESIGN",
-            "implement_from_design.md": "IMPLEMENT_CONFIRMED_DESIGN",
-        }
-        for name, marker in expected.items():
-            with self.subTest(name=name):
-                text = (prompts / name).read_text(encoding="utf-8")
-                self.assertIn(marker, text)
-
-    def test_orchestrator_runs_astra_design_before_claude_implementation(self):
+    def test_normal_pipeline_has_no_astra_dependency(self):
         text = ORCH_PATH.read_text(encoding="utf-8")
-        design_pos = text.index('"investigate_design_astra.md"')
-        implementation_pos = text.index('"implement_from_design.md"')
-        tests_pos = text.index('stage="tests"', implementation_pos)
-        self.assertLess(design_pos, implementation_pos)
-        self.assertLess(implementation_pos, tests_pos)
-        self.assertIn('assert_readonly(design_before, "Astra investigation/design")', text)
-        self.assertNotIn("_run_claude_readonly", text)
-        for obsolete in (
-            '"investigate_design.md"',
-            '"design_evaluate.md"',
-            '"design_reconsider.md"',
-            '"revise_design.md"',
-            '"evaluate_review.md"',
-            '"reconsider_review.md"',
-        ):
-            self.assertNotIn(obsolete, text)
+        run = text[text.index("def run("):text.index("def build_parser(")]
+        self.assertNotIn("_run_codex_review", run)
+        self.assertNotIn('"investigate_design_astra.md"', run)
+        self.assertNotIn('_resolved_command("codex")', run)
 
-    def test_claude_is_only_used_for_implementation_or_repair(self):
-        text = ORCH_PATH.read_text(encoding="utf-8")
-        self.assertIn("CLAUDE_IMPLEMENTATION_MAX_TURNS = 12", text)
-        self.assertNotIn('"--max-turns",\n        "40"', text)
-        self.assertNotIn('"--max-turns",\n        "80"', text)
-        self.assertIn('"diagnose_tests_astra.md"', text)
-        self.assertNotIn('"diagnose_tests.md"', text)
-
-    def test_round_budget_includes_design_and_implementation(self):
-        text = ORCH_PATH.read_text(encoding="utf-8")
-        self.assertIn("maximum total HOL rounds including design and implementation", text)
-        self.assertIn("no round budget remains for implementation", text)
+    def test_round_budget_excludes_normal_path(self):
+        args = self.o.build_parser().parse_args([
+            "run", "--repo", ".", "--task", "demo", "--test", "test", "--max-rounds", "0"])
+        self.assertEqual(args.max_rounds, 0)
 
     def test_live_test_progress_and_hang_watchdog_are_present(self):
         text = ORCH_PATH.read_text(encoding="utf-8")

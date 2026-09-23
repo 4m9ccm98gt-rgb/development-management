@@ -16,8 +16,8 @@
 → 「AI開発開始」
 → Claudeが隔離worktreeで実装
 → 独立Tests
-→ GPT-6 Astraがread-onlyレビュー
-→ 必要ならClaudeが修正
+→ PASSならprovider非依存のFinal Review Gate
+→ FAIL / HANG / ERROR / BLOCKEDならClaude diagnosis → repair → 再Verification
 → local candidate commit
 → DCCがcandidate SHAを取得
 → ユーザー確認後だけlocal expected branchへfast-forward
@@ -44,7 +44,7 @@
 1. DCCの「GitHub未登録repo」で対象を選び「セットアップ開始」を押す。
 2. 正式ローカルへのcloneを確認する（既存ファイルは上書きしない）。
 3. DCCが `development-management` を自動選択し、AI依頼欄へrepo登録タスクをセットする。
-4. 内容を確認して「AI開発開始」。Claude → Tests → Astraで `development-management` を変更する。
+4. 内容を確認して「AI開発開始」。Claude → Verification → Final Review Gateで `development-management` を変更する。
 5. local candidateの確認・反映・DCC更新後、新repoを選ぶと `initial_ai_tasks` / `initial_tests` が自動入力される。
 
 ## 2. 絶対に残す安全条件
@@ -68,78 +68,53 @@
 
 ## 3. AI Orchestrator
 
-AI Orchestrator v0.5 HOLの標準役割は次です。
-
-- 調査・設計: GPT-6 Astra / read-only
-- 実装・修正: Claude
-- 自動テスト: 対象repoの独立テストコマンド
-- 実装レビュー・テスト失敗診断: GPT-6 Astra / read-only
-- 最大ラウンド: 30（反復はClaude単体の内側ではなく、Astra → Claude → Tests → Astraの外側ループで行う）
-- 作業場所: source repoではなく一時detached worktree
-- 完了点: local candidate
-- 自動では行わないもの: push / BUILD / UPDATE / DEPLOY
-- Claudeの権限: `--permission-mode acceptEdits` + `--allowedTools` で許可した実装に必要なBashのみ（`bypassPermissions` / `--dangerously-skip-permissions` は使わない）。agent側のgit pushは無効化し、git履歴を変える操作は許可しない
-- Claudeはread-onlyの調査・設計・自己レビュー・テスト診断には使わない。確定した設計またはAstraの具体的findingを実装/修正する時だけ呼ぶ
-- Claude実装1回の `--max-turns` は12。これは外側のHOLループを食い潰さないための上限で、到達時は途中worktreeをTests / Astraで評価して次roundへ回す
-
-Orchestratorはsource repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に再確認し、agentによるcommit・branch変更やreview後の未レビュー差分をfail-closeします。
-
-### Human-on-the-loop 自動ループ
-
-正式進行は次の順序とする。
+AI Orchestrator v0.6は、正常時を直線、明示的な失敗時だけRecovery Loopとする。
 
 ```text
-User request
+TK × Work: 共同設計・TaskSpec確定
 ↓
-GPT
-症状・目的・期待結果・制約・受入条件をTaskSpec化
-原因・修正方法は推測で確定しない
-ユーザーの提案/気付きは、明示要件でない限りoptional observationとして分離
+DCC: TaskSpec受け渡し、安全な実行・状態管理
 ↓
-Astra: INVESTIGATE / DESIGN（read-only）
-実repo・コード・テスト・契約を必要十分な範囲だけ調査し、根拠付き設計を1回出す
-十分な根拠が揃ったら単体で深掘りを続けずClaudeへ渡す
+Claude MAIN IMPLEMENTATION
 ↓
-Claude: IMPLEMENTATION
-Astraの設計を実装する。広範囲の再調査・自己レビューはしない
-↓
-Tests
-├─ PASS → Astra implementation review
-└─ FAIL/HANG → Astra diagnosis（read-only）
-                 ↓
-                 Claude repair
-                 ↓
-                 Tests
-↓
-Astra implementation review（read-only）
-├─ APPROVE → candidate
-└─ CHANGES_REQUESTED → 具体的findingだけClaudeへ渡す
-                        ↓
-                        Claude blocking repair
-                        ↓
-                        Tests
-                        ↓
-                        Astra review
-                        ↓
-                        必要な限り最大30round内で反復
+独立Tests / 機械的Verification
+├─ PASS → Final Review Gate → PASS → local candidate
+└─ FAIL / HANG / implementation ERROR / BLOCKED
+   ↓
+   Claude diagnosis（read-only）→ Claude repair → 独立Verification
+   ├─ PASS → Final Review Gate
+   └─ FAIL → 新しい結果・履歴を材料にRecovery継続
+
+Final Reviewの明示的FAILもRecoveryへ戻す。
+Final Review未接続 / PENDINGはreview_pendingで停止し、candidateを作らない。
 ```
 
-- 調査/設計stageではコード変更を禁止し、diff fingerprint不変をOrchestratorが検証する。
-- GPTは原因や実装修正を症状から推測で確定しない。
-- 「調査して直して」は正式な1タスクとして扱う。
-- Claude = Implementer。確定した設計または具体的findingの実装・修正だけを担当する。
-- Astra = Investigator / Designer / Independent Reviewer。read-only調査設計、テスト失敗診断、実装レビューを担当する。
-- Orchestrator = Moderator / State Machine。Astra → Claude → Tests → Astra の外側ループを管理する。
-- 単一AIの自己深掘りをHOLの代わりにしない。追加の思考が必要なら次roundのAstra/Claude役割分担で行う。
-- Astraの実装findingは具体的なblocking repairとしてClaudeへ渡し、修正後は必ずTestsとAstra再レビューを通す。
-- Tests FAIL / HANG時はAstraがread-only診断し、raw test logと診断をClaudeへ渡して修正する。
-- Claudeにread-only診断・設計判断・Astraへの反論専用callを追加しない。
-- 大きなdiffは自動分割reviewし、単純なdiff size超過だけで人間へ返さない。
-- Testsは進捗をstdoutへ流し、10秒heartbeatを表示する。timeout/hang時はprocess treeを終了し、通常のtest failure診断ループへ移る。
-- parser揺れ（approved / approve等）は安全に正規化する。provider/protocol failureは同じstage内でretryする。
-- 最大30roundは調査設計と実装を合わせた総予算とする。
-- 通常運用ではユーザーがClaude / Tests / Astraのループを手動仲介しない。
+- 一発成功時はRecovery 0回。Astra調査設計・mandatory review・固定外側ループを呼ばない。Codex CLIも実行の必須依存ではない。
+- MAIN IMPLEMENTATION、Recovery diagnosis、Recovery repairは別の役割・prompt。diagnosisはRead / Glob / Grepのみで、MCP・shell・編集・sub-agentを使用しない。前後の差分不変も検証する。
+- 大きなタスクという理由でmulti-agentを起動しない。必要時に診断視点を追加できる境界だけを持つ。Work実接続・別provider追加は今回行わない。
+- Recoveryは失敗結果、直前の差分、TaskSpec、過去iterationを参照する。失敗・原因仮説・修正fingerprintとログ・Verification結果・進展判定をrun_dirへ永続化する。
+- 同じ失敗と同じ修正状態が再出現した場合、または同じ失敗のまま修正状態が変わらない場合は `RECOVERY_NO_PROGRESS` で停止。時間・heartbeatの変化だけを進展と扱わない。
+- `--max-rounds` はRecoveryだけの上限（0〜30、既定30）。通常実装やFinal Reviewは消費しない。上限で `RECOVERY_LIMIT`、candidateを生成・適用しない。
+- 既存の12turn上限と、空diffでturn上限到達時だけ同一sessionを最大2回resumeする仕組みは維持する。これは失敗したimplementationの継続であり、成功時に追加callしない。
+- quota枯渇、診断provider異常、Git安全境界違反、Review protocol不正はfail-close。安全違反をAI修正対象にしない。
+- Testsはstdout進捗・10秒heartbeat・timeoutのprocess tree停止を維持する。provider timeoutも子process tree終了後にRecoveryへ渡す。
 
+### Final Review Gate
+
+特定AI providerに固定しない外部interfaceとする。`final-review-request.json` にTaskSpec、base SHA、差分、Verification結果、run_id、Recovery回数とrequest_idを記録する。
+
+外部reviewerは同じrequest_idに対する `PASS / FAIL / PENDING` と根拠summaryを返す。未接続時にTests PASSをReview PASSへ読み替えない。WorkによるTaskSpec照合は将来この境界へ接続する。
+
+今回の外部連携はJSONファイル方式。`--resume-review <run_dir> --final-review-decision <file>` と同じrepo / TaskSpec / test / max-roundsでレビュー待ちrunを継続できる。sourceと差分が変わっていないことを再検証し、既存のVerificationを利用する。PASSなら既存candidateハーネスへ進み、FAILならClaude Recoveryへ戻る。修正後は新しいReview要求を発行し、古い承認・否認を再利用しない。DCCへのWork自動接続とレビュー操作UIは対象外。
+
+### 維持する安全ハーネス
+
+- 一時isolated detached worktree。source repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に確認する。
+- agentによるcommit / branch変更禁止、child Git push URL無効化。Claudeの `acceptEdits` と限定Bash許可を維持し、permission bypassを使用しない。
+- VerificationとReview前後の差分整合、candidate完全40桁SHA、local candidate方式を維持する。
+- DCC「AI安全停止」はrun_dir捕捉後だけ可能。OrchestratorとClaude/Codex等の子process treeを停止し、status.json / result.jsonへSTOPPED（保存値 `stopped`）、`error_code = USER_SAFETY_STOP` を永続化する。
+- 安全停止ではrun_id / worktree / stage / round / Recovery履歴を保持し、isolated worktree / run logを残す。source mainを変更せず、candidateを適用しない。
+- 自動push / BUILD / UPDATE / DEPLOY、force push / reset --hard / stash / 無断rebaseは行わない。実機確認前の本番配布禁止とconfirmed / pushed / BUILD SHA一致は従来通り。
 
 ## 4. DCCでのcandidate受け渡し
 

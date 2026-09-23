@@ -1,9 +1,6 @@
-"""Claude implementation + Codex/Astra review orchestrator.
+"""Claude main implementation with failure-only Recovery and an external Final Review Gate.
 
-v0.4 HOL orchestrates read-only investigation/design, independent design review,
-implementer/reviewer deliberation, implementation, tests, review, and repair loops. It intentionally stops at
-a local candidate commit and never pushes, builds, deploys, or updates production
-resources.
+Stops at a local candidate; never pushes, builds, or deploys.
 """
 
 from __future__ import annotations
@@ -126,23 +123,30 @@ def _run(
     env: dict[str, str] | None = None,
 ) -> CommandResult:
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             args,
             cwd=str(cwd) if cwd else None,
-            input=input_text,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
-            check=False,
+            start_new_session=(os.name != "nt"),
             env=env,
         )
+        try:
+            stdout, stderr = proc.communicate(input_text, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Recovery must never overlap with a timed-out provider's children.
+            _terminate_process_tree(proc)
+            proc.communicate(timeout=10)
+            raise
     except subprocess.TimeoutExpired as exc:
         raise OrchestratorError(f"command timed out after {timeout}s: {args[0]}") from exc
     except OSError as exc:
         raise OrchestratorError(f"failed to start {args[0]}: {exc}") from exc
-    return CommandResult(tuple(args), proc.returncode, proc.stdout or "", proc.stderr or "")
+    return CommandResult(tuple(args), proc.returncode, stdout or "", stderr or "")
 
 
 def _git(repo: Path, *args: str, timeout: int = 120) -> CommandResult:
@@ -436,6 +440,45 @@ def _run_claude_implementation(
     )
 
 
+def _run_claude_diagnosis(worktree: Path, prompt: str, timeout: int) -> CommandResult:
+    # Separate read-only capability set; no shell, editor, or sub-agent tool.
+    return _run([
+        *_resolved_command("claude"), "-p", "--output-format", "json",
+        "--permission-mode", "default", "--tools", "Read,Glob,Grep",
+        "--allowedTools", "Read,Glob,Grep", "--max-turns", "12",
+        "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    ], cwd=worktree, input_text=prompt, timeout=timeout, env=_agent_env())
+
+
+def _failure_fingerprint(failure: dict[str, object]) -> str:
+    # Test durations and heartbeat counts are not evidence of progress.
+    text = json.dumps(failure, sort_keys=True, ensure_ascii=False)
+    text = re.sub(r"\b\d+(?:\.\d+)?\s*(?:seconds?|secs?|ms|s)\b", "<duration>", text)
+    text = re.sub(r"\d{4}-\d{2}-\d{2}[T ][\d:.+-]+", "<time>", text)
+    return _review_fingerprint(text)
+
+
+def _final_review_gate(request: dict[str, object], decision_path: str | None) -> dict[str, str]:
+    """Provider-neutral, explicit approval of this exact review request only.
+
+    No AI call and no implicit approval when no reviewer is connected.
+    The external caller owns the verdict, never the implementation agent.
+    """
+    if not decision_path:
+        return {"verdict": "PENDING", "summary": "Awaiting independent Final Review; request saved in run_dir."}
+    try:
+        decision = json.loads(Path(decision_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise OrchestratorError("Final Review decision is unreadable") from exc
+    if not isinstance(decision, dict) or decision.get("request_id") != request["request_id"]:
+        raise OrchestratorError("Final Review decision does not match request_id")
+    verdict = decision.get("verdict")
+    summary = decision.get("summary")
+    if verdict not in ("PASS", "FAIL", "PENDING") or not isinstance(summary, str) or not summary.strip():
+        raise OrchestratorError("invalid Final Review decision")
+    return {"verdict": verdict, "summary": summary}
+
+
 def _implement_with_progress(
     worktree: Path, prompt: str, timeout: int, *, baseline: RepoBaseline,
     run_dir: Path, round_no: int, max_rounds: int, stage: str,
@@ -515,7 +558,7 @@ def _implement_with_progress(
         if not session_id:
             stop("SESSION_ID_UNAVAILABLE", "max-turns with no diff and no valid session_id; Tests not started")
         prompt = (
-            "Continue the implementation from the confirmed Astra design/findings already in this session. "
+            "Continue the implementation from the TaskSpec and recovery findings already in this session. "
             "The previous invocation reached max-turns without a reviewable worktree diff. "
             "Make the required file changes now; do not restart investigation, redesign, or self-review. "
             "Keep all original scope and safety constraints. Do not commit, push, build, or deploy."
@@ -879,7 +922,8 @@ def _progress(
     max_rounds: int,
     counters: UsageCounters,
 ) -> None:
-    prefix = f"[Round {round_no}/{max_rounds}]" if round_no else "[Preflight]"
+    prefix = (f"[Recovery {round_no}/{max_rounds}]" if round_no else
+              "[Preflight]" if stage in {"preflight", "worktree"} else "[Main]")
     print(
         f"{prefix} {message} "
         f"(Claude calls: {counters.claude_calls}, Codex calls: {counters.codex_calls})",
@@ -933,7 +977,7 @@ def _create_candidate(
 def doctor() -> int:
     rows: list[tuple[str, str]] = []
     failed = False
-    for name in ("git", "codex", "claude"):
+    for name in ("git", "claude"):
         try:
             cmd = _resolved_command(name)
             result = _run([*cmd, "--version"], timeout=60)
@@ -978,7 +1022,6 @@ def run(args: argparse.Namespace) -> int:
         counters=counters,
     )
     _resolved_command("git")
-    _resolved_command("codex")
     _resolved_command("claude")
     active_billing = _enforce_billing_guard(args.allow_api_billing)
 
@@ -992,11 +1035,25 @@ def run(args: argparse.Namespace) -> int:
     )
     baseline = _repo_baseline(Path(args.repo), args.expected_branch, not args.no_fetch)
 
-    run_id = _now_id()
-    run_dir = _state_root() / "runs" / run_id
+    resumed = None
+    if getattr(args, "resume_review", None):
+        run_dir = Path(args.resume_review).resolve()
+        resumed = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        if resumed.get("status") != "review_pending":
+            raise OrchestratorError("only review_pending runs may resume")
+        if (resumed["repo"] != str(baseline.root) or resumed["base_sha"] != baseline.head_sha
+                or resumed["source_branch"] != baseline.branch
+                or (run_dir / "task.md").read_text(encoding="utf-8").strip() != task):
+            raise OrchestratorError("review resume source or TaskSpec mismatch")
+        if args.test != resumed["tests"] or args.max_rounds != resumed["max_rounds"]:
+            raise OrchestratorError("review resume Verification or Recovery budget mismatch")
+        run_id = resumed["run_id"]
+    else:
+        run_id = _now_id()
+        run_dir = _state_root() / "runs" / run_id
     # DCC has no other way to learn this run's durable state directory (needed
     # to record a safety-stop outcome onto status.json/result.json); this line
-    # is additive only and does not change HOL/resume/round behavior.
+    # remains stable for DCC's existing safety-stop marker parser.
     print(f"[Preflight] run_dir={run_dir}", flush=True)
     _write_log(run_dir, "task.md", task + "\n")
     _write_status(
@@ -1016,116 +1073,42 @@ def run(args: argparse.Namespace) -> int:
         max_rounds=args.max_rounds,
         counters=counters,
     )
-    parent, worktree = _create_worktree(baseline, run_id)
+    if resumed:
+        worktree = Path(resumed["worktree"])
+        parent = None  # Never infer a recursively removable parent from persisted state.
+        saved_request = json.loads((run_dir / "final-review-request.json").read_text(encoding="utf-8"))
+        _assert_agent_did_not_commit(worktree, baseline.head_sha)
+        if _diff_for_review(worktree)[1] != saved_request["diff"]:
+            raise OrchestratorError("worktree changed since pending Final Review")
+    else:
+        parent, worktree = _create_worktree(baseline, run_id)
 
     result_payload: dict[str, object] = {
         "status": "running",
-        "version": "0.5-astra-design",
+        "version": "0.6-recovery",
         "run_id": run_id,
         "repo": str(baseline.root),
         "base_sha": baseline.head_sha,
         "source_branch": baseline.branch,
         "worktree": str(worktree),
         "run_dir": str(run_dir),
-        "review_model": args.review_model,
+        "final_review_gate": "external",
+        "recovery_iterations": 0,
+        "recovery_history": [],
         "billing_env_override": list(active_billing),
+        "tests": list(args.test),
+        "max_rounds": args.max_rounds,
     }
+    if resumed:
+        result_payload.update(resumed)
+        result_payload["status"] = "running"
+        counters.claude_calls = resumed["claude_calls"]
+        counters.codex_calls = resumed["codex_calls"]
 
     def assert_readonly(before: str, label: str) -> None:
         _, after_diff = _diff_for_review(worktree)
         if _review_fingerprint(after_diff) != before:
             raise OrchestratorError(f"worktree changed during read-only stage: {label}")
-
-    def run_independent_review(
-        round_no: int,
-        tests_text: str,
-    ) -> Review:
-        stat, diff = _diff_for_review(worktree)
-        if not diff.strip():
-            raise OrchestratorError("Claude produced no reviewable changes")
-        before = _review_fingerprint(diff)
-        bundles = _split_review_diff(diff)
-        findings: list[dict[str, object]] = []
-        summaries: list[str] = []
-
-        for index, bundle in enumerate(bundles, 1):
-            prompt = _read_prompt(
-                "review.md",
-                {
-                    "TASK": task,
-                    "BASE_SHA": baseline.head_sha,
-                    "DIFF_STAT": (
-                        stat
-                        + f"\n\nReview bundle {index}/{len(bundles)}. "
-                        "Judge only concrete blocking issues; other bundles are reviewed separately."
-                    ),
-                    "DIFF": bundle,
-                    "TEST_RESULTS": tests_text or "(no tests configured)",
-                },
-            )
-            log_name = f"round-{round_no:02d}-astra-{index:02d}-of-{len(bundles):02d}"
-            _write_log(run_dir, log_name + "-prompt.md", prompt)
-
-            parsed: Review | None = None
-            last_parse_error = ""
-            for parse_attempt in range(1, PROVIDER_RETRIES + 1):
-                counters.codex_calls += 1
-                _progress(
-                    run_dir,
-                    stage="astra_review",
-                    message=(
-                        f"Astra reviewing bundle {index}/{len(bundles)} "
-                        f"(parse attempt {parse_attempt}/{PROVIDER_RETRIES})..."
-                    ),
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                codex = _run_codex_review(
-                    worktree,
-                    prompt,
-                    args.agent_timeout,
-                    args.review_model,
-                )
-                _write_log(
-                    run_dir,
-                    log_name + f"-attempt-{parse_attempt}.txt",
-                    codex.stdout + "\n" + codex.stderr,
-                )
-                try:
-                    parsed = _parse_codex_review(codex.stdout)
-                    break
-                except OrchestratorError as exc:
-                    last_parse_error = str(exc)
-                    print(
-                        f"[Astra] review protocol parse failed: {exc}; retrying same bundle",
-                        flush=True,
-                    )
-                    prompt += (
-                        "\n\nIMPORTANT: Your previous response could not be parsed. "
-                        "Return ONLY the exact JSON review object requested above."
-                    )
-            if parsed is None:
-                raise OrchestratorError(
-                    f"Astra review protocol failed after retries: {last_parse_error}"
-                )
-            summaries.append(parsed.summary)
-            findings.extend(dict(item) for item in parsed.findings)
-
-        assert_readonly(before, "Astra review")
-        if findings:
-            review = Review(
-                "changes_requested",
-                " | ".join(summary for summary in summaries if summary),
-                tuple(findings),
-            )
-        else:
-            review = Review(
-                "approve",
-                " | ".join(summary for summary in summaries if summary) or "All review bundles approved.",
-                (),
-            )
-        return _tag_review_findings(review)
 
     def create_candidate(round_no: int, review: Review) -> int:
         _progress(
@@ -1181,194 +1164,153 @@ def run(args: argparse.Namespace) -> int:
         print("STOP: push / BUILD / UPDATE have not been performed.", flush=True)
         return 0
 
-    try:
-        round_no = 1
-        _, design_before_diff = _diff_for_review(worktree)
-        design_before = _review_fingerprint(design_before_diff)
+    round_no = int(result_payload["recovery_iterations"])  # Recovery only.
+    history = result_payload["recovery_history"]
+    last_error = None
 
-        design_prompt = _read_prompt(
-            "investigate_design_astra.md",
-            {
-                "TASK": task,
-                "BASE_SHA": baseline.head_sha,
-                "SOURCE_BRANCH": baseline.branch,
-            },
-        )
-        counters.codex_calls += 1
-        _progress(
-            run_dir,
-            stage="astra_investigate_design",
-            message="Astra investigating repository and producing a read-only design...",
-            round_no=round_no,
-            max_rounds=args.max_rounds,
-            counters=counters,
-        )
-        _write_log(
-            run_dir,
-            f"round-{round_no:02d}-design-astra-prompt.md",
-            design_prompt,
-        )
-        design_raw = _run_codex_review(
-            worktree,
-            design_prompt,
-            args.agent_timeout,
-            args.review_model,
-        )
-        _write_log(
-            run_dir,
-            f"round-{round_no:02d}-design-astra.txt",
-            design_raw.stdout + "\n" + design_raw.stderr,
-        )
-        final_design = _parse_design(design_raw.stdout)
-        design_text = json.dumps(
-            final_design,
-            ensure_ascii=False,
-            indent=2,
-        )
-        _write_log(
-            run_dir,
-            f"round-{round_no:02d}-design-astra.json",
-            design_text,
-        )
-        assert_readonly(design_before, "Astra investigation/design")
-        print(
-            f"[Round {round_no}/{args.max_rounds}] Design: READY BY ASTRA",
-            flush=True,
-        )
-        round_no += 1
+    def persist():
+        result_payload.update(recovery_iterations=round_no, rounds_used=round_no,
+                              claude_calls=counters.claude_calls, codex_calls=counters.codex_calls)
+        _write_external_result(str(run_dir / "result.json"), result_payload)
+        _write_external_result(args.result_file, result_payload)
 
-        if round_no > args.max_rounds:
-            raise OrchestratorError("no round budget remains for implementation")
+    def progress(stage, message):
+        result_payload.update(stage=stage, round=round_no)
+        persist()
+        _progress(run_dir, stage=stage, message=message, round_no=round_no,
+                  max_rounds=args.max_rounds, counters=counters)
 
-        final_design_text = json.dumps(
-            final_design,
-            ensure_ascii=False,
-            indent=2,
-        )
-        _write_log(run_dir, "confirmed-design.json", final_design_text)
+    def check_safety():
+        _assert_agent_did_not_commit(worktree, baseline.head_sha)
+        _assert_source_unchanged(baseline)
 
-        current_prompt = _read_prompt(
-            "implement_from_design.md",
-            {
-                "TASK": task,
-                "DESIGN": final_design_text,
-            },
-        )
-        current_stage = "implementation"
-
-        while round_no <= args.max_rounds:
-            _implement_with_progress(
-                worktree, current_prompt, args.agent_timeout, baseline=baseline,
+    def implement(prompt, stage):
+        nonlocal last_error
+        progress("claude_" + stage, "Claude " + stage + "...")
+        try:
+            output = _implement_with_progress(
+                worktree, prompt, args.agent_timeout, baseline=baseline,
                 run_dir=run_dir, round_no=round_no, max_rounds=args.max_rounds,
-                stage=current_stage, counters=counters, result_payload=result_payload,
+                stage=stage, counters=counters, result_payload=result_payload,
             )
+            text = _claude_result_text(output.stdout) if not _looks_like_max_turns(output) else ""
+            if re.search(r"(?m)^\s*IMPLEMENTATION_STATUS:\s*BLOCKED\s*$", text):
+                return {"kind": "IMPLEMENTATION_BLOCKED", "detail": text}
+            return None
+        except ClaudeExecutionError as exc:
+            # Safety/integrity exceptions are deliberately NOT recoverable.
+            check_safety()
+            if exc.code == "PROVIDER_QUOTA":
+                raise
+            last_error = exc
+            return {"kind": "IMPLEMENTATION_ERROR", "code": exc.code, "detail": str(exc)}
 
-            _progress(
-                run_dir,
-                stage="tests",
-                message="Running automated tests with live progress / hang watchdog...",
-                round_no=round_no,
-                max_rounds=args.max_rounds,
-                counters=counters,
-            )
-            tests_ok, tests_text = _run_tests(worktree, args.test, args.test_timeout)
-            _write_log(run_dir, f"round-{round_no:02d}-tests.txt", tests_text)
+    def verify(previous_verification=None):
+        progress("tests", "Running independent Verification with hang watchdog...")
+        before = _review_fingerprint(_diff_for_review(worktree)[1])
+        try:
+            if previous_verification is not None:
+                ok, text = True, previous_verification
+            else:
+                ok, text = _run_tests(worktree, args.test, args.test_timeout)
+        except (OSError, OrchestratorError) as exc:
+            ok, text = False, str(exc)
+        check_safety()
+        # Passing tests must describe the same code that was submitted to them.
+        if ok and _review_fingerprint(_diff_for_review(worktree)[1]) != before:
+            raise OrchestratorError("worktree changed during Verification")
+        _write_log(run_dir, f"round-{round_no:02d}-tests.txt", text)
+        result_payload["verification"] = {"passed": ok, "result": text}
+        persist()
+        if not ok:
+            return {"kind": "TESTS_HANG" if "HANG/TIMEOUT" in text else "TESTS_FAIL", "detail": text}
+        progress("final_review_gate", "Final Review Gate...")
+        request = {
+            "schema_version": 1, "run_id": run_id, "base_sha": baseline.head_sha,
+            "task": task, "diff": _diff_for_review(worktree)[1], "verification": text,
+            "recovery_iterations": round_no,
+        }
+        request["request_id"] = _review_fingerprint(json.dumps(request, sort_keys=True, ensure_ascii=False))
+        _write_external_result(str(run_dir / "final-review-request.json"), request)
+        decision = _final_review_gate(request, getattr(args, "final_review_decision", None))
+        check_safety()
+        assert_readonly(before, "Final Review Gate")
+        result_payload["final_review"] = decision
+        persist()
+        if decision["verdict"] == "FAIL":
+            args.final_review_decision = None  # Repair requires a fresh review.
+            return {"kind": "FINAL_REVIEW_FAIL", "detail": decision["summary"]}
+        if decision["verdict"] == "PENDING":
+            return {"kind": "FINAL_REVIEW_PENDING", "detail": decision["summary"]}
+        return None
 
-            if not tests_ok:
-                print(
-                    f"[Round {round_no}/{args.max_rounds}] Tests: FAIL/HANG",
-                    flush=True,
-                )
-                if round_no >= args.max_rounds:
-                    raise OrchestratorError("tests still failing after final HOL round")
-
-                stat, diff = _diff_for_review(worktree)
-                before = _review_fingerprint(diff)
-
-                astra_diag_prompt = _read_prompt(
-                    "diagnose_tests_astra.md",
-                    {
-                        "TASK": task,
-                        "TEST_RESULTS": tests_text,
-                        "DIFF_STAT": stat,
-                        "DIFF": diff[:MAX_DIFF_CHARS],
-                    },
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-astra-test-diagnosis-prompt.md",
-                    astra_diag_prompt,
-                )
-                _progress(
-                    run_dir,
-                    stage="test_diagnosis_astra",
-                    message="Astra diagnosing test failure before Claude repair...",
-                    round_no=round_no,
-                    max_rounds=args.max_rounds,
-                    counters=counters,
-                )
-                counters.codex_calls += 1
-                astra_diag = _run_codex_review(
-                    worktree,
-                    astra_diag_prompt,
-                    args.agent_timeout,
-                    args.review_model,
-                )
-                _write_log(
-                    run_dir,
-                    f"round-{round_no:02d}-astra-test-diagnosis.txt",
-                    astra_diag.stdout + "\n" + astra_diag.stderr,
-                )
-                assert_readonly(before, "Astra test diagnosis")
-
-                current_prompt = _read_prompt(
-                    "repair_tests.md",
-                    {
-                        "TASK": task,
-                        "TEST_RESULTS": tests_text,
-                        "ASTRA_DIAGNOSIS": astra_diag.stdout,
-                    },
-                )
-                current_stage = "test repair"
-                round_no += 1
-                continue
-
-            print(f"[Round {round_no}/{args.max_rounds}] Tests: PASS", flush=True)
-            review = run_independent_review(round_no, tests_text)
-
-            if review.approved:
-                print(
-                    f"[Round {round_no}/{args.max_rounds}] Astra: APPROVE",
-                    flush=True,
-                )
-                return create_candidate(round_no, review)
-
-            print(
-                f"[Round {round_no}/{args.max_rounds}] "
-                f"Astra: CHANGES_REQUESTED ({len(review.findings)} findings)",
-                flush=True,
-            )
-
-            current_review = review
-
+    try:
+        persist()
+        if resumed:
+            failure = verify(saved_request["verification"])
+        else:
+            failure = implement(_read_prompt("main_implementation.md", {"TASK": task}), "implementation")
+            if failure is None:
+                failure = verify()
+        while failure is not None and failure["kind"] != "FINAL_REVIEW_PENDING":
             if round_no >= args.max_rounds:
-                raise OrchestratorError(
-                    "Astra still requests confirmed repairs after final HOL round"
-                )
-
-            current_prompt = _read_prompt(
-                "blocking_repair.md",
-                {
-                    "TASK": task,
-                    "FEEDBACK": json.dumps(
-                        asdict(current_review), ensure_ascii=False, indent=2
-                    ),
-                },
-            )
-            current_stage = "blocking review repair"
+                if args.max_rounds == 0 and last_error:
+                    raise last_error
+                raise ClaudeExecutionError("RECOVERY_LIMIT", "Recovery budget exhausted; no candidate")
             round_no += 1
-
-        raise OrchestratorError("orchestration ended without a candidate")
+            stat, diff = _diff_for_review(worktree)
+            before = _review_fingerprint(diff)
+            entry = {"iteration": round_no, "failure": failure, "diagnosis": None,
+                     "repair": None, "verification": None, "progress": None,
+                     "before_fingerprint": before}
+            history.append(entry)
+            progress("recovery_diagnosis", "Claude diagnosing the explicit failure...")
+            prompt = _read_prompt("recovery_diagnosis.md", {
+                "TASK": task, "FAILURE": json.dumps(failure, ensure_ascii=False),
+                "DIFF": diff[:MAX_DIFF_CHARS], "HISTORY": json.dumps(history, ensure_ascii=False),
+            })
+            _write_log(run_dir, f"round-{round_no:02d}-diagnosis-prompt.md", prompt)
+            counters.claude_calls += 1
+            persist()
+            raw = _run_claude_diagnosis(worktree, prompt, args.agent_timeout)
+            _write_log(run_dir, f"round-{round_no:02d}-diagnosis-raw.json", raw.stdout + "\n" + raw.stderr)
+            check_safety()
+            assert_readonly(before, "Claude diagnosis")
+            if _claude_quota_error(raw):
+                raise ClaudeExecutionError("PROVIDER_QUOTA", "Claude quota exhausted; no retry")
+            if raw.returncode or _claude_payload(raw).get("is_error"):
+                raise ClaudeExecutionError("DIAGNOSIS_ERROR", "Claude diagnosis failed; see raw log")
+            diagnosis = _claude_result_text(raw.stdout).strip()
+            if not diagnosis:
+                raise ClaudeExecutionError("DIAGNOSIS_ERROR", "empty diagnosis")
+            entry["diagnosis"] = diagnosis
+            persist()
+            failure = implement(_read_prompt("recovery_repair.md", {
+                "TASK": task, "FAILURE": json.dumps(entry["failure"], ensure_ascii=False),
+                "DIAGNOSIS": diagnosis, "HISTORY": json.dumps(history, ensure_ascii=False),
+            }), "recovery_repair")
+            check_safety()
+            after = _review_fingerprint(_diff_for_review(worktree)[1])
+            entry["repair"] = {"after_fingerprint": after, "changed": before != after,
+                               "log": f"round-{round_no:02d}-claude.txt"}
+            if failure is None:
+                failure = verify()
+            entry["verification"] = failure or {"kind": "PASS"}
+            signature = (_failure_fingerprint(entry["verification"]), after)
+            repeated = any(tuple(previous.get("signature", ())) == signature for previous in history[:-1])
+            same_failure = _failure_fingerprint(entry["failure"]) == signature[0]
+            entry["signature"] = list(signature)
+            entry["progress"] = failure is None or (not repeated and (before != after or not same_failure))
+            persist()
+            if failure and failure["kind"] != "FINAL_REVIEW_PENDING" and not entry["progress"]:
+                raise ClaudeExecutionError("RECOVERY_NO_PROGRESS", "Repeated failure and unchanged/repeated repair; stopped")
+        if failure:
+            result_payload.update(status="review_pending")
+            progress("final_review_pending", failure["detail"])
+            return 0
+        review = Review("approve", result_payload["final_review"]["summary"], ())
+        check_safety()
+        return create_candidate(round_no, review)
     except Exception as exc:
         result_payload.update(
             {
@@ -1388,7 +1330,7 @@ def run(args: argparse.Namespace) -> int:
         _write_status(
             run_dir,
             stage="stopped",
-            round_no=min(args.max_rounds, max(1, counters.codex_calls)),
+            round_no=round_no,
             max_rounds=args.max_rounds,
             counters=counters,
             detail=str(exc),
@@ -1403,7 +1345,7 @@ def run(args: argparse.Namespace) -> int:
         print(f"logs: {run_dir}", file=sys.stderr)
         return 1
     finally:
-        if result_payload.get("status") == "candidate_ready":
+        if result_payload.get("status") == "candidate_ready" and parent is not None:
             try:
                 _git(
                     baseline.root,
@@ -1420,11 +1362,11 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Astra investigation/design + Claude implementation + Astra review orchestrator"
+        description="Claude implementation with failure-only Recovery and Final Review Gate"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="check git / codex / claude CLI and billing guard")
+    sub.add_parser("doctor", help="check git / claude CLI and billing guard")
 
     run_parser = sub.add_parser(
         "run",
@@ -1441,12 +1383,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-rounds",
         type=int,
         default=DEFAULT_MAX_ROUNDS,
-        help=f"maximum total HOL rounds including design and implementation (default {DEFAULT_MAX_ROUNDS})",
+        help=f"maximum Recovery iterations (normal path consumes zero) (default {DEFAULT_MAX_ROUNDS})",
     )
     run_parser.add_argument(
         "--review-model",
         default=DEFAULT_REVIEW_MODEL,
-        help=f"Codex review model (default {DEFAULT_REVIEW_MODEL})",
+        help="legacy compatibility option; does not invoke a reviewer",
     )
     run_parser.add_argument(
         "--allow-api-billing",
@@ -1457,6 +1399,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--result-file",
         help="optional JSON result path for machine callers such as DCC",
     )
+    run_parser.add_argument("--resume-review", help="resume preserved review_pending run with unchanged TaskSpec, tests and budget")
+    run_parser.add_argument("--final-review-decision", help="external JSON verdict bound to final-review-request request_id")
     run_parser.add_argument("--agent-timeout", type=int, default=DEFAULT_TIMEOUT)
     run_parser.add_argument("--test-timeout", type=int, default=DEFAULT_TEST_TIMEOUT)
     run_parser.add_argument("--no-fetch", action="store_true", help="skip origin fetch (not recommended)")
@@ -1478,8 +1422,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "doctor":
             return doctor()
-        if args.max_rounds < 1 or args.max_rounds > 30:
-            raise OrchestratorError("--max-rounds must be between 1 and 30")
+        if args.max_rounds < 0 or args.max_rounds > 30:
+            raise OrchestratorError("--max-rounds must be between 0 and 30")
         return run(args)
     except (OSError, OrchestratorError) as exc:
         print(f"AI ORCHESTRATOR STOPPED: {exc}", file=sys.stderr)

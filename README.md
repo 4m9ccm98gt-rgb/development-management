@@ -35,8 +35,8 @@
 → DCCのAI依頼欄 → 「AI開発開始」
 → Claudeが隔離worktreeで実装
 → 独立Tests
-→ GPT-6 Astraがread-onlyレビュー
-→ 必要ならClaude修正
+→ provider非依存のFinal Review Gate
+→ 明示的失敗時だけClaude diagnosis → repair → 再Verification
 → local candidate commit
 → RUN_DEVでユーザー実機確認
 → 確認済みSHAを維持して次工程へ
@@ -49,7 +49,7 @@ GPTは標準運用でGitHub上のコード・設定を直接編集しません�
 
 ## AI Development Orchestrator
 
-v0.2は **Claude実装 → 自動テスト → GPT-6 Astra read-onlyレビュー → 必要ならClaude修正** を最大2ラウンドで実行し、ローカルcandidateで停止します。
+v0.6は **Claude MAIN IMPLEMENTATION → 独立Verification → Final Review Gate** を通常経路とします。一発成功時はRecovery 0回。失敗時だけClaude diagnosis → repair → 再Verificationを最大30回まで行い、local candidateで停止します。Final Review未接続時はレビュー待ちとなり、承認を得るまでcandidateを作成しません。
 
 Development Control Centerから選択repoへAI依頼と独立テストコマンドを渡して起動できます。成功時はDCCがmachine-readable resultから完全40桁candidate SHAを受け取り、確認後だけローカルexpected branchへfast-forwardしてRUN_DEVによる実機確認へ繋げます。
 

@@ -40,7 +40,7 @@ class ClaudeResumeTests(unittest.TestCase):
         baseline = o.RepoBaseline(self.root / 'source', 'main', 'a'*40, 'a'*40)
         args = o.build_parser().parse_args([
             'run', '--repo', str(baseline.root), '--task', 'implement confirmed fix',
-            '--test', 'mock test', '--no-fetch', '--result-file', str(self.root/'external.json'),
+            '--test', 'mock test', '--no-fetch', '--max-rounds', '0', '--result-file', str(self.root/'external.json'),
         ])
         sequence = iter(outputs)
 
@@ -53,14 +53,9 @@ class ClaudeResumeTests(unittest.TestCase):
                 raise result
             return result
 
-        def astra(*args):
-            if 'design' not in self.events:
-                self.events.append('design')
-                body = {'design': ['change the target file'], 'evidence': ['source inspection']}
-            else:
-                self.events.append('review')
-                body = {'verdict': 'approve', 'summary': 'ok', 'findings': []}
-            return o.CommandResult(('codex',), 0, json.dumps(body), '')
+        def gate(*args):
+            self.events.append('review')
+            return {'verdict': 'PASS', 'summary': 'independent approval'}
 
         def tests(*args):
             self.events.append('tests')
@@ -76,7 +71,8 @@ class ClaudeResumeTests(unittest.TestCase):
                 '_now_id': mock.Mock(return_value='test-run'),
                 '_diff_for_review': mock.Mock(side_effect=lambda _: ('stat', self.diff)),
                 '_run': mock.Mock(side_effect=provider),
-                '_run_codex_review': mock.Mock(side_effect=astra),
+                '_run_codex_review': mock.Mock(side_effect=AssertionError('unexpected Astra call')),
+                '_final_review_gate': mock.Mock(side_effect=gate),
                 '_assert_agent_did_not_commit': mock.Mock(),
                 '_assert_source_unchanged': mock.Mock(),
                 '_run_tests': mock.Mock(side_effect=tests),
@@ -113,18 +109,18 @@ class ClaudeResumeTests(unittest.TestCase):
 
     def test_max_turns_with_diff_runs_tests_without_resume(self):
         self.assertEqual(self.pipeline([(response(session=None), 'diff')]), 0)
-        self.assertEqual(self.events, ['design', 'claude', 'tests', 'review'])
+        self.assertEqual(self.events, ['claude', 'tests', 'review'])
         self.assertEqual(self.saved['outcome'], 'IMPLEMENTATION_DIFF')
         self.assertNotIn('--resume', self.commands[0])
 
     def test_empty_max_turns_resumes_same_session_then_tests(self):
         self.assertEqual(self.pipeline([(response(), ''), (response(), 'new diff')]), 0)
-        self.assertEqual(self.events, ['design', 'claude', 'claude', 'tests', 'review'])
+        self.assertEqual(self.events, ['claude', 'claude', 'tests', 'review'])
         self.assertEqual(self.commands[1][-2:], ['--resume', SESSION])
         self.assertEqual(self.saved['session_id'], SESSION)
         self.assertEqual(self.saved['resume_count'], 1)
         self.assertEqual(self.result['claude_calls'], 2)
-        self.assertEqual(self.safety_checks, 2)
+        self.assertGreaterEqual(self.safety_checks, 2)
         self.assertIn('do not restart investigation', self.agent_inputs[1]['input_text'])
 
     def test_successful_resume_with_diff_runs_tests(self):
@@ -139,7 +135,7 @@ class ClaudeResumeTests(unittest.TestCase):
         self.assertEqual(self.saved['resume_count'], 2)
         self.assertEqual(self.saved['session_id'], SESSION)
         self.assertEqual(self.saved['stage'], 'implementation')
-        self.assertEqual(self.saved['round'], 2)
+        self.assertEqual(self.saved['round'], 0)
         self.assertTrue((self.root/'state/runs/test-run'/self.saved['prompt_file']).is_file())
 
     def test_resume_returns_success_but_no_diff_stops_immediately(self):

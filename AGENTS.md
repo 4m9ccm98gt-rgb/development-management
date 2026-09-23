@@ -7,7 +7,7 @@
 実装・設定変更の開始点は、常にDCCの「AI依頼」欄です。通常repo、`development-management` 自身、新規repo登録で経路は同じです。
 
 ```text
-AI依頼 → Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate
+AI依頼 → Claude実装 → 独立Tests → Final Review Gate → local candidate
 ```
 
 - GPTの役割は、ユーザーの意図・要望・優先順位・受入条件をAI依頼へ整理することです。標準運用ではGitHub上のコード・設定を直接編集しません。

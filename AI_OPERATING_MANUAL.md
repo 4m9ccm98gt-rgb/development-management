@@ -11,8 +11,8 @@ GPTがAI依頼を整理
 → DCC AI依頼欄 → AI開発開始
 → Claude実装
 → Tests
-→ GPT-6 Astra read-onlyレビュー
-→ 必要ならClaude修正
+→ Final Review Gate
+→ 明示的失敗時だけClaude diagnosis → repair → 再Verification
 → local candidate
 → RUN_DEV実機確認
 → OK後に同じSHAをpush
@@ -32,18 +32,14 @@ Claudeは隔離worktree内で実装・修正を担当します。
 - BUILD / UPDATE / DEPLOYしない
 - 指定タスクの範囲を最小限に保つ
 - `acceptEdits` + `--allowedTools` で許可された検査・テスト系Bashだけを使う（`bypassPermissions` は使わない）
-- テスト失敗またはAstra指摘があれば修正する
+- 明示的な失敗があればRecovery diagnosis → repair → 再Verificationへ進む
 
-## 3. Astraの役割
+## 3. RecoveryとFinal Review
 
-GPT-6 Astraは独立reviewerです。
-
-- read-only
-- 実装agentと役割を分離する
-- diff / task / test resultを確認する
-- structured JSONでapprove / changes_requestedを返す
-- approveとfindingが同居する矛盾出力はfail-close
-- review後にworktree差分が変わった場合はcandidate化しない
+失敗時だけClaude diagnosis / repairを呼び、独立Verificationへ戻します。
+Final Reviewはprovider非依存の外部Gateで、PASSした成果物だけcandidateにします。
+未接続時はreview_pending。Astraを通常経路の必須providerにしません。
+詳細はOPERATING_CONTRACT.mdを参照します。
 
 ## 4. テスト
 
@@ -61,7 +57,7 @@ candidate作成前に以下を満たします。
 - source repoがtracked clean
 - agentがcommit / branch変更していない
 - tests pass
-- Astra approve
+- Final Review PASS
 - review対象diffとcandidate作成前diffが一致
 
 candidateはlocal branch + 完全40桁SHAで識別します。
@@ -84,7 +80,7 @@ candidate成功後も自動では正式branchへ反映しません。DCCがユ�
 
 ## 8. 使用量と役割分担
 
-現在の標準構成は **Claude実装 + Astraレビュー** です。
+現在の標準構成は **Claude実装 + 独立Verification + Final Review Gate** です。
 
 2026-09-19の同一smoke taskでは、ユーザー観測でClaude 1% / Codex(Astra) 1%の利用表示でした。これは固定コスト保証ではなく、役割反転前より軽い傾向を確認した実測です。
 

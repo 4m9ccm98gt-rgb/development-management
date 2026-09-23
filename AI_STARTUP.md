@@ -16,7 +16,7 @@
 GPTが要望・優先順位・受入条件をAI依頼へ整理
 → DCCで対象repoを選択（development-management自身も同じ）
 → AI依頼欄 + テスト欄 → 「AI開発開始」
-→ Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate
+→ Claude実装 → 独立Tests → Final Review Gate → local candidate
 → ユーザー実機確認（RUN_DEV）→ OKなら同じSHAをpush → BUILD / 配布
 ```
 
