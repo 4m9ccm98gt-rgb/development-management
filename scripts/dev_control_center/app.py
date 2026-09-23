@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -181,6 +182,77 @@ class _TkScheduler:
         self.master.after_cancel(handle)
 
 
+def _terminate_ai_process_tree(process: subprocess.Popen) -> None:
+    """Kill the AI Orchestrator process and its full child tree (Claude/Codex
+    CLI subprocesses included), mirroring orchestrator.py's own
+    _terminate_process_tree used for its internal test-timeout handling."""
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        else:
+            process.terminate()
+    except OSError:
+        pass
+
+
+AI_SAFETY_STOP_REASON = "ユーザーによる安全停止"
+_AI_RUN_DIR_MARKER = "[Preflight] run_dir="
+
+
+def _merge_json_file(path: Path, updates: dict[str, object]) -> None:
+    """Merge `updates` into the JSON object at `path`, creating it if missing.
+
+    Only the given keys are added/overwritten; every other existing key
+    (run_id, worktree, stage, round, provider/session fields, ...) is kept
+    exactly as the Orchestrator run left it.
+    """
+    payload: dict[str, object] = {}
+    try:
+        if path.is_file():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                payload = raw
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    payload.update(updates)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _mark_ai_run_stopped(run_dir: Path) -> None:
+    """Record the AI safety stop onto the run's durable status.json/result.json.
+
+    Additive merge only (see _merge_json_file): existing run_id / worktree /
+    stage / round / provider-session fields are preserved. The isolated
+    worktree itself is never touched here, and no Git/GitHub command runs.
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    _merge_json_file(
+        run_dir / "status.json",
+        {"status": "stopped", "reason": AI_SAFETY_STOP_REASON, "updated_at": now},
+    )
+    _merge_json_file(
+        run_dir / "result.json",
+        {
+            "run_id": run_dir.name,
+            "run_dir": str(run_dir),
+            "status": "stopped",
+            "error": AI_SAFETY_STOP_REASON,
+            "error_code": "USER_SAFETY_STOP",
+        },
+    )
+
+
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         configure_dark_theme(master)
@@ -201,6 +273,7 @@ class App(ttk.Frame):
         self.active_process = None
         self.ai_output_queue: queue.Queue[str] = queue.Queue()
         self.ai_context: dict[str, object] | None = None
+        self.ai_stop_requested = False
         self.ai_task_by_repo: dict[str, str] = {}
         self.ai_test_by_repo: dict[str, str] = {}
         self.unmanaged_repos: list[RemoteRepo] = []
@@ -380,6 +453,13 @@ class App(ttk.Frame):
             command=self.launch_ai_orchestrator,
         )
         self.ai_start_button.grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
+        self.ai_stop_button = ttk.Button(
+            ai_box,
+            text="AI安全停止",
+            command=self.stop_ai_orchestrator,
+        )
+        self.ai_stop_button.configure(state="disabled")
+        self.ai_stop_button.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=(8, 0))
         ttk.Label(
             ai_box,
             textvariable=self.ai_status_var,
@@ -613,6 +693,11 @@ class App(ttk.Frame):
             and repo_state.head.lower() == repo_state.origin_head.lower()
         )
         self.ai_start_button.configure(state="normal" if ai_ready else "disabled")
+        ai_running = bool(self.active_process is not None and self.active_process[2] == "ai_orchestrator")
+        ai_run_dir_captured = bool(ai_running and self.ai_context and self.ai_context.get("run_dir"))
+        self.ai_stop_button.configure(
+            state="normal" if (ai_run_dir_captured and not self.ai_stop_requested) else "disabled"
+        )
         update_state = "normal" if self._self_update_enabled() else "disabled"
 
         if not self.current or not repo_state or not entrypoints:
@@ -949,6 +1034,7 @@ class App(ttk.Frame):
             "result_path": result_path,
             "base_sha": self.repo_state.head.lower(),
         }
+        self.ai_stop_requested = False
         self._begin_process(process, self.current.name, "ai_orchestrator")
         self.ai_status_var.set("実行中 — HOL最大30round / Claude ↔ Tests ↔ Astra")
         self._log(f"{self.current.name}: AI Orchestrator HOL開始（最大30round）")
@@ -962,6 +1048,34 @@ class App(ttk.Frame):
         )
         reader.start()
         self.master.after(250, self._poll)
+
+    def stop_ai_orchestrator(self) -> None:
+        """User-initiated AI safety stop.
+
+        Enabled only while an AI Orchestrator process is active. This is a
+        distinct action from closing the window: it never destroys the
+        window and window close never calls this. It only tears down the
+        Orchestrator process and its Claude/Codex child processes; it does
+        not touch source main, does not apply a candidate, and does not
+        push / BUILD / UPDATE / DEPLOY. The isolated worktree and run
+        logs are left on disk for a possible future resume.
+        """
+        if self.active_process is None or self.active_process[2] != "ai_orchestrator":
+            return
+        process, repo_name, _action = self.active_process
+        if not messagebox.askyesno(
+            "AI安全停止",
+            "実行中のAI Orchestrator（Claude / Codex等の子プロセスを含む）を安全停止しますか？\n\n"
+            "source mainは変更されず、candidateの自動適用・PUSH・BUILD・UPDATE・DEPLOYは行いません。\n"
+            "isolated worktreeとrun logは保持されます。",
+        ):
+            return
+        self.ai_stop_requested = True
+        self.ai_stop_button.configure(state="disabled")
+        _terminate_ai_process_tree(process)
+        self.ai_status_var.set("安全停止を要求しました...")
+        self._log(f"{repo_name}: AI安全停止を要求（ユーザーによる安全停止）。worktree / run logは保持します。")
+        self.banner_var.set("AI安全停止を実行中。完了までお待ちください。")
 
     def _read_ai_output(self, process: subprocess.Popen[str]) -> None:
         if process.stdout is None:
@@ -977,6 +1091,9 @@ class App(ttk.Frame):
                 line = self.ai_output_queue.get_nowait()
             except queue.Empty:
                 return
+            if self.ai_context is not None and line.startswith(_AI_RUN_DIR_MARKER):
+                self.ai_context["run_dir"] = Path(line[len(_AI_RUN_DIR_MARKER):].strip())
+                self._apply_lifecycle_state()
             self._log(f"AI: {line}")
             self.ai_status_var.set(line)
 
@@ -999,6 +1116,21 @@ class App(ttk.Frame):
     def _finish_ai_orchestrator(self, repo_name: str, rc: int) -> None:
         context = self.ai_context or {}
         self.ai_context = None
+        if self.ai_stop_requested:
+            self.ai_stop_requested = False
+            reason = AI_SAFETY_STOP_REASON
+            run_dir = context.get("run_dir")
+            if isinstance(run_dir, Path):
+                _mark_ai_run_stopped(run_dir)
+                self._log(f"{repo_name}: run状態を保持したままstatus.json / result.jsonへ{reason}を記録しました。")
+            else:
+                self._log(f"{repo_name}: run_dirが未取得のためstatus.json / result.jsonへの記録は行いません。")
+            self.ai_status_var.set(f"STOPPED: {reason}")
+            self._log(f"{repo_name}: AI Orchestrator STOPPED — {reason}。isolated worktree / run logは保持します。")
+            self.banner_var.set(f"AI Orchestratorは{reason}で停止しました。isolated worktree / run logは保持されています。")
+            self._reload_after(repo_name)
+            return
+
         result_path = context.get("result_path")
         payload: dict[str, object] = {}
         if isinstance(result_path, Path) and result_path.is_file():

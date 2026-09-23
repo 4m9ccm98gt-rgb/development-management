@@ -994,6 +994,10 @@ def run(args: argparse.Namespace) -> int:
 
     run_id = _now_id()
     run_dir = _state_root() / "runs" / run_id
+    # DCC has no other way to learn this run's durable state directory (needed
+    # to record a safety-stop outcome onto status.json/result.json); this line
+    # is additive only and does not change HOL/resume/round behavior.
+    print(f"[Preflight] run_dir={run_dir}", flush=True)
     _write_log(run_dir, "task.md", task + "\n")
     _write_status(
         run_dir,
