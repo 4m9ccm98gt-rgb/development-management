@@ -3,10 +3,12 @@ from contextlib import ExitStack, redirect_stdout, redirect_stderr
 import io
 import json
 from pathlib import Path
+import queue
 import tempfile
 import unittest
 from unittest import mock
 
+from scripts.dev_control_center import app as dcc
 from tools.ai_orchestrator import orchestrator as o
 
 SESSION = '12345678-1234-1234-1234-123456789abc'
@@ -203,6 +205,265 @@ class ClaudeResumeTests(unittest.TestCase):
         bad = o.CommandResult(('claude',), 0, 'not json', '')
         self.assertEqual(self.pipeline([(bad, 'diff')]), 1)
         self.assert_stopped('PROVIDER_ERROR')
+
+
+class DccReviewResumeButtonStateTests(unittest.TestCase):
+    """The resume button is enabled only for an inspected review_pending run on an idle, safe repo."""
+
+    @staticmethod
+    def ui(*, plan, busy=False, safe=True, head="a" * 40, origin="a" * 40):
+        ui = mock.MagicMock()
+        ui.current = mock.MagicMock()
+        ui.entrypoints = None  # stop right after the AI / review button block
+        ui.active_process = (mock.MagicMock(), "demo", "release") if busy else None
+        ui.ai_stop_requested = False
+        ui.repo_state.safe_for_lifecycle.return_value = safe
+        ui.repo_state.head = head
+        ui.repo_state.origin_head = origin
+        ui.review_plan = plan
+        return ui
+
+    def state_of(self, ui):
+        dcc.App._apply_lifecycle_state(ui)
+        return ui.review_resume_button.configure.call_args.kwargs["state"]
+
+    def test_enabled_only_when_idle_safe_synced_and_plan_ok(self):
+        self.assertEqual(self.state_of(self.ui(plan=dcc.ReviewResumePlan(True, "ok"))), "normal")
+
+    def test_disabled_without_a_plan_or_with_a_rejected_plan(self):
+        self.assertEqual(self.state_of(self.ui(plan=None)), "disabled")
+        self.assertEqual(self.state_of(self.ui(plan=dcc.ReviewResumePlan(False, "status=running"))), "disabled")
+
+    def test_disabled_while_another_action_is_running(self):
+        self.assertEqual(self.state_of(self.ui(plan=dcc.ReviewResumePlan(True, "ok"), busy=True)), "disabled")
+
+    def test_disabled_when_repo_is_not_safe_for_lifecycle(self):
+        self.assertEqual(self.state_of(self.ui(plan=dcc.ReviewResumePlan(True, "ok"), safe=False)), "disabled")
+
+    def test_disabled_when_local_head_is_not_origin_head(self):
+        ui = self.ui(plan=dcc.ReviewResumePlan(True, "ok"), origin="b" * 40)
+        self.assertEqual(self.state_of(ui), "disabled")
+
+    def test_disabled_without_a_selected_repo(self):
+        ui = self.ui(plan=dcc.ReviewResumePlan(True, "ok"))
+        ui.current = None
+        self.assertEqual(self.state_of(ui), "disabled")
+
+
+class DccResumeAiReviewTests(unittest.TestCase):
+    HEAD = "A" * 40
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.tmp = Path(self.temp.name)
+        self.run_dir = self.tmp / "runs" / "20260924-120000-000000"
+        self.plan = dcc.ReviewResumePlan(
+            True,
+            "ok",
+            run_dir=self.run_dir,
+            task="saved task",
+            tests=("python -m pytest tests/a.py",),
+            max_rounds=7,
+            request_id="req-1",
+        )
+        self.ui = mock.MagicMock()
+        self.ui.current.name = "demo"
+        self.ui.current.branch = "main"
+        self.ui.active_process = None
+        self.ui.repo_state.head = self.HEAD
+        self.ui.repo_state.origin_head = self.HEAD.lower()
+        self.ui.repo_state.safe_for_lifecycle.return_value = True
+        self.ui.review_plan = self.plan
+        self.ui.ai_output_queue = queue.Queue()
+        self.ui.ai_output_queue.put("stale line from an earlier run")
+        self.decision = {"request_id": "req-1", "verdict": "PASS", "summary": "reviewed"}
+        self.ui.review_decision.get.return_value = json.dumps(self.decision) + "\n"
+        self.spawned = []
+        self.decision_seen = []
+        self.process = mock.MagicMock()
+
+    def run_resume(self, spawn=None):
+        def default_spawn(command):
+            self.spawned.append(command)
+            path = Path(command[command.index("--final-review-decision") + 1])
+            self.decision_seen.append((path.is_file(), json.loads(path.read_text(encoding="utf-8"))))
+            return self.process
+
+        with mock.patch.object(dcc.messagebox, "showerror") as showerror, \
+                mock.patch.object(dcc, "_spawn_ai_process", side_effect=spawn or default_spawn) as spawn_mock, \
+                mock.patch.object(dcc.tempfile, "gettempdir", return_value=str(self.tmp)), \
+                mock.patch.object(dcc, "REPOS_ROOT", self.tmp / "repos"), \
+                mock.patch.object(dcc.threading, "Thread") as thread:
+            dcc.App.resume_ai_review(self.ui)
+        self.showerror, self.spawn_mock, self.thread = showerror, spawn_mock, thread
+
+    def assert_refused(self):
+        self.spawn_mock.assert_not_called()
+        self.showerror.assert_called_once()
+        self.ui._begin_process.assert_not_called()
+        self.assertEqual(list(self.tmp.glob("dcc-ai-review-decision-*.json")), [])
+
+    def test_refused_while_a_process_is_active(self):
+        self.ui.active_process = (mock.MagicMock(), "demo", "ai_orchestrator")
+        self.run_resume()
+        self.spawn_mock.assert_not_called()
+        self.ui._begin_process.assert_not_called()
+
+    def test_refused_when_repo_is_not_safe(self):
+        self.ui.repo_state.safe_for_lifecycle.return_value = False
+        self.run_resume()
+        self.assert_refused()
+
+    def test_refused_when_local_head_differs_from_origin_head(self):
+        self.ui.repo_state.origin_head = "b" * 40
+        self.run_resume()
+        self.assert_refused()
+
+    def test_refused_when_the_rechecked_plan_is_not_ok(self):
+        self.ui.review_plan = dcc.ReviewResumePlan(False, "status=running")
+        self.run_resume()
+        self.assert_refused()
+        self.ui._refresh_review_plan.assert_called_once()
+
+    def test_refused_when_no_plan_exists(self):
+        self.ui.review_plan = None
+        self.run_resume()
+        self.assert_refused()
+
+    def test_refused_for_invalid_decisions(self):
+        bad = [
+            "",
+            "{not json",
+            json.dumps({**self.decision, "request_id": "other"}),
+            json.dumps({**self.decision, "verdict": "pass"}),
+            json.dumps({**self.decision, "summary": " "}),
+        ]
+        for text in bad:
+            with self.subTest(text=text):
+                self.ui.review_decision.get.return_value = text
+                self.run_resume()
+                self.assert_refused()
+
+    def test_each_verdict_resumes_the_orchestrator_through_the_normal_ai_run_path(self):
+        for verdict in ("PASS", "FAIL", "PENDING"):
+            with self.subTest(verdict=verdict):
+                self.spawned.clear()
+                self.decision_seen.clear()
+                self.ui.reset_mock()
+                self.ui.active_process = None
+                self.ui.review_plan = self.plan
+                self.ui.ai_output_queue.put("stale")
+                decision = {**self.decision, "verdict": verdict}
+                self.ui.review_decision.get.return_value = json.dumps(decision)
+                self.run_resume()
+
+                self.showerror.assert_not_called()
+                self.spawn_mock.assert_called_once()
+                command = self.spawned[0]
+                self.assertEqual(command[2], "run")
+                self.assertEqual(command[command.index("--resume-review") + 1], str(self.run_dir))
+                self.assertEqual(command[command.index("--task") + 1], "saved task")
+                self.assertEqual(command[command.index("--max-rounds") + 1], "7")
+                self.assertEqual(self.decision_seen, [(True, decision)])
+                context = self.ui.ai_context
+                self.assertEqual(context["repo_name"], "demo")
+                self.assertEqual(context["base_sha"], self.HEAD.lower())
+                self.assertEqual(context["result_path"].parent, self.tmp)
+                self.assertEqual(context["decision_path"].parent, self.tmp)
+                # Same action name as a normal AI run: no separate progress / result / candidate path.
+                self.ui._begin_process.assert_called_once_with(
+                    self.process, "demo", "ai_orchestrator"
+                )
+                self.assertIn(verdict, self.ui.ai_status_var.set.call_args.args[0])
+                self.thread.assert_called_once()
+                self.thread.return_value.start.assert_called_once()
+                self.ui.master.after.assert_called_once_with(250, self.ui._poll)
+                self.assertTrue(self.ui.ai_output_queue.empty())
+                self.assertFalse(self.ui.ai_stop_requested)
+
+    def test_resume_never_reads_the_new_task_fields(self):
+        self.run_resume()
+        self.ui.ai_task.get.assert_not_called()
+        self.ui.ai_test_var.get.assert_not_called()
+
+    def test_spawn_failure_removes_the_decision_file_and_shows_an_error(self):
+        def failing(command):
+            raise OSError("boom")
+
+        self.run_resume(spawn=failing)
+        self.showerror.assert_called_once()
+        self.assertIn("boom", self.showerror.call_args.args[1])
+        self.ui._begin_process.assert_not_called()
+        self.assertEqual(list(self.tmp.glob("dcc-ai-review-decision-*.json")), [])
+
+
+class DccFinishAfterReviewResumeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.tmp = Path(self.temp.name)
+        self.decision_path = self.tmp / "decision.json"
+
+    def ui(self, payload=None, *, decision=True, current="demo"):
+        ui = mock.MagicMock()
+        ui.ai_stop_requested = False
+        ui.current.name = current
+        context = {"repo_name": "demo", "result_path": self.tmp / "result.json", "base_sha": "a" * 40}
+        if payload is not None:
+            context["result_path"].write_text(json.dumps(payload), encoding="utf-8")
+        if decision:
+            self.decision_path.write_text("{}", encoding="utf-8")
+            context["decision_path"] = self.decision_path
+        ui.ai_context = context
+        return ui
+
+    def test_decision_file_is_removed_after_success_and_failure(self):
+        pending = {"status": "review_pending", "run_dir": "C:/runs/x"}
+        for rc, payload in ((0, pending), (1, None)):
+            with self.subTest(rc=rc), mock.patch.object(dcc.messagebox, "showerror"):
+                ui = self.ui(payload)
+                self.assertTrue(self.decision_path.exists())
+                dcc.App._finish_ai_orchestrator(ui, "demo", rc)
+                self.assertFalse(self.decision_path.exists())
+
+    def test_decision_file_is_removed_after_a_safety_stop(self):
+        ui = self.ui()
+        ui.ai_stop_requested = True
+        dcc.App._finish_ai_orchestrator(ui, "demo", 1)
+        self.assertFalse(self.decision_path.exists())
+
+    def test_normal_run_without_decision_path_is_unaffected(self):
+        ui = self.ui({"status": "review_pending", "run_dir": "C:/runs/x"}, decision=False)
+        dcc.App._finish_ai_orchestrator(ui, "demo", 0)
+        ui.ai_status_var.set.assert_called_once()
+
+    def test_review_pending_result_fills_run_dir_for_the_selected_repo_and_applies_no_candidate(self):
+        ui = self.ui({"status": "review_pending", "run_dir": "C:/runs/x"})
+        with mock.patch.object(dcc, "apply_local_candidate") as apply_candidate:
+            dcc.App._finish_ai_orchestrator(ui, "demo", 0)
+        ui.review_run_dir_var.set.assert_called_once_with("C:/runs/x")
+        ui.review_decision.delete.assert_called_once_with("1.0", "end")
+        ui.selection.provenance.ai_result.assert_not_called()
+        apply_candidate.assert_not_called()
+        ui._reload_after.assert_called_once_with("demo")
+
+    def test_review_pending_result_does_not_touch_the_panel_for_another_repo(self):
+        ui = self.ui({"status": "review_pending", "run_dir": "C:/runs/x"}, current="other")
+        dcc.App._finish_ai_orchestrator(ui, "demo", 0)
+        ui.review_run_dir_var.set.assert_not_called()
+        ui.review_decision.delete.assert_not_called()
+
+    def test_resumed_pass_result_uses_the_normal_candidate_confirmation(self):
+        payload = {"status": "candidate_ready", "candidate_sha": "b" * 40, "base_sha": "a" * 40}
+        ui = self.ui(payload)
+        ui._confirm_with_guard.return_value = (False, True)  # user declines the fast-forward
+        with mock.patch.object(dcc, "apply_local_candidate") as apply_candidate:
+            dcc.App._finish_ai_orchestrator(ui, "demo", 0)
+        ui.selection.provenance.ai_result.assert_called_once_with("demo", "b" * 40)
+        ui._confirm_with_guard.assert_called_once()
+        self.assertEqual(ui._confirm_with_guard.call_args.args[0], "ai_apply")
+        apply_candidate.assert_not_called()
 
 
 if __name__ == '__main__':

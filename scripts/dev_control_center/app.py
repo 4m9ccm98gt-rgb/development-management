@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
@@ -15,7 +16,7 @@ import threading
 import time
 import webbrowser
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from .core import (
     ControlCenterConfigError,
@@ -253,6 +254,174 @@ def _mark_ai_run_stopped(run_dir: Path) -> None:
     )
 
 
+_REVIEW_VERDICTS = ("PASS", "FAIL", "PENDING")
+_REVIEW_NO_RUN_TEXT = "FINAL REVIEW待ちのrun_dirを指定してください"
+_REVIEW_DECISION_TEMPLATE = (
+    '{"request_id": "<final-review-request.jsonのrequest_id>", '
+    '"verdict": "PASS | FAIL | PENDING", "summary": "<レビュー要約>"}'
+)
+
+
+@dataclass(frozen=True)
+class ReviewResumePlan:
+    """Read-only inspection of a review_pending run; `message` explains a refusal."""
+
+    ok: bool
+    message: str
+    run_dir: Path | None = None
+    task: str = ""
+    tests: tuple[str, ...] = ()
+    max_rounds: int = 0
+    request_id: str = ""
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path.name} is not a JSON object")
+    return raw
+
+
+def _same_path(left: object, right: Path) -> bool:
+    try:
+        return os.path.normcase(str(Path(str(left)).resolve())) == os.path.normcase(str(right.resolve()))
+    except (OSError, ValueError):
+        return False
+
+
+def inspect_review_pending_run(
+    run_dir_text: str,
+    repo_root: Path,
+    expected_branch: str,
+    head_sha: str,
+) -> ReviewResumePlan:
+    """Decide whether `run_dir` is a review_pending run of this repo that DCC may resume.
+
+    Only reads result.json / task.md / final-review-request.json. The values the
+    Orchestrator requires to be unchanged (TaskSpec, tests, max-rounds) come from
+    the run itself, never from the current UI fields.
+    """
+    text = run_dir_text.strip()
+    if not text:
+        return ReviewResumePlan(False, "run_dirが未指定です（FINAL REVIEW待ちのrunだけ再開できます）")
+    run_dir = Path(text)
+    try:
+        result = _read_json_object(run_dir / "result.json")
+    except (OSError, ValueError) as exc:
+        return ReviewResumePlan(False, f"result.jsonを読めません: {exc}")
+    status = str(result.get("status", ""))
+    if status != "review_pending":
+        return ReviewResumePlan(False, f"status={status or '不明'} — review_pending以外は再開できません")
+    if not _same_path(result.get("repo", ""), repo_root) or result.get("source_branch") != expected_branch:
+        return ReviewResumePlan(False, "選択中のrepo / branchのrunではありません")
+    if str(result.get("base_sha", "")).lower() != head_sha.lower():
+        return ReviewResumePlan(False, "runのbase SHAが現在のlocal HEADと一致しません")
+    tests = result.get("tests")
+    max_rounds = result.get("max_rounds")
+    if (not isinstance(tests, list) or not tests
+            or not all(isinstance(item, str) and item for item in tests)
+            or not isinstance(max_rounds, int) or isinstance(max_rounds, bool)):
+        return ReviewResumePlan(False, "runのtests / max_roundsが不正です")
+    try:
+        task = (run_dir / "task.md").read_text(encoding="utf-8").strip()
+        request = _read_json_object(run_dir / "final-review-request.json")
+    except (OSError, ValueError) as exc:
+        return ReviewResumePlan(False, f"run記録を読めません: {exc}")
+    request_id = request.get("request_id")
+    if not task or not isinstance(request_id, str) or not request_id:
+        return ReviewResumePlan(False, "task.md / final-review-request.jsonが不正です")
+    return ReviewResumePlan(
+        True,
+        f"FINAL REVIEW待ち — request_id={request_id}",
+        run_dir=run_dir,
+        task=task,
+        tests=tuple(tests),
+        max_rounds=max_rounds,
+        request_id=request_id,
+    )
+
+
+def parse_review_decision(text: str, request_id: str) -> tuple[dict[str, object] | None, str]:
+    """Validate a final-review-decision.json body; returns (decision, error)."""
+    if not text.strip():
+        return None, "レビュー結果（JSON）が空です"
+    try:
+        decision = json.loads(text)
+    except ValueError as exc:
+        return None, f"レビュー結果がJSONではありません: {exc}"
+    if not isinstance(decision, dict):
+        return None, "レビュー結果はJSONオブジェクトである必要があります"
+    if decision.get("request_id") != request_id:
+        return None, f"request_idが一致しません（期待: {request_id}）"
+    summary = decision.get("summary")
+    if decision.get("verdict") not in _REVIEW_VERDICTS or not isinstance(summary, str) or not summary.strip():
+        return None, "verdictはPASS / FAIL / PENDING、summaryは空でない文字列が必要です"
+    return decision, ""
+
+
+def build_review_resume_command(
+    plan: ReviewResumePlan,
+    repo_root: Path,
+    expected_branch: str,
+    result_path: Path,
+    decision_path: Path,
+) -> list[str]:
+    """Orchestrator `run --resume-review`: same TaskSpec / tests / budget as the saved run."""
+    command = [
+        sys.executable,
+        str(DM_ROOT / "tools" / "ai_orchestrator" / "orchestrator.py"),
+        "run",
+        "--repo",
+        str(repo_root),
+        "--expected-branch",
+        expected_branch,
+        "--task",
+        plan.task,
+    ]
+    for test in plan.tests:
+        command += ["--test", test]
+    command += [
+        "--result-file",
+        str(result_path),
+        "--max-rounds",
+        str(plan.max_rounds),
+        "--test-timeout",
+        "600",
+        "--resume-review",
+        str(plan.run_dir),
+        "--final-review-decision",
+        str(decision_path),
+    ]
+    return command
+
+
+def _unlink_quietly(path: object) -> None:
+    if isinstance(path, Path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _spawn_ai_process(command: list[str]) -> subprocess.Popen[str]:
+    """Start an Orchestrator child with the UTF-8 pipe contract (shared by run / resume)."""
+    child_env = os.environ.copy()
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
+    return subprocess.Popen(
+        command,
+        cwd=DM_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        env=child_env,
+    )
+
+
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         configure_dark_theme(master)
@@ -302,6 +471,9 @@ class App(ttk.Frame):
         self.self_update_var = tk.StringVar(value="未確認")
         self.ai_test_var = tk.StringVar()
         self.ai_status_var = tk.StringVar(value="待機")
+        self.review_run_dir_var = tk.StringVar()
+        self.review_status_var = tk.StringVar(value=_REVIEW_NO_RUN_TEXT)
+        self.review_plan: ReviewResumePlan | None = None
 
         self._build()
         self.candidate_var.trace_add("write", lambda *_: self._candidate_changed())
@@ -470,6 +642,38 @@ class App(ttk.Frame):
             text="成功時もpush / BUILD / UPDATEは行いません。candidateをローカル適用する前に確認します。",
         ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
+        review_box = ttk.LabelFrame(ai_box, text="Final Reviewを返して再開（review_pendingのrunのみ）", padding=8)
+        review_box.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        review_box.columnconfigure(1, weight=1)
+        ttk.Label(review_box, text="run_dir", width=14).grid(row=0, column=0, sticky="w")
+        review_run_entry = ttk.Entry(review_box, textvariable=self.review_run_dir_var)
+        review_run_entry.grid(row=0, column=1, sticky="ew")
+        review_run_entry.bind("<FocusOut>", lambda _event: self._refresh_review_plan())
+        review_run_entry.bind("<Return>", lambda _event: self._refresh_review_plan())
+        ttk.Button(review_box, text="参照", command=self.browse_review_run_dir).grid(
+            row=0, column=2, sticky="ew", padx=(8, 0)
+        )
+        ttk.Label(review_box, text="レビュー結果", width=14).grid(row=1, column=0, sticky="nw", pady=(8, 0))
+        self.review_decision = tk.Text(review_box, height=5, wrap="word")
+        configure_dark_text(self.review_decision)
+        self.review_decision.grid(row=1, column=1, sticky="ew", pady=(8, 0))
+        ttk.Button(review_box, text="JSONを読み込む", command=self.load_review_decision_file).grid(
+            row=1, column=2, sticky="new", padx=(8, 0), pady=(8, 0)
+        )
+        ttk.Label(review_box, textvariable=self.review_status_var, wraplength=780).grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
+        self.review_resume_button = ttk.Button(
+            review_box,
+            text="レビュー結果を返して再開",
+            command=self.resume_ai_review,
+        )
+        self.review_resume_button.configure(state="disabled")
+        self.review_resume_button.grid(row=2, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Label(review_box, text=f"形式: {_REVIEW_DECISION_TEMPLATE}", wraplength=780).grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
+        )
+
         lifecycle = ttk.LabelFrame(right, text="実機確認・配布", padding=10)
         lifecycle.grid(row=5, column=0, sticky="ew", pady=(0, 10))
         for col in range(4):
@@ -560,6 +764,10 @@ class App(ttk.Frame):
         self.ai_test_var.set(self.ai_test_by_repo.get(name) or definition.initial_test or "")
         self._suggest_seed = self.ai_test_var.get()
         self.ai_status_var.set("待機")
+        self.review_run_dir_var.set("")
+        self.review_decision.delete("1.0", "end")
+        self.review_plan = None
+        self.review_status_var.set(_REVIEW_NO_RUN_TEXT)
         self._show_local_loading()
         self._show_github_loading()
         self.banner_var.set(LOADING_TEXT)
@@ -596,6 +804,7 @@ class App(ttk.Frame):
         self.build_var.set(choice_text(entries.build, repo_root))
         self.release_var.set(choice_text(entries.release, repo_root))
         self.release_button_var.set(entries.release_label)
+        self._refresh_review_plan(state)
 
     def on_local_unavailable(self, name: str, text: str) -> None:
         for var in (self.branch_var, self.head_var, self.origin_var,
@@ -697,6 +906,10 @@ class App(ttk.Frame):
         ai_run_dir_captured = bool(ai_running and self.ai_context and self.ai_context.get("run_dir"))
         self.ai_stop_button.configure(
             state="normal" if (ai_run_dir_captured and not self.ai_stop_requested) else "disabled"
+        )
+        review_plan = self.review_plan
+        self.review_resume_button.configure(
+            state="normal" if (ai_ready and review_plan is not None and review_plan.ok) else "disabled"
         )
         update_state = "normal" if self._self_update_enabled() else "disabled"
 
@@ -1003,22 +1216,7 @@ class App(ttk.Frame):
             "600",
         ]
         try:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            child_env = os.environ.copy()
-            child_env["PYTHONUTF8"] = "1"
-            child_env["PYTHONIOENCODING"] = "utf-8"
-            process = subprocess.Popen(
-                command,
-                cwd=DM_ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                creationflags=flags,
-                env=child_env,
-            )
+            process = _spawn_ai_process(command)
         except OSError as exc:
             messagebox.showerror("AI開発起動失敗", str(exc))
             return
@@ -1038,6 +1236,129 @@ class App(ttk.Frame):
         self._begin_process(process, self.current.name, "ai_orchestrator")
         self.ai_status_var.set("実行中 — 失敗時のみRecovery（最大30回）")
         self._log(f"{self.current.name}: AI Orchestrator開始（Recovery上限30回）")
+        self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
+        self._set_button_states()
+
+        reader = threading.Thread(
+            target=self._read_ai_output,
+            args=(process,),
+            daemon=True,
+        )
+        reader.start()
+        self.master.after(250, self._poll)
+
+    def _refresh_review_plan(self, state=None) -> None:
+        """Re-inspect the entered run_dir (file reads; never called from _apply_lifecycle_state)."""
+        state = state or self.repo_state
+        if not self.current or state is None:
+            plan = ReviewResumePlan(False, _REVIEW_NO_RUN_TEXT)
+        else:
+            plan = inspect_review_pending_run(
+                self.review_run_dir_var.get(),
+                REPOS_ROOT / self.current.name,
+                self.current.branch,
+                state.head,
+            )
+        self.review_plan = plan
+        self.review_status_var.set(plan.message)
+        self._apply_lifecycle_state()
+
+    def browse_review_run_dir(self) -> None:
+        chosen = filedialog.askdirectory(title="FINAL REVIEW待ちのrun_dirを選択")
+        if chosen:
+            self.review_run_dir_var.set(chosen)
+            self._refresh_review_plan()
+
+    def load_review_decision_file(self) -> None:
+        chosen = filedialog.askopenfilename(
+            title="final-review-decision.jsonを選択",
+            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+        )
+        if not chosen:
+            return
+        try:
+            text = Path(chosen).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            messagebox.showerror("レビュー結果の読込失敗", str(exc))
+            return
+        self.review_decision.delete("1.0", "end")
+        self.review_decision.insert("1.0", text)
+
+    def resume_ai_review(self) -> None:
+        """Hand a Final Review decision to `orchestrator.py run --resume-review`.
+
+        Reuses the normal AI run path (`ai_orchestrator` action, result file,
+        progress drain, candidate confirmation); it only builds a different command.
+        """
+        if not self.current or not self.repo_state or self.active_process is not None:
+            return
+        if not self.repo_state.safe_for_lifecycle(self.current):
+            messagebox.showerror(
+                "レビュー再開停止",
+                "正式repo / branch / origin / tracked clean の安全条件を満たしていません。",
+            )
+            return
+        if self.repo_state.head.lower() != self.repo_state.origin_head.lower():
+            messagebox.showerror(
+                "レビュー再開停止",
+                "再開前は local HEAD == origin HEAD が必要です。",
+            )
+            return
+        self._refresh_review_plan()
+        plan = self.review_plan
+        if plan is None or not plan.ok:
+            messagebox.showerror(
+                "レビュー再開停止",
+                plan.message if plan else _REVIEW_NO_RUN_TEXT,
+            )
+            return
+        decision, error = parse_review_decision(
+            self.review_decision.get("1.0", "end"), plan.request_id
+        )
+        if decision is None:
+            messagebox.showerror("レビュー結果が不正です", error)
+            return
+
+        repo_name = self.current.name
+        result_path = Path(tempfile.gettempdir()) / f"dcc-ai-result-{repo_name}-{id(self)}.json"
+        decision_path = Path(tempfile.gettempdir()) / f"dcc-ai-review-decision-{repo_name}-{id(self)}.json"
+        try:
+            result_path.unlink(missing_ok=True)
+            decision_path.write_text(json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("レビュー再開失敗", str(exc))
+            return
+
+        command = build_review_resume_command(
+            plan,
+            REPOS_ROOT / repo_name,
+            self.current.branch,
+            result_path,
+            decision_path,
+        )
+        try:
+            process = _spawn_ai_process(command)
+        except OSError as exc:
+            _unlink_quietly(decision_path)
+            messagebox.showerror("レビュー再開起動失敗", str(exc))
+            return
+
+        while True:
+            try:
+                self.ai_output_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        self.ai_context = {
+            "repo_name": repo_name,
+            "result_path": result_path,
+            "base_sha": self.repo_state.head.lower(),
+            "decision_path": decision_path,
+        }
+        self.ai_stop_requested = False
+        self._begin_process(process, repo_name, "ai_orchestrator")
+        self.ai_status_var.set(f"レビュー結果（{decision['verdict']}）を返して再開中")
+        self._log(f"{repo_name}: Final Review {decision['verdict']} を返してOrchestratorを再開 ({plan.run_dir})")
         self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
         self._set_button_states()
 
@@ -1116,6 +1437,7 @@ class App(ttk.Frame):
     def _finish_ai_orchestrator(self, repo_name: str, rc: int) -> None:
         context = self.ai_context or {}
         self.ai_context = None
+        _unlink_quietly(context.get("decision_path"))
         if self.ai_stop_requested:
             self.ai_stop_requested = False
             reason = AI_SAFETY_STOP_REASON
@@ -1150,6 +1472,9 @@ class App(ttk.Frame):
         if rc == 0 and status == "review_pending":
             self.ai_status_var.set("FINAL REVIEW待ち — candidate未作成")
             self._log(f"{repo_name}: Final Review request: {payload.get('run_dir', '')}")
+            if self.current and self.current.name == repo_name and payload.get("run_dir"):
+                self.review_run_dir_var.set(str(payload["run_dir"]))
+                self.review_decision.delete("1.0", "end")
             self._reload_after(repo_name)
             return
         candidate = str(payload.get("candidate_sha", "")).strip().lower()
@@ -1341,7 +1666,7 @@ class App(ttk.Frame):
             self.banner_var.set("AI完了処理中")
             self._finish_ai_orchestrator(repo_name, rc)
             if self.current and self.current.name == repo_name:
-                self._set_button_states()
+                self._refresh_review_plan()
             return
 
         if self.current and self.current.name == repo_name:
