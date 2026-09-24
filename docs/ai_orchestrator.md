@@ -41,7 +41,7 @@ Workは未接続。特定AIによる固定reviewは実行しない。
 {"request_id": "要求に含まれる完全request_id", "verdict": "PASS", "summary": "照合結果の根拠"}
 ```
 
-verdictは `PASS / FAIL / PENDING`。未設定、未知の値、空summary、request_id不一致はfail-close。
+verdictは `PASS / FAIL / PENDING`。未設定、未知の値、空summary、request_id不一致、読み取り不能なdecisionはcandidateを作らない。ただしこれはdecisionファイルだけの誤りなので `stopped` にせず `review_pending` を維持し、`final_review_error`（`resumable: true`、期待する `request_id`、再実行を促す詳細）を `result.json` に、同じ詳細を `status.json` のdetailに記録する。正しいdecisionで `--resume-review` を再実行すれば継続できる。worktree変化・source変化・quota超過等の安全違反は従来通りfail-closeで `stopped`。
 
 既存の `run` 引数（repo / TaskSpec / test / max-rounds）に `--resume-review <run_dir> --final-review-decision <JSONのパス>` を加えるとレビュー待ちrunを継続する。これは新規実装を開始する経路ではなく、保存済みGateの継続用interface。source branch / HEAD、TaskSpec、test commands、予算、worktree差分の一致を要求する。保存済みVerificationを利用するため、承認継続だけではAIもTestsも再実行しない。PASSならcandidate、FAILならRecoveryへ戻る。修正後は新しい要求を生成し、再承認まで停止する。
 

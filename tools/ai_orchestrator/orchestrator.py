@@ -53,6 +53,14 @@ class ClaudeExecutionError(OrchestratorError):
         super().__init__(f"{code}: {detail}")
 
 
+class FinalReviewDecisionError(OrchestratorError):
+    """The supplied decision file is unusable; worktree and evidence are untouched.
+
+    Distinct from safety violations so the run stays review_pending (resumable).
+    """
+    code = "FINAL_REVIEW_DECISION_INVALID"
+
+
 @dataclass(frozen=True)
 class CommandResult:
     args: tuple[str, ...]
@@ -469,13 +477,13 @@ def _final_review_gate(request: dict[str, object], decision_path: str | None) ->
     try:
         decision = json.loads(Path(decision_path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise OrchestratorError("Final Review decision is unreadable") from exc
+        raise FinalReviewDecisionError("Final Review decision is unreadable") from exc
     if not isinstance(decision, dict) or decision.get("request_id") != request["request_id"]:
-        raise OrchestratorError("Final Review decision does not match request_id")
+        raise FinalReviewDecisionError("Final Review decision does not match request_id")
     verdict = decision.get("verdict")
     summary = decision.get("summary")
     if verdict not in ("PASS", "FAIL", "PENDING") or not isinstance(summary, str) or not summary.strip():
-        raise OrchestratorError("invalid Final Review decision")
+        raise FinalReviewDecisionError("invalid Final Review decision")
     return {"verdict": verdict, "summary": summary}
 
 
@@ -1232,7 +1240,20 @@ def run(args: argparse.Namespace) -> int:
         }
         request["request_id"] = _review_fingerprint(json.dumps(request, sort_keys=True, ensure_ascii=False))
         _write_external_result(str(run_dir / "final-review-request.json"), request)
-        decision = _final_review_gate(request, getattr(args, "final_review_decision", None))
+        try:
+            decision = _final_review_gate(request, getattr(args, "final_review_decision", None))
+        except FinalReviewDecisionError as exc:
+            # Operator mistake only: worktree, diff and Verification are intact, so keep
+            # review_pending. Safety checks below and elsewhere remain fail-closed.
+            check_safety()
+            assert_readonly(before, "Final Review Gate")
+            detail = (f"{exc}. Only the decision file is wrong; worktree, diff and Verification are unchanged. "
+                      f"Re-run --resume-review with a decision file for request_id={request['request_id']}.")
+            result_payload["final_review_error"] = {
+                "code": exc.code, "detail": detail, "resumable": True,
+                "request_id": request["request_id"],
+            }
+            return {"kind": "FINAL_REVIEW_PENDING", "detail": detail}
         check_safety()
         assert_readonly(before, "Final Review Gate")
         result_payload["final_review"] = decision

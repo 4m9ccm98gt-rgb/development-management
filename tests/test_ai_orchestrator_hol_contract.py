@@ -29,6 +29,12 @@ class HolOrchestratorContractTests(unittest.TestCase):
         text = ORCH_PATH.read_text(encoding="utf-8")
         compile(text, str(ORCH_PATH), "exec")
 
+    def test_bad_final_review_decision_is_resumable_only_at_the_gate(self):
+        text = ORCH_PATH.read_text(encoding="utf-8")
+        self.assertTrue(issubclass(self.o.FinalReviewDecisionError, self.o.OrchestratorError))
+        self.assertEqual(text.count("except FinalReviewDecisionError"), 1)
+        self.assertEqual(text.count("raise FinalReviewDecisionError"), 3)
+
     def test_default_recovery_limit_is_30(self):
         self.assertEqual(self.o.DEFAULT_MAX_ROUNDS, 30)
         parser = self.o.build_parser()

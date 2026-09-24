@@ -204,6 +204,63 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(self.events, [])
         self.assertEqual(self.result["claude_calls"], 1)
 
+    def _pending_request_id(self):
+        self.pipeline(real_gate=True)
+        request = json.loads((self.run_dir / "final-review-request.json").read_text(encoding="utf-8"))
+        return request["request_id"]
+
+    def _bad_decisions(self, request_id):
+        bad = self.root / "bad-decision.json"
+        unreadable = self.root / "missing-decision.json"
+        cases = {
+            "wrong request_id": {"request_id": "0" * 64, "verdict": "PASS", "summary": "ok"},
+            "invalid verdict": {"request_id": request_id, "verdict": "APPROVED", "summary": "ok"},
+            "empty summary": {"request_id": request_id, "verdict": "PASS", "summary": " "},
+            "not an object": ["PASS"],
+        }
+        for label, payload in cases.items():
+            bad.write_text(json.dumps(payload), encoding="utf-8")
+            yield label, bad
+        bad.write_text("{not json", encoding="utf-8")
+        yield "unparseable file", bad
+        yield "unreadable file", unreadable
+
+    def test_bad_decision_file_keeps_review_pending_and_is_resumable(self):
+        request_id = self._pending_request_id()
+        for label, path in self._bad_decisions(request_id):
+            with self.subTest(case=label):
+                self.events.clear()
+                self.assertEqual(self.pipeline(resume=True, real_gate=True, decision=path), 0)
+                self.assertEqual(self.result["status"], "review_pending")
+                self.assertNotIn("error_code", self.result)
+                error = self.result["final_review_error"]
+                self.assertTrue(error["resumable"])
+                self.assertEqual(error["code"], "FINAL_REVIEW_DECISION_INVALID")
+                self.assertEqual(error["request_id"], request_id)
+                self.assertIn(request_id, error["detail"])
+                self.assertIn("--resume-review", error["detail"])
+                status = json.loads((self.run_dir / "status.json").read_text(encoding="utf-8"))
+                self.assertEqual(status["stage"], "final_review_pending")
+                self.assertIn(request_id, status["detail"])
+                self.assertEqual(self.events, [])
+                self.candidate.assert_not_called()
+                self.assertTrue(self.worktree.is_dir())
+
+    def test_correct_decision_after_repeated_bad_attempts_reaches_candidate(self):
+        request_id = self._pending_request_id()
+        for _label, path in self._bad_decisions(request_id):
+            self.assertEqual(self.pipeline(resume=True, real_gate=True, decision=path), 0)
+            self.assertEqual(self.result["status"], "review_pending")
+        good = self.root / "decision.json"
+        good.write_text(json.dumps({"request_id": request_id, "verdict": "PASS",
+                                    "summary": "TaskSpec checked independently"}), encoding="utf-8")
+        self.events.clear()
+        self.assertEqual(self.pipeline(resume=True, real_gate=True, decision=good), 0)
+        self.assertEqual(self.result["status"], "candidate_ready")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.result["claude_calls"], 1)
+        self.candidate.assert_called_once()
+
     def test_changed_pending_worktree_cannot_reuse_approval(self):
         self.pipeline(real_gate=True)
         self.diff = "changed after review request"

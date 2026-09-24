@@ -96,7 +96,7 @@ Final Review未接続 / PENDINGはreview_pendingで停止し、candidateを作�
 - 同じ失敗と同じ修正状態が再出現した場合、または同じ失敗のまま修正状態が変わらない場合は `RECOVERY_NO_PROGRESS` で停止。時間・heartbeatの変化だけを進展と扱わない。
 - `--max-rounds` はRecoveryだけの上限（0〜30、既定30）。通常実装やFinal Reviewは消費しない。上限で `RECOVERY_LIMIT`、candidateを生成・適用しない。
 - 既存の12turn上限と、空diffでturn上限到達時だけ同一sessionを最大2回resumeする仕組みは維持する。これは失敗したimplementationの継続であり、成功時に追加callしない。
-- quota枯渇、診断provider異常、Git安全境界違反、Review protocol不正はfail-close。安全違反をAI修正対象にしない。
+- quota枯渇、診断provider異常、Git安全境界違反、worktree改ざん・source変化はfail-close。安全違反をAI修正対象にしない。Final Review decisionファイルだけの誤り（下記）は例外で、`review_pending` を維持する。
 - Testsはstdout進捗・10秒heartbeat・timeoutのprocess tree停止を維持する。provider timeoutも子process tree終了後にRecoveryへ渡す。
 
 ### Final Review Gate
@@ -105,7 +105,9 @@ Final Review未接続 / PENDINGはreview_pendingで停止し、candidateを作�
 
 外部reviewerは同じrequest_idに対する `PASS / FAIL / PENDING` と根拠summaryを返す。未接続時にTests PASSをReview PASSへ読み替えない。WorkによるTaskSpec照合は将来この境界へ接続する。
 
-今回の外部連携はJSONファイル方式。`--resume-review <run_dir> --final-review-decision <file>` と同じrepo / TaskSpec / test / max-roundsでレビュー待ちrunを継続できる。sourceと差分が変わっていないことを再検証し、既存のVerificationを利用する。PASSなら既存candidateハーネスへ進み、FAILならClaude Recoveryへ戻る。修正後は新しいReview要求を発行し、古い承認・否認を再利用しない。DCCへのWork自動接続とレビュー操作UIは対象外。
+今回の外部連携はJSONファイル方式。`--resume-review <run_dir> --final-review-decision <file>` と同じrepo / TaskSpec / test / max-roundsでレビュー待ちrunを継続できる。sourceと差分が変わっていないことを再検証し、既存のVerificationを利用する。PASSなら既存candidateハーネスへ進み、FAILならClaude Recoveryへ戻る。修正後は新しいReview要求を発行し、古い承認・否認を再利用しない。
+
+decisionファイルが読み取り不能、request_id不一致、または不正なverdict / 空summaryの場合は、worktree・差分・Verificationに問題がないため `stopped` にせず `review_pending` を維持し、candidateも作らない。`result.json` の `final_review_error`（`resumable: true`、期待する `request_id`）と `status.json` のdetailから、正しいdecisionを指定して `--resume-review` を再実行すれば継続できることが分かる。worktree変化・source変化・quota超過・`RECOVERY_NO_PROGRESS` 等のfail-closeは従来通り。DCCへのWork自動接続とレビュー操作UIは対象外。
 
 ### 維持する安全ハーネス
 

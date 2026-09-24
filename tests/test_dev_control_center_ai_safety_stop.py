@@ -25,13 +25,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _pid_alive(pid: int) -> bool:
+    # Bytes + CSV: tasklist output follows the OEM code page (cp932 on Japanese
+    # Windows), so decoding it as UTF-8 would fail; the quoted PID also avoids
+    # matching a longer PID that merely contains this one.
     result = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}"],
+        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
         capture_output=True,
-        text=True,
         check=False,
     )
-    return str(pid) in result.stdout
+    return f'"{pid}"'.encode() in (result.stdout or b"")
 
 
 class StopGatingTests(unittest.TestCase):

@@ -54,7 +54,7 @@ class SingleRouteTests(unittest.TestCase):
 
     def test_contract_defines_single_route_and_docs_defer_to_it(self):
         contract = _read("OPERATING_CONTRACT.md")
-        for phrase in ("AI依頼", "Claude", "GPT-6 Astra", "local candidate", "セットアップ開始"):
+        for phrase in ("AI依頼", "Claude", "Final Review Gate", "local candidate", "セットアップ開始"):
             self.assertIn(phrase, contract)
         for rel in ENTRY_DOCS[1:]:
             self.assertIn("OPERATING_CONTRACT.md", _read(rel), rel)
