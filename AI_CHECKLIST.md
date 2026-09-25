@@ -20,5 +20,6 @@
 ## 任意のOrchestrator
 
 - [ ] 別画面で対象repo・Task・Testsを確認した
-- [ ] 専用のsource保護・Review・candidate適用条件を満たす
-- [ ] Phase 2の自動レビュー・終了後継続を実装済みと扱っていない
+- [ ] Main / Reviewerが別providerで、Tests PASS + Reviewer PASS + 安全チェックPASSを確認した
+- [ ] 実行中runは独立worker。画面 / DCCを閉じても停止しないことを前提にした（停止は「AI安全停止」のみ）
+- [ ] candidate適用は保留条件（base移動・dirty）を確認してからにした

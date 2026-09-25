@@ -497,8 +497,11 @@ class DarkThemeContractTests(unittest.TestCase):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
         self.assertIn("configure_dark_listbox(self.repo_list)", text)
         self.assertIn("configure_dark_listbox(self.new_repo_list)", text)
-        self.assertIn("configure_dark_text(self.ai_task)", text)
         self.assertIn("configure_dark_text(self.log)", text)
+        view = (ROOT / "scripts" / "dev_control_center" / "orchestrator_view.py").read_text(encoding="utf-8")
+        self.assertIn("configure_dark_text(self.task_text)", view)
+        self.assertIn("configure_dark_text(self.log)", view)
+        self.assertIn("configure_dark_listbox(self.run_list)", view)
 
 
 class UiLifecycleContractTests(unittest.TestCase):
@@ -507,27 +510,32 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertIn("decide_lifecycle(", text)
         self.assertIn("self._apply_lifecycle_state()", text)
 
-    def test_ai_controls_are_preserved_for_separate_orchestrator_view(self):
+    def test_ai_details_live_in_the_orchestrator_window_not_the_main_screen(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
         build_start = text.index("    def _build(self) -> None:")
         select_start = text.index("    def _select_repo(self) -> None:", build_start)
         build = text[build_start:select_start]
-        self.assertIn('text="AI開発 — Claude実装 → Verification → Final Review → local candidate"', build)
-        self.assertIn('self.ai_task = tk.Text(ai_box, height=8, wrap="word")', build)
         self.assertIn('text="全状態更新"', build)
         self.assertIn('text="実機確認・配布"', build)
+        self.assertIn("self.open_orchestrator", build)
+        for gone in ("ai_task", "ai_box", "review_box", "AI依頼", "Final Review", "candidate SHA"):
+            self.assertNotIn(gone, build, gone)
         self.assertNotIn('text="A: ChatGPT', build)
         self.assertNotIn('text="Bデバッグ指示"', build)
         self.assertNotIn('text="GitHub更新"', build)
         self.assertNotIn('text="STARTUP SET"', build)
         self.assertNotIn('self.sync_button.grid(', build)
 
-    def test_gui_exposes_ai_orchestrator_with_machine_result_handoff(self):
+    def test_orchestrator_is_a_client_of_independent_runs_not_a_dcc_child_process(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("def launch_ai_orchestrator", text)
-        self.assertIn('"--result-file"', text)
+        view = (ROOT / "scripts" / "dev_control_center" / "orchestrator_view.py").read_text(encoding="utf-8")
         self.assertIn("apply_local_candidate(", text)
-        self.assertIn("Claude実装 → Verification → Final Review", text)
+        self.assertIn("def open_orchestrator", text)
+        self.assertNotIn('"ai_orchestrator"', text)
+        self.assertNotIn("_spawn_ai_process", text)
+        self.assertNotIn("subprocess.PIPE", view)
+        self.assertIn("orch.start_run(", view)
+        self.assertIn("rs.force_stop(", view)
         self.assertIn("push / BUILD / UPDATEは行いません", text)
 
     def test_every_finished_action_refreshes_local_and_github_state(self):
@@ -547,256 +555,6 @@ class SelfUpdateContractTests(unittest.TestCase):
         self.assertIn("--no-pause", text)
         self.assertIn("NO_PAUSE_ARG=-NoPause", text)
         self.assertTrue(lines[-1].endswith("& exit /b"))
-
-
-_MISSING = object()
-
-
-class ReviewRunFixture:
-    """Builds a review_pending run_dir the way the Orchestrator preserves it."""
-
-    HEAD = "a" * 40
-    TESTS = ["python -m pytest tests/a.py", "python -m pytest tests/b.py"]
-
-    def make(self, tmp, *, result=None, task="do the thing\n", request=None, write_task=True, write_request=True):
-        tmp = Path(tmp)
-        self.repo = tmp / "repo"
-        run_dir = tmp / "runs" / "20260924-120000-000000"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "status": "review_pending",
-            "repo": str(self.repo),
-            "source_branch": "main",
-            "base_sha": self.HEAD,
-            "tests": list(self.TESTS),
-            "max_rounds": 30,
-        }
-        payload.update(result or {})
-        payload = {key: value for key, value in payload.items() if value is not _MISSING}
-        (run_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
-        if write_task:
-            (run_dir / "task.md").write_text(task, encoding="utf-8")
-        if write_request:
-            body = {"request_id": "req-1"} if request is None else request
-            (run_dir / "final-review-request.json").write_text(json.dumps(body), encoding="utf-8")
-        return run_dir
-
-    def inspect(self, run_dir, *, branch="main", head=None):
-        return dcc.inspect_review_pending_run(str(run_dir), self.repo, branch, head or self.HEAD)
-
-
-class InspectReviewPendingRunTests(unittest.TestCase):
-    def setUp(self):
-        self.fixture = ReviewRunFixture()
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-
-    def make(self, **kwargs):
-        return self.fixture.make(self.temp.name, **kwargs)
-
-    def test_review_pending_run_is_accepted_with_values_read_from_the_run(self):
-        run_dir = self.make()
-        plan = self.fixture.inspect(run_dir)
-        self.assertTrue(plan.ok, plan.message)
-        self.assertEqual(plan.run_dir, run_dir)
-        self.assertEqual(plan.task, "do the thing")
-        self.assertEqual(plan.tests, tuple(ReviewRunFixture.TESTS))
-        self.assertEqual(plan.max_rounds, 30)
-        self.assertEqual(plan.request_id, "req-1")
-
-    def test_head_sha_is_compared_case_insensitively(self):
-        run_dir = self.make(result={"base_sha": "A" * 40})
-        self.assertTrue(self.fixture.inspect(run_dir, head="a" * 40).ok)
-        self.assertTrue(self.fixture.inspect(run_dir, head="A" * 40).ok)
-
-    def test_blank_run_dir_is_rejected(self):
-        self.make()
-        for text in ("", "   \n"):
-            with self.subTest(text=text):
-                plan = dcc.inspect_review_pending_run(text, self.fixture.repo, "main", ReviewRunFixture.HEAD)
-                self.assertFalse(plan.ok)
-                self.assertTrue(plan.message)
-
-    def test_missing_result_json_is_rejected(self):
-        run_dir = self.make()
-        (run_dir / "result.json").unlink()
-        self.assertFalse(self.fixture.inspect(run_dir).ok)
-
-    def test_non_existing_run_dir_is_rejected(self):
-        self.make()
-        self.assertFalse(self.fixture.inspect(Path(self.temp.name) / "nope").ok)
-
-    def test_result_json_that_is_not_json_is_rejected(self):
-        run_dir = self.make()
-        (run_dir / "result.json").write_text("{not json", encoding="utf-8")
-        self.assertFalse(self.fixture.inspect(run_dir).ok)
-
-    def test_result_json_that_is_not_an_object_is_rejected(self):
-        run_dir = self.make()
-        (run_dir / "result.json").write_text("[]", encoding="utf-8")
-        self.assertFalse(self.fixture.inspect(run_dir).ok)
-
-    def test_every_status_other_than_review_pending_is_rejected(self):
-        for status in ("running", "stopped", "candidate_ready", "failed", ""):
-            with self.subTest(status=status):
-                plan = self.fixture.inspect(self.make(result={"status": status}))
-                self.assertFalse(plan.ok)
-                self.assertIn("review_pending", plan.message)
-
-    def test_run_of_another_repo_is_rejected(self):
-        run_dir = self.make(result={"repo": str(Path(self.temp.name) / "other-repo")})
-        self.assertFalse(self.fixture.inspect(run_dir).ok)
-
-    def test_run_of_another_branch_is_rejected(self):
-        run_dir = self.make(result={"source_branch": "feature"})
-        self.assertFalse(self.fixture.inspect(run_dir).ok)
-        self.assertFalse(self.fixture.inspect(self.make(), branch="develop").ok)
-
-    def test_base_sha_mismatch_with_local_head_is_rejected(self):
-        run_dir = self.make(result={"base_sha": "b" * 40})
-        self.assertFalse(self.fixture.inspect(run_dir).ok)
-
-    def test_invalid_tests_are_rejected(self):
-        for label, value in (
-            ("missing", _MISSING),
-            ("empty", []),
-            ("string", "pytest"),
-            ("non-string item", ["pytest", 3]),
-            ("empty item", ["pytest", ""]),
-        ):
-            with self.subTest(tests=label):
-                self.assertFalse(self.fixture.inspect(self.make(result={"tests": value})).ok)
-
-    def test_invalid_max_rounds_are_rejected(self):
-        for label, value in (("missing", _MISSING), ("string", "30"), ("bool", True), ("float", 30.5)):
-            with self.subTest(max_rounds=label):
-                self.assertFalse(self.fixture.inspect(self.make(result={"max_rounds": value})).ok)
-
-    def test_zero_max_rounds_is_a_valid_saved_budget(self):
-        plan = self.fixture.inspect(self.make(result={"max_rounds": 0}))
-        self.assertTrue(plan.ok, plan.message)
-        self.assertEqual(plan.max_rounds, 0)
-
-    def test_missing_or_blank_task_is_rejected(self):
-        self.assertFalse(self.fixture.inspect(self.make(write_task=False)).ok)
-        self.assertFalse(self.fixture.inspect(self.make(task="  \n\n")).ok)
-
-    def test_missing_request_or_request_id_is_rejected(self):
-        self.assertFalse(self.fixture.inspect(self.make(write_request=False)).ok)
-        self.assertFalse(self.fixture.inspect(self.make(request={"other": 1})).ok)
-        self.assertFalse(self.fixture.inspect(self.make(request={"request_id": ""})).ok)
-        self.assertFalse(self.fixture.inspect(self.make(request={"request_id": 7})).ok)
-
-    def test_inspection_never_modifies_the_run(self):
-        run_dir = self.make()
-        before = {p.name: p.read_bytes() for p in run_dir.iterdir()}
-        self.fixture.inspect(run_dir)
-        self.assertEqual({p.name: p.read_bytes() for p in run_dir.iterdir()}, before)
-
-
-class ParseReviewDecisionTests(unittest.TestCase):
-    def decision(self, **overrides):
-        body = {"request_id": "req-1", "verdict": "PASS", "summary": "looks good"}
-        body.update(overrides)
-        return body
-
-    def test_all_three_verdicts_are_accepted_unchanged(self):
-        for verdict in ("PASS", "FAIL", "PENDING"):
-            with self.subTest(verdict=verdict):
-                body = self.decision(verdict=verdict, extra="kept")
-                parsed, error = dcc.parse_review_decision(json.dumps(body), "req-1")
-                self.assertEqual(error, "")
-                self.assertEqual(parsed, body)
-
-    def test_rejections_return_no_decision_and_a_message(self):
-        cases = {
-            "empty": "",
-            "whitespace": "  \n",
-            "invalid json": "{not json",
-            "array": "[]",
-            "string": '"PASS"',
-            "wrong request_id": json.dumps(self.decision(request_id="req-2")),
-            "missing request_id": json.dumps({"verdict": "PASS", "summary": "ok"}),
-            "lowercase verdict": json.dumps(self.decision(verdict="pass")),
-            "unknown verdict": json.dumps(self.decision(verdict="OK")),
-            "missing verdict": json.dumps({"request_id": "req-1", "summary": "ok"}),
-            "empty summary": json.dumps(self.decision(summary="")),
-            "blank summary": json.dumps(self.decision(summary="  ")),
-            "non-string summary": json.dumps(self.decision(summary=5)),
-            "missing summary": json.dumps({"request_id": "req-1", "verdict": "PASS"}),
-        }
-        for label, text in cases.items():
-            with self.subTest(case=label):
-                parsed, error = dcc.parse_review_decision(text, "req-1")
-                self.assertIsNone(parsed)
-                self.assertTrue(error)
-
-
-class BuildReviewResumeCommandTests(unittest.TestCase):
-    def setUp(self):
-        self.plan = dcc.ReviewResumePlan(
-            True,
-            "ok",
-            run_dir=Path("C:/runs/20260924-120000-000000"),
-            task="multi word task",
-            tests=("python -m pytest tests/a.py", "python -m pytest tests/b.py"),
-            max_rounds=12,
-            request_id="req-1",
-        )
-        self.repo = Path("C:/repos/demo")
-        self.result_path = Path("C:/tmp/result.json")
-        self.decision_path = Path("C:/tmp/decision.json")
-        self.command = dcc.build_review_resume_command(
-            self.plan, self.repo, "main", self.result_path, self.decision_path
-        )
-
-    def test_command_targets_the_orchestrator_run_subcommand(self):
-        self.assertEqual(self.command[0], sys.executable)
-        self.assertEqual(
-            Path(self.command[1]), dcc.DM_ROOT / "tools" / "ai_orchestrator" / "orchestrator.py"
-        )
-        self.assertEqual(self.command[2], "run")
-
-    def test_command_carries_saved_task_tests_budget_and_resume_arguments(self):
-        cmd = self.command
-        self.assertEqual(cmd[cmd.index("--repo") + 1], str(self.repo))
-        self.assertEqual(cmd[cmd.index("--expected-branch") + 1], "main")
-        self.assertEqual(cmd[cmd.index("--task") + 1], "multi word task")
-        tests = [cmd[i + 1] for i, item in enumerate(cmd) if item == "--test"]
-        self.assertEqual(tests, list(self.plan.tests))
-        self.assertEqual(cmd[cmd.index("--result-file") + 1], str(self.result_path))
-        self.assertEqual(cmd[cmd.index("--max-rounds") + 1], "12")
-        self.assertEqual(cmd[cmd.index("--resume-review") + 1], str(self.plan.run_dir))
-        self.assertEqual(cmd[cmd.index("--final-review-decision") + 1], str(self.decision_path))
-        self.assertNotIn("--no-fetch", cmd)
-
-    def test_orchestrator_parser_accepts_the_command_and_sees_the_saved_values(self):
-        args = o.build_parser().parse_args(self.command[2:])
-        self.assertEqual(args.command, "run")
-        self.assertEqual(args.task, "multi word task")
-        self.assertEqual(args.test, list(self.plan.tests))
-        self.assertEqual(args.max_rounds, 12)
-        self.assertEqual(args.resume_review, str(self.plan.run_dir))
-        self.assertEqual(args.final_review_decision, str(self.decision_path))
-        self.assertEqual(args.result_file, str(self.result_path))
-        self.assertEqual(args.expected_branch, "main")
-
-
-class SpawnAiProcessTests(unittest.TestCase):
-    def test_child_uses_the_utf8_pipe_contract_and_hidden_window(self):
-        with patch.object(dcc.subprocess, "Popen") as popen:
-            process = dcc._spawn_ai_process(["python", "x.py"])
-        self.assertIs(process, popen.return_value)
-        popen.assert_called_once()
-        self.assertEqual(popen.call_args.args[0], ["python", "x.py"])
-        kwargs = popen.call_args.kwargs
-        self.assertEqual(kwargs["cwd"], dcc.DM_ROOT)
-        self.assertIs(kwargs["stdout"], subprocess.PIPE)
-        self.assertIs(kwargs["stderr"], subprocess.STDOUT)
-        self.assertEqual(kwargs["encoding"], "utf-8")
-        self.assertEqual(kwargs["env"]["PYTHONUTF8"], "1")
-        self.assertEqual(kwargs["env"]["PYTHONIOENCODING"], "utf-8")
-        self.assertEqual(kwargs["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 if __name__ == "__main__":

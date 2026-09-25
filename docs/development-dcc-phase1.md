@@ -19,7 +19,7 @@
 - 変更後の全テスト: `python -B -m unittest discover -s tests -q` — 322件成功（71.578秒）。
 - 実Windowsの一時repo・実CMDで、空白を含むパスのdirty BUILDとprovenance生成を確認。
 - 成果物／入力／更新スクリプト／配布先の確認後変更、失敗BUILD、古い成果物、出力先競合、UPDATE取消での非実行を確認。
-- review_pending / provider異常後のロック解放、他repoのAI実行と通常操作の分離、子画面を閉じて再表示できることを検証。
+- review_pending（Phase 2で廃止）/ provider異常後のロック解放、他repoのAI実行と通常操作の分離、子画面を閉じて再表示できることを検証。
 - 正式ランチャーと同じ `scripts.dev_control_center.app_setup.App` の実Tk起動を確認。9件のmanaged repoを認識し、dirtyなdevelopment-managementを選択してRUNが有効になることを確認。
 - 実画面1080×720でRUN / BUILD / UPDATE / Orchestrator入口の全矩形が画面内（主要ボタンの上端135px）。メインのAI詳細は非表示、別画面では表示。別画面を閉じてもメインは存続。
 - registry self-check、変更PythonのAST構文検査、git diff --check成功。

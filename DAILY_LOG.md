@@ -1,5 +1,9 @@
 # Daily Log
 
+## 2026-09-25 — AI Orchestrator Phase 2の実装・検証
+
+Main / Reviewer自動ループ、provider選択、usage adapter、独立run worker・再接続・安全停止・stale検出を実装。実Claude / Codexの両方向疎通とDCC強制終了後の継続・再接続を確認。詳細は [検証記録](docs/development-orchestrator-phase2.md)。commit / pushなし。
+
 ## 2026-09-25 — Development / DCC Phase 1の実装・検証
 
 通常直接開発、DCC主要操作、Orchestrator別画面、BUILD記録とUPDATE確認を整備。全322テスト成功。実配布・commit・pushなし。他repoの既存制約は変更せず、Phase 2は未実装。詳細は [検証記録](docs/development-dcc-phase1.md)。

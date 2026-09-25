@@ -242,3 +242,9 @@ Final Review未接続を自動承認にせず、request_id付きJSONとreview_pe
 ## 2026-09-25: DevelopmentとDCC / Orchestratorの責務を分離
 
 通常DevelopmentはClaude / Codexが正式repoで直接実装する。DCCはRUN / BUILD / UPDATE、Orchestratorは任意の別画面とする。RUN / BUILDのcandidate・clean必須を撤去し、UPDATEは確認済み成果物とbuild provenanceを根拠とする。Phase 1はUI・通常操作の正常化に限定し、独立run管理・再接続・自動レビューはPhase 2へ分離。理由と検証・残る制約は [Phase 1記録](development-dcc-phase1.md)。正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。
+
+## 2026-09-25: Orchestrator Phase 2 — 人間の中継を廃止し、独立workerでの自動運転へ
+
+Main（実装・修正）とReviewer（読み取り専用）を役割として抽象化し、Claude / Codexを選択可能にした（同一providerは独立レビューにならないため選択不可）。Tests FAIL #1はMain自己修正、FAIL #2からReviewerが失敗分析してMainへ自動指示、Tests PASS後は必ず最終レビュー、修正後は必ずTests再実行。完成は同一diffに対するTests PASS + Reviewer PASS + 安全チェックPASS。外部Final Review JSON（review_pending / resume-review / decision JSON）は標準フローで不要になったため廃止し、互換コードは残さない。
+
+runはrun単位の独立worker processが所有し、DCC / Orchestrator画面は監視・操作するclientにする。生存判定はPIDだけでなくprocess作成時刻とheartbeatを併用し、確認できなければ「接続不能」として扱う（実行中と断定せず二重起動も許さない）。停止は明示的なAI安全停止のみで、run所有のprocess treeだけを終了する。usageはproviderが返した値だけを補助表示し（account枠とcontextは別概念、無い値は取得不能、古い値はlast known）、runの停止・provider切替の根拠にしない。quota時の自動provider切替は、二重process・同時編集・役割崩壊の危険があるためfail-closeとし、将来の安全なhandoffはPhase 3以降。source repoが実行中に進んだ場合は通常Developmentを禁止せず、成果物の適用を保留する。詳細は [Orchestrator仕様](ai_orchestrator.md)。

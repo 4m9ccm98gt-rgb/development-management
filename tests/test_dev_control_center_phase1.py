@@ -9,7 +9,8 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch, MagicMock
 
-from scripts.dev_control_center import app as dcc, provenance as p
+from scripts.dev_control_center import app as dcc
+from scripts.dev_control_center import orchestrator_view as orch_view, provenance as p
 from scripts.dev_control_center.core import RepoDefinition, RepoState
 
 
@@ -153,58 +154,60 @@ class UiTests(unittest.TestCase):
 
     def cleanup(self):
         dcc.ACTIVE_OPERATIONS.clear()
-        self.ui._on_close()
+        if not self.ui._closed:
+            self.ui._on_close()
 
     def test_main_buttons_visible_at_minimum_size_and_ai_is_separate(self):
-        self.assertFalse(self.ui.ai_panel.winfo_ismapped())
+        self.assertFalse(hasattr(self.ui, "ai_panel"))
         for name in ("run_button", "build_button", "release_button", "orchestrator_button"):
             button = getattr(self.ui, name)
             self.assertTrue(button.winfo_ismapped())
             self.assertLessEqual(button.winfo_rooty() - self.root.winfo_rooty() + button.winfo_height(), 720)
             self.assertLessEqual(button.winfo_rootx() - self.root.winfo_rootx() + button.winfo_width(), 1080)
-        self.ui.open_orchestrator()
-        self.root.update()
-        child = self.ui.orchestrator_app
-        self.assertTrue(child.ai_panel.winfo_ismapped())
-        child._on_close()
-        self.assertEqual(child.master.state(), "withdrawn")
+        with patch.object(orch_view.RunMonitor, "start"), patch.object(orch_view.OrchestratorWindow, "_refresh_free_usage"):
+            self.ui.open_orchestrator()
+            self.root.update()
+            window = self.ui.orchestrator_window
+            self.assertTrue(window.exists())
+            self.assertTrue(window.start_button.winfo_ismapped())
+            self.assertTrue(window.stop_button.winfo_ismapped())
+            self.ui.open_orchestrator()
+            self.assertIs(self.ui.orchestrator_window, window)  # focused, not duplicated
+            window.close()
+            self.root.update()
+            self.assertFalse(window.exists())
+        # closing the window only closes the view; the main screen is untouched
         self.assertTrue(self.ui.run_button.winfo_ismapped())
-        self.ui.open_orchestrator()
-        self.assertIs(self.ui.orchestrator_app, child)
 
-    def test_other_repo_ai_does_not_lock_main_and_same_repo_does(self):
+    def test_orchestrator_never_locks_main_operations(self):
         name = self.ui.current.name
-        dcc.ACTIVE_OPERATIONS[999] = ("different-repo", "ai_orchestrator")
         self.assertFalse(self.ui._repo_busy())
-        dcc.ACTIVE_OPERATIONS[999] = (name, "ai_orchestrator")
+        # a run of the same repo (or any Orchestrator state) is not a DCC operation
+        self.assertNotIn("ai_orchestrator", [action for _, action in dcc.ACTIVE_OPERATIONS.values()])
+        dcc.ACTIVE_OPERATIONS[999] = ("different-repo", "run")
+        self.assertFalse(self.ui._repo_busy())
+        dcc.ACTIVE_OPERATIONS[999] = (name, "run")
         self.assertTrue(self.ui._repo_busy())
-        # review_pending and provider errors end the process and release the lock.
-        dcc.ACTIVE_OPERATIONS.clear()
-        self.assertFalse(self.ui._repo_busy())
 
-    def test_pending_and_provider_failure_release_lock_without_modal_error(self):
-        for status, rc in (("review_pending", 0), ("stopped", 1)):
-            with self.subTest(status=status), tempfile.TemporaryDirectory() as temp:
-                result = Path(temp) / "result.json"
-                result.write_text(json.dumps({"status": status, "error": "quota", "run_dir": temp}), encoding="utf-8")
-                process = MagicMock()
-                process.poll.return_value = rc
-                name = self.ui.current.name
-                self.ui.ai_context = {"result_path": result}
-                self.ui._begin_process(process, name, "ai_orchestrator")
-                with patch.object(dcc.messagebox, "showerror") as error, \
-                     patch.object(self.ui, "_reload_after"), patch.object(self.ui, "_refresh_review_plan"):
-                    self.ui._poll()
-                    error.assert_not_called()
-                self.assertFalse(self.ui._repo_busy())
-                self.assertNotIn(id(self.ui), dcc.ACTIVE_OPERATIONS)
-
-    def test_close_never_implicitly_stops_ai(self):
-        dcc.ACTIVE_OPERATIONS[999] = (self.ui.current.name, "ai_orchestrator")
-        with patch.object(dcc.messagebox, "showinfo"), patch.object(dcc, "_terminate_ai_process_tree") as stop:
+    def test_closing_dcc_is_never_blocked_by_or_stops_an_orchestrator_run(self):
+        with patch.object(dcc.messagebox, "showinfo") as info, \
+             patch("tools.ai_orchestrator.runstate.force_stop") as stop, \
+             patch("tools.ai_orchestrator.common.terminate_pid_tree") as kill:
             self.ui._on_close()
+            info.assert_not_called()
             stop.assert_not_called()
-            self.assertTrue(self.root.winfo_exists())
+            kill.assert_not_called()
+        self.assertTrue(self.ui._closed)
+
+    def test_running_runs_are_detected_at_startup_and_shown_on_the_button(self):
+        record = {"run_id": "r1", "repo": str(Path("C:/repos") / self.ui.current.name), "stage": "testing"}
+        items = [{"record": record, "liveness": "running"}]
+        with patch("tools.ai_orchestrator.runstate.active_runs", return_value=items):
+            self.ui._badge_stop.clear()
+            self.ui._start_orchestrator_badge()
+            self.pump_until(lambda: (self.ui._drain_orchestrator_badge(), self.ui.orchestrator_button_var.get())[1] != "AI Orchestrator")
+        self.assertIn("実行中 1", self.ui.orchestrator_button_var.get())
+        self.assertIn("実行中のrunを検出", self.ui.log.get("1.0", "end"))
 
     def test_run_rechecks_dirty_repo_and_uses_existing_entrypoint_without_candidate(self):
         definition = self.ui.current

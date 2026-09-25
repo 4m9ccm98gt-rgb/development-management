@@ -31,7 +31,7 @@ GPT相談・指示文作成 → Claude / Codexが正式ローカルrepoで直接
 
 DCCはRUN / BUILD / UPDATEを中心に使います。RUN / BUILDはdirtyな作業ツリー・candidateなしで利用でき、GitHubの状態取得に依存しません。UPDATEにはBUILD記録・成果物・配布先の確認と明示操作が必要です。アプリ側の既存制約と対応範囲は [DCC仕様](docs/dev_control_center.md) を参照してください。
 
-`RUN_DEV.cmd` でDCCを起動します。「AI Orchestrator」から既存AI機能を別画面で利用できます。通常開発の必須経路ではありません。Phase 1ではレビューJSON待ちを含む既存機能を維持し、独立run管理・終了後継続・再接続・自動レビュー・quota handoffはPhase 2です。
+`RUN_DEV.cmd` でDCCを起動します。「AI Orchestrator」から、Main AI（Claude / Codex）が実装し別providerのReviewer AIが自動レビュー・修正指示を返す長時間放置向けの自動開発を別画面で利用できます。runは独立workerで継続し、DCCを閉じても、再起動後に再接続できます。通常開発の必須経路ではありません。詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。
 
 GPTによるGitHub直接編集・PC同期は標準ルートにしません。GitHubは観測・履歴共有に使用します。運用の安全条件は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を参照します。
 

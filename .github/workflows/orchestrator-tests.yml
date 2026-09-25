@@ -1,0 +1,23 @@
+name: AI Orchestrator Tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Compile
+        run: python -m compileall tools/ai_orchestrator scripts/dev_control_center
+      - name: Orchestrator tests (fake providers; real Git / processes)
+        run: python -B -m unittest discover -s tests -p "test_ai_orchestrator_*.py" -v

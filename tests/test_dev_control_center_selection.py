@@ -576,10 +576,6 @@ class SourceContractTests(unittest.TestCase):
         begin = APP_TEXT.index("    def _begin_process")
         end_ = APP_TEXT.index("    def _end_process")
         self.assertIn("self.active_process = (process, repo_name, action)", APP_TEXT[begin:end_])
-        for launcher in ("def launch_ai_orchestrator",):
-            start = APP_TEXT.index(launcher)
-            body = APP_TEXT[start:APP_TEXT.index("\n    def ", start + 10)]
-            self.assertIn("self._begin_process(", body)
 
     def test_blocking_calls_are_off_the_ui_thread_paths(self):
         for name in ("_select_repo", "refresh", "refresh_github", "refresh_all", "on_loading"):

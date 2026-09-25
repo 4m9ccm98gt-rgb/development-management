@@ -1,5 +1,9 @@
 # 変更履歴
 
+## 2026-09-25 — AI Orchestrator Phase 2（自動運転）
+
+Main / Reviewer（Claude / Codex選択）の自動修正ループ、独立run worker・DCC終了後継続・再接続・AI安全停止、Claude / Codex usage表示を実装。外部Final Review JSON（review_pending / resume-review）を廃止。詳細は [Orchestrator仕様](docs/ai_orchestrator.md) / [検証記録](docs/development-orchestrator-phase2.md)。commit / push・実配布なし。
+
 ## 2026-09-25 — Development / DCC Phase 1
 
 通常直接開発、DCC主要操作、Orchestrator別画面、BUILD記録とUPDATE確認を整備。全322テスト成功。実配布・commit・pushなし。他repoの既存制約は変更せず、Phase 2は未実装。詳細は [検証記録](docs/development-dcc-phase1.md)。

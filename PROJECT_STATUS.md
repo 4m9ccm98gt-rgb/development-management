@@ -2,9 +2,13 @@
 
 最終更新: 2026-09-25（JST）
 
+## Phase 2: AI Orchestrator自動運転（2026-09-25）
+
+OrchestratorをMain / Reviewer自動ループ（Tests FAIL 2回でReviewer投入・PASS後は必ず最終レビュー・修正後は必ず再Tests）、Claude / Codex選択、usage表示、run単位の独立worker・DCC終了後継続・再接続・AI安全停止へ更新。外部Final Review JSONは廃止。仕様は [Orchestrator仕様](docs/ai_orchestrator.md)、検証記録は [Phase 2検証記録](docs/development-orchestrator-phase2.md)。commit / pushは未実施。quota handoffは未実装（常にfail-close）。
+
 ## 現在のDevelopment運用（Phase 1）
 
-通常DevelopmentはClaude / Codexの正式repo直接実装へ変更。DCCはRUN / BUILD / UPDATE中心、Orchestratorは別画面。正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)。独立run管理・再接続・自動レビューはPhase 2。対象アプリ側の既存BUILD / UPDATE制約は今回変更しない。全330テスト成功、ユーザー実機RUN確認・飲料BUILD rc=0と成果物記録の検証完了。ユーザー指示でcommit対象、push未実施。[Phase 1検証記録](docs/development-dcc-phase1.md)。
+通常DevelopmentはClaude / Codexの正式repo直接実装へ変更。DCCはRUN / BUILD / UPDATE中心、Orchestratorは別画面。正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)。独立run管理・再接続・自動レビューはPhase 2で実装済み（上記）。対象アプリ側の既存BUILD / UPDATE制約は今回変更しない。全330テスト成功、ユーザー実機RUN確認・飲料BUILD rc=0と成果物記録の検証完了。ユーザー指示でcommit対象、push未実施。[Phase 1検証記録](docs/development-dcc-phase1.md)。
 
 以下の過去日付の運用・provider・SHAフローは履歴であり、現在の規則ではありません。
 

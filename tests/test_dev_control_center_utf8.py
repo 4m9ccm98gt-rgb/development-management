@@ -1,4 +1,4 @@
-"""UTF-8 boundary tests. Never start Orchestrator or an AI provider."""
+"""UTF-8 boundary tests. Never start an Orchestrator run or an AI provider."""
 import ast
 import io
 import json
@@ -6,58 +6,34 @@ import os
 from pathlib import Path
 import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest import mock
 
-from scripts.dev_control_center import app as dcc
+from tools.ai_orchestrator import common, providers
 from tools.ai_orchestrator import orchestrator as o
+from tools.ai_orchestrator import runstate as rs
 
 UNICODE = '日本語 — 調査 → 設計 🙂'
 
 
 class Utf8BoundaryTests(unittest.TestCase):
-    def test_dcc_launch_explicitly_sets_child_utf8_without_changing_parent(self):
-        ui = mock.MagicMock()
-        ui.current = SimpleNamespace(name='test-repo', branch='main')
-        ui.active_process = None
-        ui.repo_state.head = ui.repo_state.origin_head = 'a'*40
-        ui.repo_state.safe_for_lifecycle.return_value = True
-        ui.ai_task.get.return_value = UNICODE
-        ui.ai_test_var.get.return_value = 'python -m unittest'
-        import queue
-        ui.ai_output_queue.get_nowait.side_effect = queue.Empty
-        with tempfile.TemporaryDirectory() as temp, \
-                mock.patch.dict(os.environ, {'PYTHONUTF8': '0', 'PYTHONIOENCODING': 'cp932'}), \
-                mock.patch.object(dcc.tempfile, 'gettempdir', return_value=temp), \
-                mock.patch.object(dcc.subprocess, 'Popen') as popen, \
-                mock.patch.object(dcc.threading, 'Thread'):
-            dcc.App.launch_ai_orchestrator(ui)
-            popen.assert_called_once()
-            command = popen.call_args.args[0]
-            kwargs = popen.call_args.kwargs
-            self.assertIn(UNICODE, command)
-            self.assertEqual(kwargs['env']['PYTHONUTF8'], '1')
-            self.assertEqual(kwargs['env']['PYTHONIOENCODING'], 'utf-8')
-            self.assertEqual(kwargs['encoding'], 'utf-8')
-            self.assertEqual(os.environ['PYTHONUTF8'], '0')
-            self.assertEqual(os.environ['PYTHONIOENCODING'], 'cp932')
-
-    def test_both_ai_providers_receive_utf8_and_existing_git_safety(self):
-        result = o.CommandResult(('mock',), 0, '{}', '')
-        with mock.patch.dict(os.environ, {'PYTHONUTF8': '0', 'PYTHONIOENCODING': 'cp932'}), \
-                mock.patch.object(o, '_resolved_command', side_effect=lambda name: [name]), \
-                mock.patch.object(o, '_run', return_value=result) as run:
-            o._run_claude_implementation(Path('.'), UNICODE, 5)
-            o._run_codex_review(Path('.'), UNICODE, 5, o.DEFAULT_REVIEW_MODEL)
-            self.assertEqual(run.call_count, 2)
-            for call in run.call_args_list:
-                self.assertEqual(call.kwargs['input_text'], UNICODE)
-                env = call.kwargs['env']
-                self.assertEqual(env['PYTHONUTF8'], '1')
-                self.assertEqual(env['PYTHONIOENCODING'], 'utf-8')
-                self.assertEqual(env['GIT_CONFIG_VALUE_0'], 'disabled://ai-orchestrator')
-            self.assertEqual(os.environ['PYTHONIOENCODING'], 'cp932')
+    def test_both_ai_providers_receive_utf8_prompt_and_existing_git_safety(self):
+        ok = common.CommandResult(('mock',), 0, '', '')
+        for provider in (providers.ClaudeProvider(), providers.CodexProvider()):
+            with self.subTest(provider=provider.name), \
+                    mock.patch.dict(os.environ, {'PYTHONUTF8': '0', 'PYTHONIOENCODING': 'cp932'}), \
+                    mock.patch.object(providers, 'resolved_command', side_effect=lambda name: [name]), \
+                    mock.patch.object(providers, 'run_streaming', return_value=ok) as run:
+                provider.run_main(Path('.'), UNICODE, timeout=5, hooks=common.ProcessHooks())
+                provider.run_review(Path('.'), UNICODE, timeout=5, hooks=common.ProcessHooks())
+                self.assertEqual(run.call_count, 2)
+                for call in run.call_args_list:
+                    self.assertEqual(call.kwargs['input_text'], UNICODE)
+                    env = call.kwargs['env']
+                    self.assertEqual(env['PYTHONUTF8'], '1')
+                    self.assertEqual(env['PYTHONIOENCODING'], 'utf-8')
+                    self.assertEqual(env['GIT_CONFIG_VALUE_0'], 'disabled://ai-orchestrator')
+                self.assertEqual(os.environ['PYTHONIOENCODING'], 'cp932')
 
     def test_cp932_stdout_and_stderr_are_reconfigured_losslessly(self):
         buffers = [io.BytesIO(), io.BytesIO()]
@@ -88,17 +64,27 @@ class Utf8BoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with mock.patch.dict(os.environ, {'PYTHONUTF8': '0', 'PYTHONIOENCODING': 'cp932'}):
-                result = o._run([
+                result = common.run_streaming([
                     sys.executable, '-c',
                     'import sys; text=sys.stdin.read(); print(text); print(text, file=sys.stderr)',
-                ], cwd=root, input_text=UNICODE, env=o._agent_env())
+                ], cwd=root, input_text=UNICODE, timeout=60, env=providers.agent_env())
             self.assertEqual(result.returncode, 0)
             self.assertEqual(result.stdout.strip(), UNICODE)
             self.assertEqual(result.stderr.strip(), UNICODE)
-            o._write_log(root, 'unicode.log', result.stdout)
-            self.assertEqual((root/'unicode.log').read_text(encoding='utf-8').strip(), UNICODE)
-            o._write_external_result(str(root/'result.json'), {'detail': UNICODE})
-            self.assertEqual(json.loads((root/'result.json').read_text(encoding='utf-8'))['detail'], UNICODE)
+
+    def test_task_and_log_survive_the_run_record_as_utf8(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp) / 'run'
+            run_dir.mkdir()
+            record = rs.new_record(run_id='r', repo='x', task=UNICODE, main_agent='claude', review_agent='codex',
+                                   tests=['t'], limits=rs.Limits())
+            recorder = rs.RunRecorder(run_dir, record)
+            recorder.save()
+            recorder.log(UNICODE)
+            self.assertEqual(json.loads((run_dir / 'run.json').read_text(encoding='utf-8'))['task'], UNICODE)
+            self.assertIn(UNICODE, (run_dir / 'events.log').read_text(encoding='utf-8'))
+            text, _ = rs.tail_log(run_dir)
+            self.assertIn(UNICODE, text)
 
 
 if __name__ == '__main__':

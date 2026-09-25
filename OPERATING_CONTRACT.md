@@ -32,14 +32,17 @@ BUILD記録はrepo、base HEAD、dirty / clean、日時、build ID、成果物�
 
 ## AI Orchestrator（任意の正式な第二ルート）
 
-DCC → 別画面のAI Orchestrator → AI依頼 / Tests → 既存Orchestrator。
-長時間・無人でAI開発を進める正式な自動運転モードとして育てます。通常Developmentの必須経路ではありません。
+DCC → 別画面のAI Orchestrator → 独立run worker。長時間・無人でAI開発を完成まで進める自動運転モードです。通常Developmentの必須経路ではありません。詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。
 
-Phase 1は既存のClaude実装、Recovery、独立Tests、Final Review JSON、local candidate、安全停止を維持します。review_pendingでは外部レビュー結果が必要で、自動Final Reviewは未実装です。source保護・isolated worktree・candidate適用前のユーザー確認はOrchestrator内部の安全条件として維持します。詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。
+Phase 2の標準フロー: Main AI（既定Claude）が実装 → 独立Tests。Tests FAIL #1はMain自身が修正、FAIL #2からReviewer AI（既定Codex、読み取り専用）が失敗分析してMainへ自動で修正指示。Tests PASS後は必ずReviewerが最終レビューし、修正後は必ずTestsを再実行する。完成条件は **Tests PASS + Reviewer PASS + 安全チェックPASS**（同一diff）。Main / ReviewerはClaude / Codexから選択でき、同一providerは選択不可。レビュー結果・decision JSONを人間が中継する操作は標準フローに存在しない。
 
-子画面は閉じても非表示になるだけでDCC内の監視を続けます。Phase 1はDCC終了後の継続・再接続を保証しません。AI実行中にDCCを閉じようとした場合は終了を保留し、勝手にAIを停止しません。停止は明示的な「AI安全停止」です。
+人間へ返す（`needs_human`）のは、完成、安全上継続不可、provider利用不能（quota / 認証 / 異常）、Task自体に人間判断が必要、上限到達（repair iteration・同一failure・同一指摘・進展なし・最大時間）、process / worktreeを信頼できない場合だけ。quotaは再試行せず、providerの自動切替もしない。usage（残量）は補助表示で、run停止・provider切替の根拠にしない。
 
-Phase 2予定: 独立run manager、DCC終了後のrun継続と再接続、Primary / Secondaryのprovider非依存な自動レビュー・修正ループ、安全なquota handoff。Phase 1の実装済み機能と混同しません。
+runはrun単位の独立workerが所有し、DCCとOrchestrator画面は監視・操作するclientにすぎない。画面を閉じる・DCCを閉じる・DCCを再起動してもrunは継続し、再起動後に検出・再接続して進捗・ログ・usageを再表示する。停止は明示的な「AI安全停止」だけで、そのrunが所有するprocess treeだけを終了する（名前による一括killは禁止）。実行中判定はPIDだけで行わず、run ID・process作成時刻・heartbeatで確認し、確認できなければ「接続不能・状態確認が必要」とする。
+
+Orchestrator内部の安全ハーネス（isolated detached worktree、source保護、agentのcommit / push / deploy / source main直接変更の禁止、Tests前後のdiff確認、failure履歴、run記録、process tree管理）はOrchestrator専用で、通常Developmentへ強制しない。Orchestratorの実行中・失敗・quota・crash・stale・usage取得失敗で、通常Developmentや他repoのRUN / BUILD / UPDATEをロックしない（同一repoでOrchestratorが起動中の二重起動だけを防ぐ）。実行中にsource側へ通常Developmentの変更が入った場合は開発を止めず、成果物の適用を保留してbase再確認後にだけ適用する。成功時もpush / BUILD / UPDATEは行わず、local candidateの適用はユーザー確認後のfast-forwardのみ。
+
+Phase 3以降の課題: 安全なquota handoff（現在は常にfail-close）。
 
 ## 新規repo・初回準備
 

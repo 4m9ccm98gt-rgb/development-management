@@ -3,15 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime
-import json
-import os
 from pathlib import Path
 import queue
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import webbrowser
@@ -185,250 +180,9 @@ class _TkScheduler:
         self.master.after_cancel(handle)
 
 
-def _terminate_ai_process_tree(process: subprocess.Popen) -> None:
-    """Kill the AI Orchestrator process and its full child tree (Claude/Codex
-    CLI subprocesses included), mirroring orchestrator.py's own
-    _terminate_process_tree used for its internal test-timeout handling."""
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        else:
-            process.terminate()
-    except OSError:
-        pass
-
-
-AI_SAFETY_STOP_REASON = "ユーザーによる安全停止"
-_AI_RUN_DIR_MARKER = "[Preflight] run_dir="
-
-
-def _merge_json_file(path: Path, updates: dict[str, object]) -> None:
-    """Merge `updates` into the JSON object at `path`, creating it if missing.
-
-    Only the given keys are added/overwritten; every other existing key
-    (run_id, worktree, stage, round, provider/session fields, ...) is kept
-    exactly as the Orchestrator run left it.
-    """
-    payload: dict[str, object] = {}
-    try:
-        if path.is_file():
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(raw, dict):
-                payload = raw
-    except (OSError, json.JSONDecodeError):
-        payload = {}
-    payload.update(updates)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
-
-
-def _mark_ai_run_stopped(run_dir: Path) -> None:
-    """Record the AI safety stop onto the run's durable status.json/result.json.
-
-    Additive merge only (see _merge_json_file): existing run_id / worktree /
-    stage / round / provider-session fields are preserved. The isolated
-    worktree itself is never touched here, and no Git/GitHub command runs.
-    """
-    now = datetime.now().isoformat(timespec="seconds")
-    _merge_json_file(
-        run_dir / "status.json",
-        {"status": "stopped", "reason": AI_SAFETY_STOP_REASON, "updated_at": now},
-    )
-    _merge_json_file(
-        run_dir / "result.json",
-        {
-            "run_id": run_dir.name,
-            "run_dir": str(run_dir),
-            "status": "stopped",
-            "error": AI_SAFETY_STOP_REASON,
-            "error_code": "USER_SAFETY_STOP",
-        },
-    )
-
-
-_REVIEW_VERDICTS = ("PASS", "FAIL", "PENDING")
-_REVIEW_NO_RUN_TEXT = "FINAL REVIEW待ちのrun_dirを指定してください"
-_REVIEW_DECISION_TEMPLATE = (
-    '{"request_id": "<final-review-request.jsonのrequest_id>", '
-    '"verdict": "PASS | FAIL | PENDING", "summary": "<レビュー要約>"}'
-)
-
-
-@dataclass(frozen=True)
-class ReviewResumePlan:
-    """Read-only inspection of a review_pending run; `message` explains a refusal."""
-
-    ok: bool
-    message: str
-    run_dir: Path | None = None
-    task: str = ""
-    tests: tuple[str, ...] = ()
-    max_rounds: int = 0
-    request_id: str = ""
-
-
-def _read_json_object(path: Path) -> dict[str, object]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict):
-        raise ValueError(f"{path.name} is not a JSON object")
-    return raw
-
-
-def _same_path(left: object, right: Path) -> bool:
-    try:
-        return os.path.normcase(str(Path(str(left)).resolve())) == os.path.normcase(str(right.resolve()))
-    except (OSError, ValueError):
-        return False
-
-
-def inspect_review_pending_run(
-    run_dir_text: str,
-    repo_root: Path,
-    expected_branch: str,
-    head_sha: str,
-) -> ReviewResumePlan:
-    """Decide whether `run_dir` is a review_pending run of this repo that DCC may resume.
-
-    Only reads result.json / task.md / final-review-request.json. The values the
-    Orchestrator requires to be unchanged (TaskSpec, tests, max-rounds) come from
-    the run itself, never from the current UI fields.
-    """
-    text = run_dir_text.strip()
-    if not text:
-        return ReviewResumePlan(False, "run_dirが未指定です（FINAL REVIEW待ちのrunだけ再開できます）")
-    run_dir = Path(text)
-    try:
-        result = _read_json_object(run_dir / "result.json")
-    except (OSError, ValueError) as exc:
-        return ReviewResumePlan(False, f"result.jsonを読めません: {exc}")
-    status = str(result.get("status", ""))
-    if status != "review_pending":
-        return ReviewResumePlan(False, f"status={status or '不明'} — review_pending以外は再開できません")
-    if not _same_path(result.get("repo", ""), repo_root) or result.get("source_branch") != expected_branch:
-        return ReviewResumePlan(False, "選択中のrepo / branchのrunではありません")
-    if str(result.get("base_sha", "")).lower() != head_sha.lower():
-        return ReviewResumePlan(False, "runのbase SHAが現在のlocal HEADと一致しません")
-    tests = result.get("tests")
-    max_rounds = result.get("max_rounds")
-    if (not isinstance(tests, list) or not tests
-            or not all(isinstance(item, str) and item for item in tests)
-            or not isinstance(max_rounds, int) or isinstance(max_rounds, bool)):
-        return ReviewResumePlan(False, "runのtests / max_roundsが不正です")
-    try:
-        task = (run_dir / "task.md").read_text(encoding="utf-8").strip()
-        request = _read_json_object(run_dir / "final-review-request.json")
-    except (OSError, ValueError) as exc:
-        return ReviewResumePlan(False, f"run記録を読めません: {exc}")
-    request_id = request.get("request_id")
-    if not task or not isinstance(request_id, str) or not request_id:
-        return ReviewResumePlan(False, "task.md / final-review-request.jsonが不正です")
-    return ReviewResumePlan(
-        True,
-        f"FINAL REVIEW待ち — request_id={request_id}",
-        run_dir=run_dir,
-        task=task,
-        tests=tuple(tests),
-        max_rounds=max_rounds,
-        request_id=request_id,
-    )
-
-
-def parse_review_decision(text: str, request_id: str) -> tuple[dict[str, object] | None, str]:
-    """Validate a final-review-decision.json body; returns (decision, error)."""
-    if not text.strip():
-        return None, "レビュー結果（JSON）が空です"
-    try:
-        decision = json.loads(text)
-    except ValueError as exc:
-        return None, f"レビュー結果がJSONではありません: {exc}"
-    if not isinstance(decision, dict):
-        return None, "レビュー結果はJSONオブジェクトである必要があります"
-    if decision.get("request_id") != request_id:
-        return None, f"request_idが一致しません（期待: {request_id}）"
-    summary = decision.get("summary")
-    if decision.get("verdict") not in _REVIEW_VERDICTS or not isinstance(summary, str) or not summary.strip():
-        return None, "verdictはPASS / FAIL / PENDING、summaryは空でない文字列が必要です"
-    return decision, ""
-
-
-def build_review_resume_command(
-    plan: ReviewResumePlan,
-    repo_root: Path,
-    expected_branch: str,
-    result_path: Path,
-    decision_path: Path,
-) -> list[str]:
-    """Orchestrator `run --resume-review`: same TaskSpec / tests / budget as the saved run."""
-    command = [
-        sys.executable,
-        str(DM_ROOT / "tools" / "ai_orchestrator" / "orchestrator.py"),
-        "run",
-        "--repo",
-        str(repo_root),
-        "--expected-branch",
-        expected_branch,
-        "--task",
-        plan.task,
-    ]
-    for test in plan.tests:
-        command += ["--test", test]
-    command += [
-        "--result-file",
-        str(result_path),
-        "--max-rounds",
-        str(plan.max_rounds),
-        "--test-timeout",
-        "600",
-        "--resume-review",
-        str(plan.run_dir),
-        "--final-review-decision",
-        str(decision_path),
-    ]
-    return command
-
-
-def _unlink_quietly(path: object) -> None:
-    if isinstance(path, Path):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _spawn_ai_process(command: list[str]) -> subprocess.Popen[str]:
-    """Start an Orchestrator child with the UTF-8 pipe contract (shared by run / resume)."""
-    child_env = os.environ.copy()
-    child_env["PYTHONUTF8"] = "1"
-    child_env["PYTHONIOENCODING"] = "utf-8"
-    return subprocess.Popen(
-        command,
-        cwd=DM_ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        env=child_env,
-    )
-
-
 class App(ttk.Frame):
-    def __init__(self, master: tk.Tk, *, orchestrator_mode: bool = False) -> None:
-        self.orchestrator_mode = orchestrator_mode
+    def __init__(self, master: tk.Tk) -> None:
         self.orchestrator_window = None
-        self.orchestrator_app = None
         self._closed = False
         configure_dark_theme(master)
         super().__init__(master, padding=14)
@@ -444,7 +198,6 @@ class App(ttk.Frame):
             scheduler=_TkScheduler(master),
         )
         self._heartbeat = HeartbeatMonitor(HEARTBEAT_MS / 1000)
-        self._suggest_seed = ""
         self.active_process = None
         self.pending_preflight = False
         self._stream_key = None
@@ -452,11 +205,11 @@ class App(ttk.Frame):
         self.lifecycle_events: queue.Queue = queue.Queue(maxsize=2048)
         self.lifecycle_jobs: dict[str, object] = {}
         self.lifecycle_cancellations: dict[str, threading.Event] = {}
-        self.ai_output_queue: queue.Queue[str] = queue.Queue()
-        self.ai_context: dict[str, object] | None = None
-        self.ai_stop_requested = False
-        self.ai_task_by_repo: dict[str, str] = {}
-        self.ai_test_by_repo: dict[str, str] = {}
+        # Orchestrator drafts (Task / Tests per repo) and the running-run badge. The Orchestrator itself
+        # is not an operation of this window: its runs live in their own worker processes.
+        self.ai_drafts: dict[str, object] = {}
+        self._badge_queue: queue.Queue = queue.Queue(maxsize=1)
+        self._badge_stop = threading.Event()
         self.unmanaged_repos: list[RemoteRepo] = []
         self._applying_lifecycle = False
         self.self_update_sha = ""
@@ -481,11 +234,7 @@ class App(ttk.Frame):
         self.banner_var = tk.StringVar(value="repoを選択してください")
         self.remote_status_var = tk.StringVar(value="未確認")
         self.self_update_var = tk.StringVar(value="未確認")
-        self.ai_test_var = tk.StringVar()
-        self.ai_status_var = tk.StringVar(value="待機")
-        self.review_run_dir_var = tk.StringVar()
-        self.review_status_var = tk.StringVar(value=_REVIEW_NO_RUN_TEXT)
-        self.review_plan: ReviewResumePlan | None = None
+        self.orchestrator_button_var = tk.StringVar(value="AI Orchestrator")
 
         self._build()
         self.candidate_var.trace_add("write", lambda *_: self._candidate_changed())
@@ -497,6 +246,7 @@ class App(ttk.Frame):
         # No subprocess or scan runs on the UI thread: these only submit background requests.
         self.master.after(150, self.scan_remote_repos)
         self.master.after(300, self.check_self_update)
+        self.master.after(500, self._start_orchestrator_badge)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -517,25 +267,20 @@ class App(ttk.Frame):
         return self.selection.authoritative_github(self.current.name) if self.current else None
 
     def _on_close(self) -> None:
-        if getattr(self, "orchestrator_mode", False) is True:
-            self.master.withdraw()
-            return
-        if any(action == "ai_orchestrator" for _, action in ACTIVE_OPERATIONS.values()):
-            messagebox.showinfo("AI Orchestrator実行中", "Phase 1ではDCC終了後の継続・再接続は未対応です。\n画面は閉じず、必要ならOrchestrator画面のAI安全停止を操作してください。")
-            return
+        # Orchestrator runs are independent worker processes: closing DCC never stops or blocks on them.
         if ACTIVE_OPERATIONS:
             messagebox.showinfo("工程実行中", "工程完了後にDCCを閉じてください。")
             return
-        child = getattr(self, "orchestrator_app", None)
-        if isinstance(child, App):
-            child._closed = True
-            child.selection.close()
         self._closed = True
+        self._badge_stop.set()
+        window = self.orchestrator_window
+        if window is not None and window.exists():
+            window.close()
         if TIMING.enabled:
             TIMING.event("ui-lag-summary", **self._heartbeat.stats())
         self.selection.close()
         # Destroying Tk does not cancel pending Tcl after callbacks. Cancel them
-        # before destroying the root, including the hidden Orchestrator view.
+        # before destroying the root.
         if isinstance(self.master, tk.Tk):
             for token in self.master.tk.call("after", "info"):
                 self.master.tk.call("after", "cancel", token)
@@ -555,12 +300,13 @@ class App(ttk.Frame):
 
             logging.getLogger(__name__).exception("selection pump failed")
         self._drain_lifecycle_events()
+        self._drain_orchestrator_badge()
         self._set_button_states()
         self.master.after(HEARTBEAT_MS, self._heartbeat_tick)
 
     def _build(self) -> None:
-        self.master.title("AI Orchestrator" if self.orchestrator_mode else "Development Control Center")
-        self.master.geometry("1200x800" if self.orchestrator_mode else "1080x720")
+        self.master.title("Development Control Center")
+        self.master.geometry("1080x720")
         self.master.minsize(1080, 720)
         self.pack(fill="both", expand=True)
         self.columnconfigure(1, weight=1)
@@ -640,91 +386,10 @@ class App(ttk.Frame):
             ttk.Label(github_box, textvariable=var, wraplength=540).grid(row=row, column=1, sticky="w")
         ttk.Button(github_box, text="PR / CIを開く", command=self.open_pr_or_ci).grid(row=0, column=2, rowspan=3, sticky="ns", padx=(12, 0))
 
-        ai_box = ttk.LabelFrame(
-            right,
-            text="AI開発 — Claude実装 → Verification → Final Review → local candidate",
-            padding=12,
-        )
-        self.ai_panel = ai_box
-        if self.orchestrator_mode:
-            ai_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
-        ai_box.columnconfigure(1, weight=1)
-        ttk.Label(ai_box, text="AI依頼", width=14).grid(row=0, column=0, sticky="nw")
-        self.ai_task = tk.Text(ai_box, height=8, wrap="word")
-        configure_dark_text(self.ai_task)
-        self.ai_task.grid(row=0, column=1, columnspan=2, sticky="ew")
-        ttk.Label(ai_box, text="テスト", width=14).grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(ai_box, textvariable=self.ai_test_var).grid(
-            row=1, column=1, sticky="ew", pady=(8, 0)
-        )
-        self.ai_start_button = ttk.Button(
-            ai_box,
-            text="AI開発開始",
-            command=self.launch_ai_orchestrator,
-        )
-        self.ai_start_button.grid(row=1, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
-        self.ai_stop_button = ttk.Button(
-            ai_box,
-            text="AI安全停止",
-            command=self.stop_ai_orchestrator,
-        )
-        self.ai_stop_button.configure(state="disabled")
-        self.ai_stop_button.grid(row=1, column=3, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Label(
-            ai_box,
-            textvariable=self.ai_status_var,
-            wraplength=560,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(
-            ai_box,
-            text="成功時もpush / BUILD / UPDATEは行いません。candidateをローカル適用する前に確認します。",
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
-
-        review_box = ttk.LabelFrame(ai_box, text="Final Reviewを返して再開（review_pendingのrunのみ）", padding=8)
-        review_box.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(10, 0))
-        review_box.columnconfigure(1, weight=1)
-        ttk.Label(review_box, text="run_dir", width=14).grid(row=0, column=0, sticky="w")
-        review_run_entry = ttk.Entry(review_box, textvariable=self.review_run_dir_var)
-        review_run_entry.grid(row=0, column=1, sticky="ew")
-        review_run_entry.bind("<FocusOut>", lambda _event: self._refresh_review_plan())
-        review_run_entry.bind("<Return>", lambda _event: self._refresh_review_plan())
-        ttk.Button(review_box, text="参照", command=self.browse_review_run_dir).grid(
-            row=0, column=2, sticky="ew", padx=(8, 0)
-        )
-        ttk.Label(review_box, text="レビュー結果", width=14).grid(row=1, column=0, sticky="nw", pady=(8, 0))
-        self.review_decision = tk.Text(review_box, height=5, wrap="word")
-        configure_dark_text(self.review_decision)
-        self.review_decision.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        ttk.Button(review_box, text="JSONを読み込む", command=self.load_review_decision_file).grid(
-            row=1, column=2, sticky="new", padx=(8, 0), pady=(8, 0)
-        )
-        ttk.Label(review_box, textvariable=self.review_status_var, wraplength=540).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(8, 0)
-        )
-        self.review_resume_button = ttk.Button(
-            review_box,
-            text="レビュー結果を返して再開",
-            command=self.resume_ai_review,
-        )
-        self.review_resume_button.configure(state="disabled")
-        self.review_resume_button.grid(row=2, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Label(review_box, text=f"形式: {_REVIEW_DECISION_TEMPLATE}", wraplength=540).grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
-        )
-
         lifecycle = ttk.LabelFrame(right, text="実機確認・配布", padding=10)
         lifecycle.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         for col in range(4):
             lifecycle.columnconfigure(col, weight=1)
-
-        candidate_panel = ttk.Frame(ai_box)
-        candidate_panel.grid(row=5, column=0, columnspan=4, sticky="ew")
-        ttk.Label(candidate_panel, text="candidate SHA").pack(side="left")
-        ttk.Entry(candidate_panel, textvariable=self.candidate_var).pack(side="left", fill="x", expand=True)
-        ttk.Label(
-            candidate_panel,
-            textvariable=self.candidate_source_var,
-        ).pack(side="left")
 
         self.run_button = ttk.Button(
             lifecycle,
@@ -757,21 +422,12 @@ class App(ttk.Frame):
             text="RUN / BUILDは現在の作業内容を使用。UPDATEは成果物・配布先の確認が必要です。", wraplength=570,
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-        self.orchestrator_button = ttk.Button(lifecycle, text="AI Orchestrator", command=self.open_orchestrator)
+        self.orchestrator_button = ttk.Button(lifecycle, textvariable=self.orchestrator_button_var, command=self.open_orchestrator)
         self.orchestrator_button.grid(row=1, column=3, sticky="ew", padx=(3, 0), pady=(8, 0))
         self.operation_stop_button = ttk.Button(lifecycle, text="このrepoの実行を停止", command=self.stop_lifecycle)
         self.operation_stop_button.grid(row=0, column=0, columnspan=2, sticky="w")
-        if self.orchestrator_mode:
-            lifecycle.grid_remove()
-            status.grid_remove()
-            github_box.grid_remove()
-            new_box.grid_remove()
-            update_box.grid_remove()
-
         entries = ttk.LabelFrame(right, text="検出した正式入口", padding=10)
         # Entry paths are available in tool logs; keep the main screen compact.
-        if self.orchestrator_mode:
-            entries.grid_remove()
         entries.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("SYNC", self.sync_var),
@@ -792,18 +448,18 @@ class App(ttk.Frame):
         ttk.Label(right, textvariable=self.banner_var).grid(row=8, column=0, sticky="w", pady=(8, 0))
 
     def open_orchestrator(self) -> None:
-        if self.orchestrator_window is None or not self.orchestrator_window.winfo_exists():
-            window = tk.Toplevel(self.master)
-            self.orchestrator_window = window
-            self.orchestrator_app = App(window, orchestrator_mode=True)
+        """Open (or focus) the Orchestrator window. It is only a client of the run files."""
+        from .orchestrator_view import OrchestratorWindow
+
+        window = self.orchestrator_window
+        if window is not None and window.exists():
             if self.current:
-                child = self.orchestrator_app
-                index = next(i for i, d in enumerate(child.definitions) if d.name == self.current.name)
-                child.repo_list.selection_clear(0, "end")
-                child.repo_list.selection_set(index)
-                child._select_repo()
-        self.orchestrator_window.deiconify()
-        self.orchestrator_window.lift()
+                window.select_repo(self.current.name)
+            window.focus()
+            return
+        self.orchestrator_window = OrchestratorWindow(
+            self.master, self.definitions, initial_repo=self.current.name if self.current else None,
+            drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT)
 
     def _repo_busy(self) -> bool:
         if self.active_process is not None:
@@ -814,9 +470,6 @@ class App(ttk.Frame):
         selection = self.repo_list.curselection()
         if not selection:
             return
-        if self.current:
-            self.ai_task_by_repo[self.current.name] = self.ai_task.get("1.0", "end").strip()
-            self.ai_test_by_repo[self.current.name] = self.ai_test_var.get().strip()
         # leave(outgoing) + enter(new): no subprocess or file scan on the UI thread.
         self.selection.select(self.definitions[selection[0]].name)
 
@@ -827,17 +480,6 @@ class App(ttk.Frame):
         self.title_var.set(name)
         self.meta_var.set(f"{repo_root}   |   type={definition.repo_type}   |   expected branch={definition.branch}")
         self._set_candidate_text(self.selection.provenance.text(name))
-        self.ai_task.delete("1.0", "end")
-        saved_task = self.ai_task_by_repo.get(name) or definition.initial_ai_task
-        if saved_task:
-            self.ai_task.insert("1.0", saved_task)
-        self.ai_test_var.set(self.ai_test_by_repo.get(name) or definition.initial_test or "")
-        self._suggest_seed = self.ai_test_var.get()
-        self.ai_status_var.set("待機")
-        self.review_run_dir_var.set("")
-        self.review_decision.delete("1.0", "end")
-        self.review_plan = None
-        self.review_status_var.set(_REVIEW_NO_RUN_TEXT)
         self._show_local_loading()
         self._show_github_loading()
         self.banner_var.set(LOADING_TEXT)
@@ -855,12 +497,20 @@ class App(ttk.Frame):
         self.candidate_source_var.set("-")
 
     def on_request_suggestion(self, name: str) -> None:
-        if not self.ai_test_var.get().strip():
+        # A suggested Tests command only fills an empty Orchestrator draft; it never overrides input.
+        draft = self.ai_drafts.get(name)
+        if not (draft and draft.tests):
             self.selection.submit_suggest(name)
 
     def on_suggestion(self, name: str, value: str) -> None:
-        if value and self.ai_test_var.get() == self._suggest_seed:
-            self.ai_test_var.set(value)
+        from .orchestrator_view import Draft
+
+        draft = self.ai_drafts.get(name)
+        if value and not (draft and draft.tests):
+            self.ai_drafts[name] = Draft(draft.task if draft else "", value)
+            window = self.orchestrator_window
+            if window is not None and window.exists():
+                window.suggest_tests(name, value)
 
     def on_local(self, name: str, snapshot) -> None:
         state, entries = snapshot.repo_state, snapshot.entrypoints
@@ -874,7 +524,6 @@ class App(ttk.Frame):
         self.build_var.set(choice_text(entries.build, repo_root))
         self.release_var.set(choice_text(entries.release, repo_root))
         self.release_button_var.set(entries.release_label)
-        self._refresh_review_plan(state)
 
     def on_local_unavailable(self, name: str, text: str) -> None:
         for var in (self.branch_var, self.head_var, self.origin_var,
@@ -963,30 +612,11 @@ class App(ttk.Frame):
         has_current = self.current is not None
         repo_state = self.repo_state
         entrypoints = self.entrypoints
-        ai_ready = bool(
-            has_current
-            and not busy
-            and repo_state
-            and self.current
-            and repo_state.safe_for_lifecycle(self.current)
-            and repo_state.head
-            and repo_state.head.lower() == repo_state.origin_head.lower()
-        )
-        self.ai_start_button.configure(state="normal" if ai_ready else "disabled")
-        ai_running = bool(self.active_process is not None and self.active_process[2] == "ai_orchestrator")
-        ai_run_dir_captured = bool(ai_running and self.ai_context and self.ai_context.get("run_dir"))
-        self.ai_stop_button.configure(
-            state="normal" if (ai_run_dir_captured and not self.ai_stop_requested) else "disabled"
-        )
-        review_plan = self.review_plan
-        self.review_resume_button.configure(
-            state="normal" if (ai_ready and review_plan is not None and review_plan.ok) else "disabled"
-        )
         update_state = "normal" if self._self_update_enabled() else "disabled"
 
         if not self.current or not repo_state or not entrypoints:
             for button in (self.sync_button, self.run_button, self.build_button, self.release_button):
-                button.configure(state="disabled")
+                button.state(["disabled"])
             self.candidate_source_var.set("-")
             self.self_update_button.configure(state=update_state)
             return
@@ -1019,9 +649,14 @@ class App(ttk.Frame):
             self.banner_var.set(decision.banner)
 
         self.sync_button.configure(state="normal" if decision.sync_enabled else "disabled")
-        self.run_button.configure(state="normal" if decision.run_enabled else "disabled")
-        self.build_button.configure(state="normal" if decision.build_enabled else "disabled")
-        self.release_button.configure(state="normal" if decision.release_enabled else "disabled")
+        # configure(state="normal") clears ttk's active bit on every heartbeat.
+        # Change only disabled, preserving pointer/pressed state managed by Tk.
+        for button, enabled in (
+            (self.run_button, decision.run_enabled),
+            (self.build_button, decision.build_enabled),
+            (self.release_button, decision.release_enabled),
+        ):
+            button.state(["!disabled" if enabled else "disabled"])
         self.self_update_button.configure(state=update_state)
 
     def _candidate_matches_local(self) -> bool:
@@ -1220,267 +855,6 @@ class App(ttk.Frame):
             return
         self._on_close()
 
-    def launch_ai_orchestrator(self) -> None:
-        if not self.current or not self.repo_state or App._repo_busy(self):
-            return
-        if not self.repo_state.safe_for_lifecycle(self.current):
-            messagebox.showerror(
-                "AI開発停止",
-                "正式repo / branch / origin / tracked clean の安全条件を満たしていません。",
-            )
-            return
-        if self.repo_state.head.lower() != self.repo_state.origin_head.lower():
-            messagebox.showerror(
-                "AI開発停止",
-                "AI開発開始前は local HEAD == origin HEAD が必要です。"
-                "未pushのlocal candidateがある場合は先に実機確認を完了してください。",
-            )
-            return
-
-        task = self.ai_task.get("1.0", "end").strip()
-        test_command = self.ai_test_var.get().strip()
-        if not task:
-            messagebox.showinfo("AI開発", "AI依頼を入力してください。")
-            return
-        if not test_command:
-            messagebox.showerror(
-                "AI開発停止",
-                "独立テストコマンドが未設定です。テスト欄へコマンドを入力してください。",
-            )
-            return
-
-        repo_root = REPOS_ROOT / self.current.name
-        result_path = (
-            Path(tempfile.gettempdir())
-            / f"dcc-ai-result-{self.current.name}-{id(self)}.json"
-        )
-        try:
-            result_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-        command = [
-            sys.executable,
-            str(DM_ROOT / "tools" / "ai_orchestrator" / "orchestrator.py"),
-            "run",
-            "--repo",
-            str(repo_root),
-            "--expected-branch",
-            self.current.branch,
-            "--task",
-            task,
-            "--test",
-            test_command,
-            "--result-file",
-            str(result_path),
-            "--max-rounds",
-            "30",
-            "--test-timeout",
-            "600",
-        ]
-        try:
-            process = _spawn_ai_process(command)
-        except OSError as exc:
-            messagebox.showerror("AI開発起動失敗", str(exc))
-            return
-
-        while True:
-            try:
-                self.ai_output_queue.get_nowait()
-            except queue.Empty:
-                break
-
-        self.ai_context = {
-            "repo_name": self.current.name,
-            "result_path": result_path,
-            "base_sha": self.repo_state.head.lower(),
-        }
-        self.ai_stop_requested = False
-        self._begin_process(process, self.current.name, "ai_orchestrator")
-        self.ai_status_var.set("実行中 — 失敗時のみRecovery（最大30回）")
-        self._log(f"{self.current.name}: AI Orchestrator開始（Recovery上限30回）")
-        self.banner_var.set("AI開発実行中。このrepoの競合操作を制限しています。")
-        self._set_button_states()
-
-        reader = threading.Thread(
-            target=self._read_ai_output,
-            args=(process,),
-            daemon=True,
-        )
-        reader.start()
-        self.master.after(250, self._poll)
-
-    def _refresh_review_plan(self, state=None) -> None:
-        """Re-inspect the entered run_dir (file reads; never called from _apply_lifecycle_state)."""
-        state = state or self.repo_state
-        if not self.current or state is None:
-            plan = ReviewResumePlan(False, _REVIEW_NO_RUN_TEXT)
-        else:
-            plan = inspect_review_pending_run(
-                self.review_run_dir_var.get(),
-                REPOS_ROOT / self.current.name,
-                self.current.branch,
-                state.head,
-            )
-        self.review_plan = plan
-        self.review_status_var.set(plan.message)
-        self._apply_lifecycle_state()
-
-    def browse_review_run_dir(self) -> None:
-        chosen = filedialog.askdirectory(title="FINAL REVIEW待ちのrun_dirを選択")
-        if chosen:
-            self.review_run_dir_var.set(chosen)
-            self._refresh_review_plan()
-
-    def load_review_decision_file(self) -> None:
-        chosen = filedialog.askopenfilename(
-            title="final-review-decision.jsonを選択",
-            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
-        )
-        if not chosen:
-            return
-        try:
-            text = Path(chosen).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            messagebox.showerror("レビュー結果の読込失敗", str(exc))
-            return
-        self.review_decision.delete("1.0", "end")
-        self.review_decision.insert("1.0", text)
-
-    def resume_ai_review(self) -> None:
-        """Hand a Final Review decision to `orchestrator.py run --resume-review`.
-
-        Reuses the normal AI run path (`ai_orchestrator` action, result file,
-        progress drain, candidate confirmation); it only builds a different command.
-        """
-        if not self.current or not self.repo_state or App._repo_busy(self):
-            return
-        if not self.repo_state.safe_for_lifecycle(self.current):
-            messagebox.showerror(
-                "レビュー再開停止",
-                "正式repo / branch / origin / tracked clean の安全条件を満たしていません。",
-            )
-            return
-        if self.repo_state.head.lower() != self.repo_state.origin_head.lower():
-            messagebox.showerror(
-                "レビュー再開停止",
-                "再開前は local HEAD == origin HEAD が必要です。",
-            )
-            return
-        self._refresh_review_plan()
-        plan = self.review_plan
-        if plan is None or not plan.ok:
-            messagebox.showerror(
-                "レビュー再開停止",
-                plan.message if plan else _REVIEW_NO_RUN_TEXT,
-            )
-            return
-        decision, error = parse_review_decision(
-            self.review_decision.get("1.0", "end"), plan.request_id
-        )
-        if decision is None:
-            messagebox.showerror("レビュー結果が不正です", error)
-            return
-
-        repo_name = self.current.name
-        result_path = Path(tempfile.gettempdir()) / f"dcc-ai-result-{repo_name}-{id(self)}.json"
-        decision_path = Path(tempfile.gettempdir()) / f"dcc-ai-review-decision-{repo_name}-{id(self)}.json"
-        try:
-            result_path.unlink(missing_ok=True)
-            decision_path.write_text(json.dumps(decision, ensure_ascii=False, indent=2), encoding="utf-8")
-        except OSError as exc:
-            messagebox.showerror("レビュー再開失敗", str(exc))
-            return
-
-        command = build_review_resume_command(
-            plan,
-            REPOS_ROOT / repo_name,
-            self.current.branch,
-            result_path,
-            decision_path,
-        )
-        try:
-            process = _spawn_ai_process(command)
-        except OSError as exc:
-            _unlink_quietly(decision_path)
-            messagebox.showerror("レビュー再開起動失敗", str(exc))
-            return
-
-        while True:
-            try:
-                self.ai_output_queue.get_nowait()
-            except queue.Empty:
-                break
-
-        self.ai_context = {
-            "repo_name": repo_name,
-            "result_path": result_path,
-            "base_sha": self.repo_state.head.lower(),
-            "decision_path": decision_path,
-        }
-        self.ai_stop_requested = False
-        self._begin_process(process, repo_name, "ai_orchestrator")
-        self.ai_status_var.set(f"レビュー結果（{decision['verdict']}）を返して再開中")
-        self._log(f"{repo_name}: Final Review {decision['verdict']} を返してOrchestratorを再開 ({plan.run_dir})")
-        self.banner_var.set("AI開発実行中。このrepoの競合操作を制限しています。")
-        self._set_button_states()
-
-        reader = threading.Thread(
-            target=self._read_ai_output,
-            args=(process,),
-            daemon=True,
-        )
-        reader.start()
-        self.master.after(250, self._poll)
-
-    def stop_ai_orchestrator(self) -> None:
-        """User-initiated AI safety stop.
-
-        Enabled only while an AI Orchestrator process is active. This is a
-        distinct action from closing the window: it never destroys the
-        window and window close never calls this. It only tears down the
-        Orchestrator process and its Claude/Codex child processes; it does
-        not touch source main, does not apply a candidate, and does not
-        push / BUILD / UPDATE / DEPLOY. The isolated worktree and run
-        logs are left on disk for a possible future resume.
-        """
-        if self.active_process is None or self.active_process[2] != "ai_orchestrator":
-            return
-        process, repo_name, _action = self.active_process
-        if not messagebox.askyesno(
-            "AI安全停止",
-            "実行中のAI Orchestrator（Claude / Codex等の子プロセスを含む）を安全停止しますか？\n\n"
-            "source mainは変更されず、candidateの自動適用・PUSH・BUILD・UPDATE・DEPLOYは行いません。\n"
-            "isolated worktreeとrun logは保持されます。",
-        ):
-            return
-        self.ai_stop_requested = True
-        self.ai_stop_button.configure(state="disabled")
-        _terminate_ai_process_tree(process)
-        self.ai_status_var.set("安全停止を要求しました...")
-        self._log(f"{repo_name}: AI安全停止を要求（ユーザーによる安全停止）。worktree / run logは保持します。")
-        self.banner_var.set("AI安全停止を実行中。完了までお待ちください。")
-
-    def _read_ai_output(self, process: subprocess.Popen[str]) -> None:
-        if process.stdout is None:
-            return
-        for line in process.stdout:
-            text = line.rstrip()
-            if text:
-                self.ai_output_queue.put(text)
-
-    def _drain_ai_output(self) -> None:
-        while True:
-            try:
-                line = self.ai_output_queue.get_nowait()
-            except queue.Empty:
-                return
-            if self.ai_context is not None and line.startswith(_AI_RUN_DIR_MARKER):
-                self.ai_context["run_dir"] = Path(line[len(_AI_RUN_DIR_MARKER):].strip())
-                self._apply_lifecycle_state()
-            self._log(f"AI: {line}")
-            self.ai_status_var.set(line)
-
     def _reload_after(self, repo_name: str) -> None:
         """Forced LOCAL+GITHUB reload for the repo, or defer it until it is selected."""
         if self.current and self.current.name == repo_name:
@@ -1497,128 +871,110 @@ class App(ttk.Frame):
             "closed": self.selection.closed,
         }
 
-    def _finish_ai_orchestrator(self, repo_name: str, rc: int) -> None:
-        context = self.ai_context or {}
-        self.ai_context = None
-        _unlink_quietly(context.get("decision_path"))
-        if self.ai_stop_requested:
-            self.ai_stop_requested = False
-            reason = AI_SAFETY_STOP_REASON
-            run_dir = context.get("run_dir")
-            if isinstance(run_dir, Path):
-                _mark_ai_run_stopped(run_dir)
-                self._log(f"{repo_name}: run状態を保持したままstatus.json / result.jsonへ{reason}を記録しました。")
-            else:
-                self._log(f"{repo_name}: run_dirが未取得のためstatus.json / result.jsonへの記録は行いません。")
-            self.ai_status_var.set(f"STOPPED: {reason}")
-            self._log(f"{repo_name}: AI Orchestrator STOPPED — {reason}。isolated worktree / run logは保持します。")
-            self.banner_var.set(f"AI Orchestratorは{reason}で停止しました。isolated worktree / run logは保持されています。")
-            self._reload_after(repo_name)
+    def _repo_name_busy(self, repo_name: str) -> bool:
+        if self.active_process is not None and self.current and self.current.name == repo_name:
+            return True
+        return any(name == repo_name for name, _ in ACTIVE_OPERATIONS.values())
+
+    def apply_ai_candidate(self, record: dict, run_dir: Path) -> None:
+        """Apply a completed Orchestrator run to the local expected branch (never push / BUILD / UPDATE).
+
+        Normal Development may have moved the repo while the run worked: then applying is *held*
+        (nothing is forced and the run stays completed), and the reason is shown."""
+        from tools.ai_orchestrator import runstate as run_state
+
+        repo_name = Path(str(record.get("repo", ""))).name
+        definition = next((d for d in self.definitions if d.name == repo_name), None)
+        candidate = str(record.get("candidate_sha", "")).strip().lower()
+        base_sha = str(record.get("base_sha", "")).strip().lower()
+        parent = getattr(self.orchestrator_window, "window", self.master)
+        if definition is None or not candidate_sha_is_valid(candidate):
+            messagebox.showerror("candidate適用停止", "対象repoまたはcandidate SHAを確認できません。", parent=parent)
             return
-
-        result_path = context.get("result_path")
-        payload: dict[str, object] = {}
-        if isinstance(result_path, Path) and result_path.is_file():
-            try:
-                raw = json.loads(result_path.read_text(encoding="utf-8"))
-                if isinstance(raw, dict):
-                    payload = raw
-            except (OSError, json.JSONDecodeError) as exc:
-                self._log(f"{repo_name}: AI result JSON読込失敗: {exc}")
-            finally:
-                try:
-                    result_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-        status = str(payload.get("status", ""))
-        if rc == 0 and status == "review_pending":
-            self.ai_status_var.set("FINAL REVIEW待ち — candidate未作成")
-            self._log(f"{repo_name}: Final Review request: {payload.get('run_dir', '')}")
-            if self.current and self.current.name == repo_name and payload.get("run_dir"):
-                self.review_run_dir_var.set(str(payload["run_dir"]))
-                self.review_decision.delete("1.0", "end")
-            self._reload_after(repo_name)
+        if self._repo_name_busy(repo_name):
+            messagebox.showinfo("candidate適用を保留", f"{repo_name}でRUN / BUILD / UPDATE等を実行中です。完了後に再度適用してください。", parent=parent)
             return
-        candidate = str(payload.get("candidate_sha", "")).strip().lower()
-        if rc != 0 or status != "candidate_ready" or not candidate_sha_is_valid(candidate):
-            error = str(payload.get("error", "")).strip() or f"rc={rc}"
-            self.ai_status_var.set(f"STOP: {error}")
-            self._log(f"{repo_name}: AI Orchestrator停止 — {error}")
-            # Provider failures remain in the Orchestrator status/log. A modal
-            # error from a hidden child must not block ordinary development.
-            self._reload_after(repo_name)
-            return
-
-        self.selection.provenance.ai_result(repo_name, candidate)
-        claude_calls = payload.get("claude_calls", "?")
-        codex_calls = payload.get("codex_calls", "?")
-        rounds = payload.get("rounds_used", "?")
-        self.ai_status_var.set(
-            f"CANDIDATE READY {short_sha(candidate)} / "
-            f"Recovery={rounds} Claude={claude_calls} Codex={codex_calls}"
-        )
-        self._log(
-            f"{repo_name}: AI candidate {candidate} "
-            f"(Recovery={rounds}, Claude={claude_calls}, Codex={codex_calls})"
-        )
-
-        if not self.current or self.current.name != repo_name:
-            self.selection.needs_reload.add(repo_name)
-            return
-
-        self._set_candidate_text(self.selection.provenance.text(repo_name))
-        base_sha = str(payload.get("base_sha", "") or context.get("base_sha", "")).lower()
         approved, unchanged = self._confirm_with_guard(
             "ai_apply",
             lambda: self._ai_apply_fields(repo_name),
             lambda: messagebox.askyesno(
-                "AI candidate ready",
-                f"candidate {candidate}\n\n"
-                "このcandidateをローカルexpected branchへfast-forwardして、"
-                "RUN_DEVで実機確認できる状態にしますか？\n\n"
-                "push / BUILD / UPDATEは行いません。",
+                "AI candidate",
+                f"candidate {candidate}\n\nこのcandidateをローカルexpected branchへfast-forwardし、"
+                "RUN / BUILDで実機確認できる状態にしますか？\n\npush / BUILD / UPDATEは行いません。",
+                parent=parent,
             ),
         )
         if not unchanged:
-            text = "AI candidate適用は中止されました（状態が変わりました）"
-            self.selection.post_action_notice[repo_name] = text
-            self.banner_var.set(text)
-            self._reload_after(repo_name)
+            self._log(f"{repo_name}: AI candidate適用は中止されました（状態が変わりました）")
             return
         if not approved:
-            text = f"AI candidate {short_sha(candidate)} は作成済み。ローカル適用は未実施です。"
-            self.selection.post_action_notice[repo_name] = text
-            self.banner_var.set(text)
-            self._reload_after(repo_name)
             return
-
-        # Bump the epoch and invalidate BEFORE the apply; the AI-origin candidate is kept.
         self.selection.new_epoch(repo_name, "ai-apply")
         try:
-            apply_local_candidate(
-                REPOS_ROOT / repo_name,
-                self.current,
-                base_sha=base_sha,
-                candidate_sha=candidate,
-            )
+            apply_local_candidate(REPOS_ROOT / repo_name, definition, base_sha=base_sha, candidate_sha=candidate)
         except RuntimeError as exc:
-            self.banner_var.set(f"AI candidate適用停止: {exc}")
-            self._log(f"{repo_name}: local candidate適用停止 — {exc}")
-            messagebox.showerror("candidate適用停止", str(exc))
+            text = f"Orchestrator成果物の適用を保留しました: {exc}"
+            self._log(f"{repo_name}: {text}")
+            self.banner_var.set(text)
+            messagebox.showwarning("candidate適用を保留", f"{exc}\n\nOrchestratorのrunと成果物(candidate {short_sha(candidate)})は保持されています。"
+                                   "base状態を確認してから再度適用してください。", parent=parent)
             self._reload_after(repo_name)
             return
-
-        self._log(f"{repo_name}: local expected branchをAI candidateへfast-forward {short_sha(candidate)}")
-        done = f"AI candidate {short_sha(candidate)} をローカル適用済み。RUN_DEVで実機確認してください。"
+        self.selection.provenance.ai_result(repo_name, candidate)
+        try:
+            run_state.mark_applied(run_dir, f"local branchへfast-forward済み {short_sha(candidate)}")
+        except Exception as exc:  # noqa: BLE001 - the note is informational
+            self._log(f"{repo_name}: run記録の更新に失敗: {exc}")
+        done = f"AI candidate {short_sha(candidate)} をローカル適用済み。RUN / BUILDで実機確認してください。"
+        self._log(f"{repo_name}: {done}")
         self.selection.post_action_notice[repo_name] = done
         self._reload_after(repo_name)
         self.banner_var.set(done)
-        messagebox.showinfo(
-            "AI candidate ready",
-            f"ローカルcandidateを適用しました。\n\n{candidate}\n\n"
-            "次はRUN_DEVで実機確認してください。push / BUILD / UPDATEは未実施です。",
-        )
+
+    # --- Orchestrator badge: reconnect visibility for runs that outlive DCC -------------
+    def _start_orchestrator_badge(self) -> None:
+        if self._closed:
+            return
+        # The thread gets only plain objects (never `self`): releasing a Tk object off the main thread aborts Tcl.
+        stop, results = self._badge_stop, self._badge_queue
+
+        def work() -> None:
+            from tools.ai_orchestrator import runstate as run_state
+
+            while not stop.is_set():
+                try:
+                    items = run_state.active_runs()
+                    payload = [(i["record"]["run_id"], Path(str(i["record"]["repo"])).name, i["record"]["stage"],
+                                i["liveness"]) for i in items]
+                except Exception:  # noqa: BLE001 - auxiliary
+                    payload = None
+                try:
+                    results.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    results.put_nowait(payload)
+                except queue.Full:
+                    pass
+                stop.wait(10.0)
+
+        threading.Thread(target=work, name="orchestrator-badge", daemon=True).start()
+
+    def _drain_orchestrator_badge(self) -> None:
+        try:
+            payload = self._badge_queue.get_nowait()
+        except queue.Empty:
+            return
+        if payload is None:
+            return
+        previous = getattr(self, "_badge_runs", None)
+        self._badge_runs = payload
+        text = "AI Orchestrator" if not payload else f"AI Orchestrator ● 実行中 {len(payload)}"
+        if self.orchestrator_button_var.get() != text:
+            self.orchestrator_button_var.set(text)
+        if previous is None and payload:
+            for run_id, repo, stage, liveness in payload:
+                self._log(f"AI Orchestrator: 実行中のrunを検出 {repo} / {stage} / {liveness}（{run_id}）。Orchestrator画面で進捗・ログ・残量を確認できます。")
 
     def _launch_fields(self, action: str) -> dict[str, object]:
         choice = getattr(self.entrypoints, action, None) if self.entrypoints else None
@@ -1829,24 +1185,13 @@ class App(ttk.Frame):
         if self.active_process is None:
             return
         process, repo_name, action = self.active_process
-        if action == "ai_orchestrator":
-            self._drain_ai_output()
         rc = process.poll()
         if rc is None:
-            self.master.after(250 if action == "ai_orchestrator" else 750, self._poll)
+            self.master.after(750, self._poll)
             return
 
-        if action == "ai_orchestrator":
-            self._drain_ai_output()
         self._end_process(repo_name)
         self._log(f"{repo_name}: {action.upper()} 終了 rc={rc}")
-
-        if action == "ai_orchestrator":
-            self.banner_var.set("AI完了処理中")
-            self._finish_ai_orchestrator(repo_name, rc)
-            if self.current and self.current.name == repo_name:
-                self._refresh_review_plan()
-            return
 
         if self.current and self.current.name == repo_name:
             self.refresh()

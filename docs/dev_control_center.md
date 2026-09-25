@@ -4,7 +4,7 @@
 
 ## 画面
 
-メインはrepo選択、RUN / BUILD / UPDATE、AI Orchestrator入口を上部へ配置します。最小1080×720。AI依頼、Final Review、run_dir、decision JSON、candidate、安全停止はOrchestrator別画面に置きます。別画面は独立した選択・実行状態を持ちます。repo登録指示はコピー可能な別画面で生成し、Claude / Codex直接実装へ渡せます。
+メインはrepo選択、RUN / BUILD / UPDATE、AI Orchestrator入口を上部へ配置します。最小1080×720。AI依頼、Main / Reviewer選択、Claude / Codex残量、run状態・ログ、candidate、AI安全停止はOrchestrator別画面に置きます。別画面は実行中runの一覧・再接続を持ち、DCCメインの表示領域を圧迫しません。repo登録指示はコピー可能な別画面で生成し、Claude / Codex直接実装へ渡せます。
 
 ## 操作と成果物
 
@@ -31,9 +31,9 @@ UPDATEの成果物hash計算はUI外のworkerで行います。UPDATEはBUILD記
 
 ## Orchestratorと終了
 
-review_pending / provider異常でrunが終了すれば通常操作のロックは解除します。他repoのAI実行でDCC全体をロックしません。同じrepoの実行中操作は競合防止のため停止します。
+Orchestratorのrunは独立worker processが所有し、DCCの実行中操作（`ACTIVE_OPERATIONS`）ではありません。Orchestratorの実行中・失敗・quota・crash・stale・usage取得失敗が、同じrepoを含む通常のRUN / BUILD / UPDATEをロックすることはありません（isolated worktreeで動くため）。RUN / BUILD / UPDATE自身の同一repo・同一出力先の競合だけを止めます。
 
-子画面の閉じる操作は非表示のみ。AI実行中のDCC終了は保留し、明示的なAI安全停止またはrun終了後に閉じます。DCC終了後の継続・再接続はPhase 2です。DCC自身の更新も実行中操作がある間は停止します。
+Orchestrator画面の×は画面を閉じるだけ、DCC終了はclient終了だけでrunは継続します（終了を保留するのはRUN / BUILD / UPDATE実行中だけ）。DCC起動時に実行中runを検出して操作ログとボタン（「AI Orchestrator ● 実行中 N」）へ表示し、画面を開くと同じrunへ再接続して進捗・ログ・usage・AI安全停止を使えます。AI安全停止はそのrunのprocess treeだけを終了します。成果物（candidate）の適用はユーザー確認後のfast-forwardのみで、sourceが移動していれば保留します。DCC自身の更新も実行中操作がある間は停止します。
 
 ## 検証
 

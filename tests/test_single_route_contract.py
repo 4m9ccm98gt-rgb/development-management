@@ -84,8 +84,9 @@ class DevelopmentRoutesTests(unittest.TestCase):
         text = _read("scripts/dev_control_center/app.py")
         self.assertIn("_start_new_repo_registration", text)
         self.assertIn('text="指示をコピー"', text)
-        self.assertIn("initial_ai_task", text)
-        self.assertIn("initial_test", text)
+        view = _read("scripts/dev_control_center/orchestrator_view.py")
+        self.assertIn("initial_ai_task", view)
+        self.assertIn("initial_test", view)
         self.assertNotIn("_copy_to_clipboard(build_new_repo_setup_prompt", text)
 
 
