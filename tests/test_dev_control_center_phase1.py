@@ -88,10 +88,83 @@ class BuildReceiptTests(unittest.TestCase):
     def test_release_passes_exact_target_and_validates_again(self):
         self.fake_build()
         request = p.release_snapshot(self.repo, self.target)
-        self.assertIn(str(self.target), request["command"])
+        self.assertIn(str(self.target.resolve()), request["command"])
         with patch.object(p.processes, "stream", return_value=0) as launch:
             self.assertEqual(p.release(self.repo, request), 0)
             launch.assert_called_once_with(request["command"], cwd=dcc.DM_ROOT, emit=p.processes.forward)
+
+    def short_form(self, path: Path) -> Path:
+        """The Windows 8.3 spelling of an existing path (same entity, different notation)."""
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(1024)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, 1024):
+            self.skipTest("8.3 short names unavailable")
+        short = Path(buffer.value)
+        if str(short) == str(path.resolve()):
+            self.skipTest("8.3 short names disabled on this volume")
+        return short
+
+    def released(self, request):
+        with patch.object(p.processes, "stream", return_value=0) as launch:
+            result = p.release(self.repo, request)
+        return result, launch
+
+    def test_update_records_one_canonical_target_everywhere(self):
+        self.fake_build()
+        request = p.release_snapshot(self.repo, self.target)
+        canonical = self.target.resolve()
+        stat = canonical.stat()
+        self.assertEqual(request["target"], str(canonical))
+        self.assertIn(str(canonical), request["command"])
+        self.assertEqual(request["target_identity"], [stat.st_dev, stat.st_ino])
+        self.assertEqual(request["destination_detail"], str(canonical))
+
+    @unittest.skipUnless(os.name == "nt", "8.3 short paths are Windows only")
+    def test_short_path_and_long_path_of_the_same_target_are_equivalent(self):
+        self.fake_build()
+        short = self.short_form(self.target)
+        long_request = p.release_snapshot(self.repo, self.target)
+        short_request = p.release_snapshot(self.repo, short)
+        self.assertEqual(short_request, long_request)
+        self.assertEqual(short_request["target"], str(self.target.resolve()))
+        for label, request in (("short-confirmed", short_request), ("long-confirmed", long_request)):
+            with self.subTest(label):
+                result, launch = self.released(request)
+                self.assertEqual(result, 0)
+                launch.assert_called_once()
+        # the confirmed request revalidates through either spelling of the target
+        for spelled in (self.target, short):
+            self.assertEqual(p.release_snapshot(self.repo, spelled), long_request)
+
+    def test_a_genuinely_different_target_still_refuses_update(self):
+        self.fake_build()
+        request = p.release_snapshot(self.repo, self.target)
+        other = self.root / "other-target"
+        other.mkdir()
+        with patch.object(p.processes, "stream") as launch:
+            with self.assertRaises(ValueError):
+                p.release(self.repo, dict(request, target=str(other)))
+            launch.assert_not_called()
+
+    def test_other_confirmed_conditions_still_refuse_update(self):
+        self.fake_build()
+        request = p.release_snapshot(self.repo, self.target)
+        for key, value in (("entry_hash", "0" * 64), ("adapter_hash", "0" * 64), ("target_identity", [0, 0]),
+                           ("command", ["other"]), ("destination_detail", "elsewhere")):
+            with self.subTest(key), patch.object(p.processes, "stream") as launch:
+                with self.assertRaises(ValueError):
+                    p.release(self.repo, dict(request, **{key: value}))
+                launch.assert_not_called()
+
+    @unittest.skipUnless(os.name == "nt", "junctions are Windows only")
+    def test_link_targets_are_still_rejected_before_normalisation(self):
+        self.fake_build()
+        junction = self.root / "junction"
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(self.target)], capture_output=True)
+        if made.returncode != 0:
+            self.skipTest("cannot create a junction")
+        with self.assertRaises(ValueError):
+            p.release_snapshot(self.repo, junction)
 
     def test_changed_artifact_script_input_or_target_refuses_update(self):
         for what in ("artifact", "script", "input", "target"):

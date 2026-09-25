@@ -242,6 +242,11 @@ def release_command(repo: Path, artifact: Path, target: Path) -> tuple[list[str]
 
 
 def release_snapshot(repo: Path, target: Path) -> dict:
+    # Links are rejected on the path as given (resolve() would silently follow them); everything
+    # recorded below then derives from one canonical target, so an 8.3 short path and its long
+    # form (same entity) compare equal while a genuinely different target still does not.
+    no_links(target)
+    target = target.resolve()
     record = read_receipt(repo)
     artifact = Path(record["artifact"])
     # Mirror the existing next-day updater's documented child-folder selection
