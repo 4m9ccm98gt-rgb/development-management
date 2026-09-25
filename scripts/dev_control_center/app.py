@@ -37,6 +37,7 @@ from .core import (
     short_sha,
     unmanaged_github_repositories,
 )
+from . import provenance, processes, entrypoints as machine_entries
 from .loader import Coordinator, NoticeKind
 from .selection import (
     DEV_MANAGEMENT,
@@ -54,6 +55,7 @@ TYPES_PATH = DM_ROOT / "scripts" / "repo_types.toml"
 BRANCHES_PATH = DM_ROOT / "scripts" / "dev_control_center_repos.toml"
 LAUNCHER_PATH = DM_ROOT / "DEV_CONTROL_CENTER.pyw"
 HEARTBEAT_MS = 50
+ACTIVE_OPERATIONS: dict[int, tuple[str, str]] = {}
 LOADING_TEXT = "読込中..."
 STATE_CHANGED_TEXT = "CONFIRMEDの後に状態が変わったため中止しました。再確認してください"
 
@@ -423,7 +425,11 @@ def _spawn_ai_process(command: list[str]) -> subprocess.Popen[str]:
 
 
 class App(ttk.Frame):
-    def __init__(self, master: tk.Tk) -> None:
+    def __init__(self, master: tk.Tk, *, orchestrator_mode: bool = False) -> None:
+        self.orchestrator_mode = orchestrator_mode
+        self.orchestrator_window = None
+        self.orchestrator_app = None
+        self._closed = False
         configure_dark_theme(master)
         super().__init__(master, padding=14)
         self.master = master
@@ -440,6 +446,12 @@ class App(ttk.Frame):
         self._heartbeat = HeartbeatMonitor(HEARTBEAT_MS / 1000)
         self._suggest_seed = ""
         self.active_process = None
+        self.pending_preflight = False
+        self._stream_key = None
+        self._stream_open = False
+        self.lifecycle_events: queue.Queue = queue.Queue(maxsize=2048)
+        self.lifecycle_jobs: dict[str, object] = {}
+        self.lifecycle_cancellations: dict[str, threading.Event] = {}
         self.ai_output_queue: queue.Queue[str] = queue.Queue()
         self.ai_context: dict[str, object] | None = None
         self.ai_stop_requested = False
@@ -505,12 +517,33 @@ class App(ttk.Frame):
         return self.selection.authoritative_github(self.current.name) if self.current else None
 
     def _on_close(self) -> None:
+        if getattr(self, "orchestrator_mode", False) is True:
+            self.master.withdraw()
+            return
+        if any(action == "ai_orchestrator" for _, action in ACTIVE_OPERATIONS.values()):
+            messagebox.showinfo("AI Orchestrator実行中", "Phase 1ではDCC終了後の継続・再接続は未対応です。\n画面は閉じず、必要ならOrchestrator画面のAI安全停止を操作してください。")
+            return
+        if ACTIVE_OPERATIONS:
+            messagebox.showinfo("工程実行中", "工程完了後にDCCを閉じてください。")
+            return
+        child = getattr(self, "orchestrator_app", None)
+        if isinstance(child, App):
+            child._closed = True
+            child.selection.close()
+        self._closed = True
         if TIMING.enabled:
             TIMING.event("ui-lag-summary", **self._heartbeat.stats())
         self.selection.close()
+        # Destroying Tk does not cancel pending Tcl after callbacks. Cancel them
+        # before destroying the root, including the hidden Orchestrator view.
+        if isinstance(self.master, tk.Tk):
+            for token in self.master.tk.call("after", "info"):
+                self.master.tk.call("after", "cancel", token)
         self.master.destroy()
 
     def _heartbeat_tick(self) -> None:
+        if self._closed:
+            return
         lag = self._heartbeat.beat(time.perf_counter())
         if TIMING.enabled and lag > 0.1:
             TIMING.event("ui-lag", ms=round(lag * 1000))
@@ -521,11 +554,13 @@ class App(ttk.Frame):
             import logging
 
             logging.getLogger(__name__).exception("selection pump failed")
+        self._drain_lifecycle_events()
+        self._set_button_states()
         self.master.after(HEARTBEAT_MS, self._heartbeat_tick)
 
     def _build(self) -> None:
-        self.master.title("Development Control Center")
-        self.master.geometry("1320x860")
+        self.master.title("AI Orchestrator" if self.orchestrator_mode else "Development Control Center")
+        self.master.geometry("1200x800" if self.orchestrator_mode else "1080x720")
         self.master.minsize(1080, 720)
         self.pack(fill="both", expand=True)
         self.columnconfigure(1, weight=1)
@@ -535,7 +570,7 @@ class App(ttk.Frame):
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         left.rowconfigure(1, weight=1)
         ttk.Label(left, text="Managed Repositories", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
-        self.repo_list = tk.Listbox(left, width=36, height=17, exportselection=False)
+        self.repo_list = tk.Listbox(left, width=29, height=12, exportselection=False)
         configure_dark_listbox(self.repo_list)
         self.repo_list.grid(row=1, column=0, sticky="nsew")
         self.repo_list.bind("<<ListboxSelect>>", lambda _e: self._select_repo())
@@ -552,7 +587,7 @@ class App(ttk.Frame):
         new_box = ttk.LabelFrame(left, text="GitHub未登録repo", padding=8)
         new_box.grid(row=3, column=0, sticky="ew", pady=(12, 0))
         ttk.Label(new_box, textvariable=self.remote_status_var, wraplength=300).pack(anchor="w")
-        self.new_repo_list = tk.Listbox(new_box, width=34, height=6, exportselection=False)
+        self.new_repo_list = tk.Listbox(new_box, width=29, height=3, exportselection=False)
         configure_dark_listbox(self.new_repo_list)
         self.new_repo_list.pack(fill="x", pady=(6, 6))
         new_buttons = ttk.Frame(new_box)
@@ -577,11 +612,12 @@ class App(ttk.Frame):
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(7, weight=1)
+        self.main_panel = right
         ttk.Label(right, textvariable=self.title_var, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
-        ttk.Label(right, textvariable=self.meta_var).grid(row=1, column=0, sticky="w", pady=(2, 10))
+        ttk.Label(right, textvariable=self.meta_var, wraplength=580).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
         status = ttk.LabelFrame(right, text="ローカル現在状態", padding=10)
-        status.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        status.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         status.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("branch", self.branch_var),
@@ -590,10 +626,10 @@ class App(ttk.Frame):
             ("working tree", self.clean_var),
         ]):
             ttk.Label(status, text=label, width=14).grid(row=row, column=0, sticky="w")
-            ttk.Label(status, textvariable=var).grid(row=row, column=1, sticky="w")
+            ttk.Label(status, textvariable=var, wraplength=440).grid(row=row, column=1, sticky="w")
 
         github_box = ttk.LabelFrame(right, text="GitHub / PR / CI", padding=10)
-        github_box.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        github_box.grid(row=5, column=0, sticky="ew", pady=(0, 10))
         github_box.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("branch HEAD", self.github_head_var),
@@ -601,7 +637,7 @@ class App(ttk.Frame):
             ("open PR", self.pr_var),
         ]):
             ttk.Label(github_box, text=label, width=14).grid(row=row, column=0, sticky="w")
-            ttk.Label(github_box, textvariable=var, wraplength=780).grid(row=row, column=1, sticky="w")
+            ttk.Label(github_box, textvariable=var, wraplength=540).grid(row=row, column=1, sticky="w")
         ttk.Button(github_box, text="PR / CIを開く", command=self.open_pr_or_ci).grid(row=0, column=2, rowspan=3, sticky="ns", padx=(12, 0))
 
         ai_box = ttk.LabelFrame(
@@ -609,7 +645,9 @@ class App(ttk.Frame):
             text="AI開発 — Claude実装 → Verification → Final Review → local candidate",
             padding=12,
         )
-        ai_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        self.ai_panel = ai_box
+        if self.orchestrator_mode:
+            ai_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         ai_box.columnconfigure(1, weight=1)
         ttk.Label(ai_box, text="AI依頼", width=14).grid(row=0, column=0, sticky="nw")
         self.ai_task = tk.Text(ai_box, height=8, wrap="word")
@@ -635,7 +673,7 @@ class App(ttk.Frame):
         ttk.Label(
             ai_box,
             textvariable=self.ai_status_var,
-            wraplength=820,
+            wraplength=560,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(
             ai_box,
@@ -660,7 +698,7 @@ class App(ttk.Frame):
         ttk.Button(review_box, text="JSONを読み込む", command=self.load_review_decision_file).grid(
             row=1, column=2, sticky="new", padx=(8, 0), pady=(8, 0)
         )
-        ttk.Label(review_box, textvariable=self.review_status_var, wraplength=780).grid(
+        ttk.Label(review_box, textvariable=self.review_status_var, wraplength=540).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
         self.review_resume_button = ttk.Button(
@@ -670,27 +708,27 @@ class App(ttk.Frame):
         )
         self.review_resume_button.configure(state="disabled")
         self.review_resume_button.grid(row=2, column=2, sticky="ew", padx=(8, 0), pady=(8, 0))
-        ttk.Label(review_box, text=f"形式: {_REVIEW_DECISION_TEMPLATE}", wraplength=780).grid(
+        ttk.Label(review_box, text=f"形式: {_REVIEW_DECISION_TEMPLATE}", wraplength=540).grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(4, 0)
         )
 
         lifecycle = ttk.LabelFrame(right, text="実機確認・配布", padding=10)
-        lifecycle.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        lifecycle.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         for col in range(4):
             lifecycle.columnconfigure(col, weight=1)
 
-        ttk.Label(lifecycle, text="candidate SHA").grid(row=0, column=0, sticky="w")
-        ttk.Entry(lifecycle, textvariable=self.candidate_var).grid(
-            row=0, column=1, columnspan=2, sticky="ew"
-        )
+        candidate_panel = ttk.Frame(ai_box)
+        candidate_panel.grid(row=5, column=0, columnspan=4, sticky="ew")
+        ttk.Label(candidate_panel, text="candidate SHA").pack(side="left")
+        ttk.Entry(candidate_panel, textvariable=self.candidate_var).pack(side="left", fill="x", expand=True)
         ttk.Label(
-            lifecycle,
+            candidate_panel,
             textvariable=self.candidate_source_var,
-        ).grid(row=0, column=3, sticky="w", padx=(8, 0))
+        ).pack(side="left")
 
         self.run_button = ttk.Button(
             lifecycle,
-            text="RUN_DEV",
+            text="RUN",
             command=lambda: self.launch("run"),
         )
         self.run_button.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(8, 0))
@@ -716,11 +754,24 @@ class App(ttk.Frame):
 
         ttk.Label(
             lifecycle,
-            text="通常ルートはAI開発 → local candidate → RUN_DEV。GitHub単独開発の入口は表示しません。",
+            text="RUN / BUILDは現在の作業内容を使用。UPDATEは成果物・配布先の確認が必要です。", wraplength=570,
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
+        self.orchestrator_button = ttk.Button(lifecycle, text="AI Orchestrator", command=self.open_orchestrator)
+        self.orchestrator_button.grid(row=1, column=3, sticky="ew", padx=(3, 0), pady=(8, 0))
+        self.operation_stop_button = ttk.Button(lifecycle, text="このrepoの実行を停止", command=self.stop_lifecycle)
+        self.operation_stop_button.grid(row=0, column=0, columnspan=2, sticky="w")
+        if self.orchestrator_mode:
+            lifecycle.grid_remove()
+            status.grid_remove()
+            github_box.grid_remove()
+            new_box.grid_remove()
+            update_box.grid_remove()
+
         entries = ttk.LabelFrame(right, text="検出した正式入口", padding=10)
-        entries.grid(row=6, column=0, sticky="ew", pady=(0, 10))
+        # Entry paths are available in tool logs; keep the main screen compact.
+        if self.orchestrator_mode:
+            entries.grid_remove()
         entries.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("SYNC", self.sync_var),
@@ -729,7 +780,7 @@ class App(ttk.Frame):
             ("UPDATE/DEPLOY", self.release_var),
         ]):
             ttk.Label(entries, text=label, width=16).grid(row=row, column=0, sticky="nw")
-            ttk.Label(entries, textvariable=var, wraplength=820).grid(row=row, column=1, sticky="w")
+            ttk.Label(entries, textvariable=var, wraplength=560).grid(row=row, column=1, sticky="w")
 
         log_box = ttk.LabelFrame(right, text="操作ログ", padding=8)
         log_box.grid(row=7, column=0, sticky="nsew")
@@ -739,6 +790,25 @@ class App(ttk.Frame):
         configure_dark_text(self.log)
         self.log.grid(row=0, column=0, sticky="nsew")
         ttk.Label(right, textvariable=self.banner_var).grid(row=8, column=0, sticky="w", pady=(8, 0))
+
+    def open_orchestrator(self) -> None:
+        if self.orchestrator_window is None or not self.orchestrator_window.winfo_exists():
+            window = tk.Toplevel(self.master)
+            self.orchestrator_window = window
+            self.orchestrator_app = App(window, orchestrator_mode=True)
+            if self.current:
+                child = self.orchestrator_app
+                index = next(i for i, d in enumerate(child.definitions) if d.name == self.current.name)
+                child.repo_list.selection_clear(0, "end")
+                child.repo_list.selection_set(index)
+                child._select_repo()
+        self.orchestrator_window.deiconify()
+        self.orchestrator_window.lift()
+
+    def _repo_busy(self) -> bool:
+        if self.active_process is not None:
+            return True
+        return bool(self.current and any(name == self.current.name for name, _ in ACTIVE_OPERATIONS.values()))
 
     def _select_repo(self) -> None:
         selection = self.repo_list.curselection()
@@ -884,11 +954,12 @@ class App(ttk.Frame):
         return bool(
             self.self_update_sha
             and self.active_process is None
+            and not ACTIVE_OPERATIONS
             and self.self_update_var.get() != "確認中"
         )
 
     def _apply_lifecycle_state(self) -> None:
-        busy = self.active_process is not None
+        busy = App._repo_busy(self)
         has_current = self.current is not None
         repo_state = self.repo_state
         entrypoints = self.entrypoints
@@ -1045,23 +1116,16 @@ class App(ttk.Frame):
 
     def _start_new_repo_registration(self, remote: RemoteRepo, local_path: Path) -> None:
         """Select development-management and put the registration task in its AI request field."""
-        index = next(
-            (i for i, item in enumerate(self.definitions) if item.name == "development-management"),
-            None,
-        )
-        if index is None:
-            messagebox.showerror("セットアップ停止", "development-managementが管理登録されていません。")
-            return
-        self.repo_list.selection_clear(0, "end")
-        self.repo_list.selection_set(index)
-        self._select_repo()
-        self.ai_task.delete("1.0", "end")
-        self.ai_task.insert("1.0", build_new_repo_setup_prompt(remote, local_path))
-        self._log(f"{remote.name}: clone確認済み。development-managementのAI依頼へ登録タスクをセットしました。")
-        messagebox.showinfo(
-            "新規repo",
-            "正式ローカルrepoを確認しました。\ndevelopment-managementのAI依頼欄へ登録タスクをセットしました。\n内容を確認して「AI開発開始」を押してください。",
-        )
+        prompt = build_new_repo_setup_prompt(remote, local_path)
+        window = tk.Toplevel(self.master)
+        window.title("新規repo登録 — Claude / Codexへの指示")
+        window.geometry("760x480")
+        text = tk.Text(window, wrap="word")
+        text.pack(fill="both", expand=True, padx=12, pady=12)
+        text.insert("1.0", prompt)
+        text.configure(state="disabled")
+        ttk.Button(window, text="指示をコピー", command=lambda: self._copy_to_clipboard(prompt)).pack(pady=8)
+        self._log(f"{remote.name}: 登録指示を生成しました。Claude / Codexで直接実装できます。")
 
     def check_self_update(self) -> None:
         self.self_update_sha = ""
@@ -1140,7 +1204,7 @@ class App(ttk.Frame):
         sync_path = DM_ROOT / "SYNC_CLICK_ME.cmd"
         command = ["cmd.exe", "/c", "call", str(sync_path), sha, "--no-pause"]
         try:
-            completed = subprocess.run(command, cwd=DM_ROOT, check=False)
+            completed = subprocess.run(command, cwd=DM_ROOT, check=False, **processes.hidden_options())
         except OSError as exc:
             messagebox.showerror("更新起動失敗", str(exc))
             return
@@ -1150,15 +1214,14 @@ class App(ttk.Frame):
         self.selection.self_update_epoch += 1
         self._log(f"Control Center: self update完了 → {short_sha(sha)}")
         try:
-            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if sys.executable.lower().endswith("python.exe") else 0
-            subprocess.Popen([sys.executable, str(LAUNCHER_PATH)], cwd=DM_ROOT, creationflags=flags)
+            subprocess.Popen([sys.executable, str(LAUNCHER_PATH)], cwd=DM_ROOT, **processes.hidden_options())
         except OSError as exc:
             messagebox.showwarning("更新完了", f"更新は完了しましたが自動再起動に失敗しました。\n{exc}\n\nDEV_CONTROL_CENTER.pyw を開き直してください。")
             return
         self._on_close()
 
     def launch_ai_orchestrator(self) -> None:
-        if not self.current or not self.repo_state or self.active_process is not None:
+        if not self.current or not self.repo_state or App._repo_busy(self):
             return
         if not self.repo_state.safe_for_lifecycle(self.current):
             messagebox.showerror(
@@ -1236,7 +1299,7 @@ class App(ttk.Frame):
         self._begin_process(process, self.current.name, "ai_orchestrator")
         self.ai_status_var.set("実行中 — 失敗時のみRecovery（最大30回）")
         self._log(f"{self.current.name}: AI Orchestrator開始（Recovery上限30回）")
-        self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
+        self.banner_var.set("AI開発実行中。このrepoの競合操作を制限しています。")
         self._set_button_states()
 
         reader = threading.Thread(
@@ -1290,7 +1353,7 @@ class App(ttk.Frame):
         Reuses the normal AI run path (`ai_orchestrator` action, result file,
         progress drain, candidate confirmation); it only builds a different command.
         """
-        if not self.current or not self.repo_state or self.active_process is not None:
+        if not self.current or not self.repo_state or App._repo_busy(self):
             return
         if not self.repo_state.safe_for_lifecycle(self.current):
             messagebox.showerror(
@@ -1359,7 +1422,7 @@ class App(ttk.Frame):
         self._begin_process(process, repo_name, "ai_orchestrator")
         self.ai_status_var.set(f"レビュー結果（{decision['verdict']}）を返して再開中")
         self._log(f"{repo_name}: Final Review {decision['verdict']} を返してOrchestratorを再開 ({plan.run_dir})")
-        self.banner_var.set("AI開発実行中。完了まで別工程はロックします。")
+        self.banner_var.set("AI開発実行中。このrepoの競合操作を制限しています。")
         self._set_button_states()
 
         reader = threading.Thread(
@@ -1429,7 +1492,7 @@ class App(ttk.Frame):
         return {
             "repo": self.current.name if self.current else None,
             "epoch": self.selection.lifecycle_epoch.get(repo_name),
-            "idle": self.active_process is None,
+            "idle": not App._repo_busy(self),
             "candidate": self.selection.provenance.text(repo_name),
             "closed": self.selection.closed,
         }
@@ -1482,10 +1545,8 @@ class App(ttk.Frame):
             error = str(payload.get("error", "")).strip() or f"rc={rc}"
             self.ai_status_var.set(f"STOP: {error}")
             self._log(f"{repo_name}: AI Orchestrator停止 — {error}")
-            messagebox.showerror(
-                "AI開発停止",
-                f"candidateは作成されませんでした。\n\n{error}",
-            )
+            # Provider failures remain in the Orchestrator status/log. A modal
+            # error from a hidden child must not block ordinary development.
             self._reload_after(repo_name)
             return
 
@@ -1568,57 +1629,185 @@ class App(ttk.Frame):
             "head": self.repo_state.head if self.repo_state else None,
             "state_generation": self.selection.state_generation,
             "epoch": self.selection.lifecycle_epoch.get(self.current.name) if self.current else None,
-            "idle": self.active_process is None,
+            "idle": not App._repo_busy(self),
         }
 
     def launch(self, action: str) -> None:
-        if not self.current or not self.entrypoints or not self.repo_state or self.active_process is not None:
+        if not self.current or App._repo_busy(self):
             return
-        if not self.repo_state.safe_for_lifecycle(self.current):
-            messagebox.showerror("STOP", "正式repo / branch / origin / tracked clean の安全条件を満たしていません。")
+        definition = self.current
+        repo_root = REPOS_ROOT / definition.name
+
+        def inspect():
+            from .core import discover_entrypoints
+            state = inspect_repo(repo_root, definition)
+            entries = discover_entrypoints(repo_root, definition.repo_type, application_implemented=definition.application_implemented)
+            if not state.safe_for_development(definition):
+                raise ValueError("正式repo / originを確認できません")
+            choice = getattr(entries, action)
+            if not choice.ready or not choice.path:
+                raise ValueError(f"{action.upper()}の正式入口を一意に特定できません")
+            if action in {"run", "build"} and not machine_entries.supported(repo_root, action):
+                raise ValueError("非対話entrypoint未登録です。dcc_entrypoints.jsonで本体を指定してください")
+            return state, choice
+
+        def ready(result):
+            state, choice = result
+            if self.current != definition or App._repo_busy(self):
+                self._log(f"{definition.name}: 開始中止（選択または実行状態が変化）")
+                return
+            if action == "sync":
+                self._log("SYNCは手動の正式入口を使用してください。DCC通常操作はRUN / BUILD / UPDATEです。")
+                return
+            if action == "run":
+                command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.entrypoints", "run", "--repo", str(repo_root)]
+                self._start_lifecycle(command, definition.name, action)
+                return
+            if action == "build":
+                profile = provenance.PROFILES.get(definition.name)
+                if profile:
+                    artifact = (repo_root / profile[0]).resolve()
+                else:
+                    folder = filedialog.askdirectory(title="BUILD成果物の出力フォルダを指定", parent=self.master)
+                    if not folder:
+                        return
+                    artifact = Path(folder).resolve()
+                if artifact == repo_root.resolve() or repo_root.resolve().is_relative_to(artifact):
+                    raise ValueError("repo全体やその親を成果物には指定できません")
+                if self.current != definition or App._repo_busy(self):
+                    return
+                command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.provenance", "build",
+                           "--repo", str(repo_root), "--entry", str(choice.path), "--artifact", str(artifact)]
+                self._start_lifecycle(command, definition.name, action)
+                return
+            folder = filedialog.askdirectory(title="配布先フォルダを選択（HDD更新はドライブ直下）", parent=self.master)
+            if folder:
+                self._prepare_release(repo_root, definition, Path(folder))
+
+        self._prepare_operation(definition.name, action, inspect, ready)
+
+    def _prepare_operation(self, repo_name: str, action: str, work, ready) -> None:
+        token = object()
+        ACTIVE_OPERATIONS[id(token)] = (repo_name, action + "-check")
+        self.banner_var.set(f"{repo_name}: {action.upper()}開始条件を確認中...")
+
+        def inspect():
+            try:
+                result, error = work(), None
+            except Exception as exc:
+                result, error = None, str(exc)
+            self.lifecycle_events.put(("prepared", token, repo_name, action, result, error, ready))
+
+        threading.Thread(target=inspect, daemon=True).start()
+        self._set_button_states()
+
+    def _start_lifecycle(self, command: list[str], repo_name: str, action: str) -> None:
+        if any(name == repo_name for name, _ in ACTIVE_OPERATIONS.values()):
+            self._log(f"{repo_name}: 競合する操作があるため開始しません")
             return
-        choice = getattr(self.entrypoints, action)
-        if not choice.ready or not choice.path:
-            messagebox.showerror("STOP", f"{action.upper()} の正式入口を一意に特定できません。")
+        token = object()
+        self.lifecycle_jobs[repo_name] = token
+        cancel = threading.Event()
+        self.lifecycle_cancellations[repo_name] = cancel
+        ACTIVE_OPERATIONS[id(token)] = (repo_name, action)
+        self.selection.process_boundary(repo_name, f"process-start:{action}")
+        self._log(f"{repo_name}: {action.upper()}開始（非対話・バックグラウンド）")
+
+        def execute():
+            try:
+                rc = processes.stream(command, cwd=DM_ROOT,
+                    emit=lambda text: self.lifecycle_events.put(("output", repo_name, action, text)), cancel=cancel)
+            except Exception as exc:
+                self.lifecycle_events.put(("output", repo_name, action, f"起動失敗: {exc}\n"))
+                rc = 1
+            self.lifecycle_events.put(("finished", token, repo_name, action, rc))
+
+        threading.Thread(target=execute, daemon=True).start()
+        self._set_button_states()
+
+    def stop_lifecycle(self) -> None:
+        if not self.current:
+            return
+        name = self.current.name
+        cancel = self.lifecycle_cancellations.get(name)
+        if cancel is not None and messagebox.askyesno("実行停止", f"{name}の実行と子processを停止しますか？\nBUILD中の成果物はUPDATE可能と扱いません。", parent=self.master):
+            cancel.set()
+            self._log(f"{name}: 明示的な停止を要求しました")
+
+    def _drain_lifecycle_events(self) -> None:
+        # Bounded work per tick keeps movement/selection responsive under log floods.
+        deadline = time.monotonic() + 0.008
+        for _ in range(100):
+            if time.monotonic() >= deadline:
+                break
+            try:
+                event = self.lifecycle_events.get_nowait()
+            except queue.Empty:
+                break
+            if event[0] == "output":
+                _, repo, action, text = event
+                self._log_process(repo, action, text)
+            elif event[0] == "prepared":
+                _, token, repo, action, result, error, ready = event
+                ACTIVE_OPERATIONS.pop(id(token), None)
+                if error:
+                    self.banner_var.set(f"{repo}: {action.upper()}停止 — {error}")
+                    self._log(self.banner_var.get())
+                else:
+                    try:
+                        ready(result)
+                    except Exception as exc:
+                        self.banner_var.set(f"{repo}: {action.upper()}停止 — {exc}")
+                        self._log(self.banner_var.get())
+            else:
+                _, token, repo, action, rc = event
+                ACTIVE_OPERATIONS.pop(id(token), None)
+                self.lifecycle_jobs.pop(repo, None)
+                cancellation = self.lifecycle_cancellations.pop(repo, None)
+                self.selection.process_boundary(repo, f"process-end:{action}")
+                outcome = "停止" if cancellation and cancellation.is_set() else ("成功" if rc == 0 else "失敗")
+                text = f"{repo}: {action.upper()} {outcome} rc={rc}"
+                self._log(text)
+                self.selection.post_action_notice[repo] = text
+                self.banner_var.set(text)
+                self._reload_after(repo)
+        self._set_button_states()
+
+    def _prepare_release(self, repo_root: Path, definition: RepoDefinition, target: Path) -> None:
+        if self.current != definition or App._repo_busy(self):
             return
 
-        args: list[str] = []
-        candidate = self.candidate_var.get().strip()
-        if action == "sync":
-            if not candidate_sha_is_valid(candidate):
-                messagebox.showerror("STOP", "candidateは完全40桁SHAで指定してください。")
+        def ready(snapshot):
+            if self.current != definition or App._repo_busy(self):
                 return
-            args = [candidate]
-        elif not self._candidate_matches_local():
-            messagebox.showerror("STOP", "ローカルHEADがcandidate SHAと一致していません。先にSYNCしてください。")
-            return
+            record = snapshot["receipt"]
+            details = (f"repo: {repo_root}\nBUILD: {record['build_id']}\nbase HEAD: {record['base_head']}\n"
+                       f"dirty: {record['dirty']}\n成果物: {record['artifact']}\nSHA256: {record['artifact_hash']}\n"
+                       f"配布先: {snapshot.get('destination_detail', snapshot['target'])}\n\nこの成果物を実機確認済みで、UPDATEを実行しますか？")
+            if not messagebox.askyesno("UPDATE確認", details, parent=self.master):
+                self.banner_var.set("UPDATEをキャンセルしました")
+                return
+            if self.current != definition or App._repo_busy(self):
+                return
+            request_path = provenance.receipt_path(repo_root).with_name("update-" + record["build_id"] + ".json")
+            provenance.write_json(request_path, snapshot)
+            command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.provenance", "release",
+                       "--repo", str(repo_root), "--request", str(request_path)]
+            self._start_lifecycle(command, definition.name, "release")
 
-        if action == "release":
-            approved, unchanged = self._confirm_with_guard(
-                "release",
-                lambda: self._launch_fields(action),
-                lambda: messagebox.askyesno(
-                    self.entrypoints.release_label,
-                    f"candidate {candidate}\n\nこのSHAをユーザー実機確認済みで、必要なBUILDも完了していますか？\n正式な配布/更新入口を起動します。",
-                ),
-            )
-            if not approved:
-                return
-            if not unchanged:
-                messagebox.showinfo("STOP", STATE_CHANGED_TEXT)
-                self.refresh_all()
-                return
-        self._launch_cmd(choice.path, args, action)
+        self._prepare_operation(definition.name, "release", lambda: provenance.release_snapshot(repo_root, target), ready)
 
     def _begin_process(self, process, repo_name: str, action: str) -> None:
         """The ONLY place that sets active_process: new epoch, invalidate, cancel old loads."""
         self.active_process = (process, repo_name, action)
+        ACTIVE_OPERATIONS[id(self)] = (repo_name, action)
         if self.selection.process_boundary(repo_name, f"process-start:{action}"):
             self.self_update_sha = ""
         if self.current and self.current.name == repo_name:
             self._set_candidate_text(self.selection.provenance.text(repo_name))
 
     def _end_process(self, repo_name: str) -> None:
+        ACTIVE_OPERATIONS.pop(id(self), None)
         self.active_process = None
         if self.selection.process_boundary(repo_name, "process-end"):
             self.self_update_sha = ""
@@ -1629,22 +1818,12 @@ class App(ttk.Frame):
             self.selection.needs_reload.add(repo_name)
 
     def _launch_cmd(self, path: Path, args: list[str], action: str) -> None:
-        if path.suffix.lower() not in {".cmd", ".bat"}:
-            messagebox.showerror("STOP", f"CMD/BATの正式入口だけ実行します: {path.name}")
-            return
-        repo_root = REPOS_ROOT / self.current.name
-        command = ["cmd.exe", "/c", "call", str(path), *args]
-        try:
-            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            process = subprocess.Popen(command, cwd=path.parent, creationflags=flags)
-        except OSError as exc:
-            messagebox.showerror("起動失敗", str(exc))
-            return
-        self._begin_process(process, self.current.name, action)
-        self._log(f"{self.current.name}: {action.upper()} → {path.relative_to(repo_root)}")
-        self.banner_var.set(f"{action.upper()} 実行中。完了まで別工程はロックします。")
-        self._set_button_states()
-        self.master.after(750, self._poll)
+        # Do not fall back to a manual CMD with pause/input/start behavior.
+        if action != "run" or not self.current:
+            raise ValueError("手動CMDの直接実行は非対応です")
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.entrypoints", "run",
+                   "--repo", str(REPOS_ROOT / self.current.name)]
+        self._start_lifecycle(command, self.current.name, action)
 
     def _poll(self) -> None:
         if self.active_process is None:
@@ -1677,15 +1856,41 @@ class App(ttk.Frame):
 
     def _set_button_states(self) -> None:
         self._apply_lifecycle_state()
+        if hasattr(self, "operation_stop_button"):
+            running = self.current and self.current.name in self.lifecycle_cancellations
+            self.operation_stop_button.configure(state="normal" if running else "disabled")
 
     def _copy_to_clipboard(self, text: str) -> None:
         self.master.clipboard_clear()
         self.master.clipboard_append(text)
         self.master.update_idletasks()
 
+    def _log_process(self, repo: str, action: str, text: str) -> None:
+        key = (repo, action)
+        self.log.configure(state="normal")
+        if self._stream_key != key and self._stream_open:
+            self.log.insert("end", "\n")
+            self._stream_open = False
+        self._stream_key = key
+        for piece in text.splitlines(keepends=True):
+            if not self._stream_open:
+                self.log.insert("end", f"[{repo} {action.upper()}] ")
+            self.log.insert("end", piece)
+            self._stream_open = not piece.endswith("\n")
+        if int(self.log.index("end-1c").split(".")[0]) > 12000:
+            self.log.delete("1.0", "2000.0")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
     def _log(self, text: str) -> None:
         self.log.configure(state="normal")
+        if self._stream_open:
+            self.log.insert("end", "\n")
+        self._stream_open = False
+        self._stream_key = None
         self.log.insert("end", text + "\n")
+        if int(self.log.index("end-1c").split(".")[0]) > 12000:
+            self.log.delete("1.0", "2000.0")
         self.log.see("end")
         self.log.configure(state="disabled")
 

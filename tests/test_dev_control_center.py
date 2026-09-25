@@ -361,10 +361,10 @@ class LifecycleDecisionTests(unittest.TestCase):
             explicit_candidate="",
         )
         self.assertTrue(decision.sync_enabled)
-        self.assertFalse(decision.run_enabled)
-        self.assertFalse(decision.build_enabled)
-        self.assertFalse(decision.release_enabled)
-        self.assertIn("SYNC", decision.banner)
+        self.assertTrue(decision.run_enabled)
+        self.assertTrue(decision.build_enabled)
+        self.assertTrue(decision.release_enabled)
+        self.assertIn("作業ツリー", decision.banner)
 
     def test_busy_locks_all_lifecycle_actions(self):
         decision = decide_lifecycle(
@@ -379,7 +379,7 @@ class LifecycleDecisionTests(unittest.TestCase):
         self.assertFalse(decision.build_enabled)
         self.assertFalse(decision.release_enabled)
 
-    def test_dirty_repo_fail_closes_every_action(self):
+    def test_dirty_repo_allows_development_but_not_sync(self):
         decision = decide_lifecycle(
             self.definition,
             self.repo_state(tracked_dirty=True),
@@ -387,10 +387,10 @@ class LifecycleDecisionTests(unittest.TestCase):
             self.github_state(),
         )
         self.assertFalse(decision.sync_enabled)
-        self.assertFalse(decision.run_enabled)
-        self.assertFalse(decision.build_enabled)
-        self.assertFalse(decision.release_enabled)
-        self.assertIn("安全条件NG", decision.banner)
+        self.assertTrue(decision.run_enabled)
+        self.assertTrue(decision.build_enabled)
+        self.assertTrue(decision.release_enabled)
+        self.assertIn("作業ツリー", decision.banner)
 
     def test_wrong_branch_and_wrong_origin_fail_closed(self):
         for overrides in (
@@ -405,9 +405,9 @@ class LifecycleDecisionTests(unittest.TestCase):
                     self.github_state(),
                 )
                 self.assertFalse(decision.sync_enabled)
-                self.assertFalse(decision.run_enabled)
-                self.assertFalse(decision.build_enabled)
-                self.assertFalse(decision.release_enabled)
+                self.assertEqual(decision.run_enabled, "branch" in overrides)
+                self.assertEqual(decision.build_enabled, "branch" in overrides)
+                self.assertEqual(decision.release_enabled, "branch" in overrides)
 
     def test_missing_entrypoint_disables_only_that_action(self):
         missing_build = RepoEntrypoints(
@@ -428,7 +428,7 @@ class LifecycleDecisionTests(unittest.TestCase):
         self.assertTrue(decision.release_enabled)
         self.assertIn("MISSING", decision.build_reason)
 
-    def test_github_unavailable_requires_manual_candidate(self):
+    def test_github_unavailable_does_not_block_development(self):
         decision = decide_lifecycle(
             self.definition,
             self.repo_state(),
@@ -438,8 +438,8 @@ class LifecycleDecisionTests(unittest.TestCase):
         )
         self.assertEqual(decision.candidate_sha, "")
         self.assertFalse(decision.sync_enabled)
-        self.assertFalse(decision.run_enabled)
-        self.assertIn("手入力", decision.banner)
+        self.assertTrue(decision.run_enabled)
+        self.assertIn("作業ツリー", decision.banner)
 
     def test_valid_manual_candidate_is_preserved(self):
         manual = "c" * 40
@@ -466,8 +466,8 @@ class LifecycleDecisionTests(unittest.TestCase):
         self.assertEqual(decision.candidate_sha, "abc")
         self.assertEqual(decision.candidate_source, "MANUAL")
         self.assertFalse(decision.sync_enabled)
-        self.assertFalse(decision.run_enabled)
-        self.assertIn("candidate", decision.banner)
+        self.assertTrue(decision.run_enabled)
+        self.assertIn("作業ツリー", decision.banner)
 
 
 class PromptTests(unittest.TestCase):
@@ -507,7 +507,7 @@ class UiLifecycleContractTests(unittest.TestCase):
         self.assertIn("decide_lifecycle(", text)
         self.assertIn("self._apply_lifecycle_state()", text)
 
-    def test_ai_development_is_the_primary_visible_route(self):
+    def test_ai_controls_are_preserved_for_separate_orchestrator_view(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
         build_start = text.index("    def _build(self) -> None:")
         select_start = text.index("    def _select_repo(self) -> None:", build_start)

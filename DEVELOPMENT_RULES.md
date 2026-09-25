@@ -9,23 +9,11 @@
 - 秘密情報、認証情報、実運用設定、顧客データ、業務データ、cache、実行結果をGit管理しない。
 - 設定例はダミー値の `*.example.*` 等を使用する。
 
-## 開発ルート
+## 開発ルートと確認
 
-- 実装・設定変更の開始点は常にDCCのAI依頼欄。`development-management` 自身も同じ。
-- Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate。
-- GPTは要望・優先順位・受入条件をAI依頼へ整理する。標準運用ではGitHub上のコード・設定を直接編集しない。
-- Actionsは補助。Actions greenをcandidateの必須条件にしない。
-- 実行できないテストを実施済みとは扱わない。
-- remoteが進んでいたらforceせず停止する。
+通常DevelopmentはClaude / Codexが正式ローカルrepoで直接実装します。GPTは相談・要件整理・設計・指示文作成を担当します。DCCはRUN / BUILD / UPDATEを担当し、Orchestratorは別画面の任意の第二ルートです。
 
-## candidateと実機確認
-
-- candidateは完全SHAで特定する。
-- AではGitHub candidateを同期してユーザーが確認する。
-- Bではlocal candidateをそのままユーザーが確認するため、GitHub→Windowsの同期工程は不要。
-- 実機確認開始時はHEADがcandidate SHAで、tracked cleanであることを確認する。
-- NG candidateを本番へ進めない。
-- **confirmed SHA == pushed SHA == BUILD対象SHA** を守る。
+RUN / BUILDはcandidateやtracked cleanを要求しません。UPDATEは成果物と配布先を明示し、BUILD記録・hash・ユーザー実機確認を根拠に明示操作で行います。Orchestrator内部candidateの安全条件は専用文書を参照します。
 
 ## テスト
 
@@ -39,7 +27,7 @@
 
 - 開発版は可能なら `RUN_DEV.cmd` 等の安全な入口から起動できる状態を維持する。
 - 正式BUILD / updateには既存の `BUILD_*_CLICK_ME.cmd` / `UPDATE_*` 等を優先する。
-- 正式BUILD時はHEADがconfirmed SHAで、tracked cleanであることを確認する。
+- BUILDは現在の作業内容を記録し、入力が変化した成果物を無条件に配布しない。
 - Nuitka / PyInstaller / .NET/WPF等、BUILDで配布実体が変わる場合は完成binaryを配布前に起動確認する。
 - 配布物と業務データ・実運用設定を分離する。
 - 共有フォルダ全体への無条件な破壊的同期を避ける。

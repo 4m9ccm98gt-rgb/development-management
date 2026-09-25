@@ -1,136 +1,54 @@
-# Development Control Center
+# Development Control Center — Phase 1
 
-## 目的
+正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。`RUN_DEV.cmd` / `DEV_CONTROL_CENTER.pyw` が起動入口です。
 
-Development Control Center は、各repoの場所・正式スクリプト・candidate SHA・PR / CI状態を探し回らずに、repoの標準化から日常の開発後半までを一画面で進めるWindows向け操作パネルです。
+## 画面
 
-正式起動入口は `DEV_CONTROL_CENTER.pyw` です。Tkinterのみを使い、専用の追加依存はありません。
+メインはrepo選択、RUN / BUILD / UPDATE、AI Orchestrator入口を上部へ配置します。最小1080×720。AI依頼、Final Review、run_dir、decision JSON、candidate、安全停止はOrchestrator別画面に置きます。別画面は独立した選択・実行状態を持ちます。repo登録指示はコピー可能な別画面で生成し、Claude / Codex直接実装へ渡せます。
 
-## 運用モデル
+## 操作と成果物
 
-正本は `OPERATING_CONTRACT.md` です。
+RUN / BUILDはcandidate、tracked clean、GitHub取得成功を要求しません。起動直前に正式repo / origin / entrypointを再検査します。Orchestrator内部のclean条件は別です。
 
-実装・設定変更の開始点は常に **AI依頼欄** です。`development-management` 自身も通常repoと同じManaged Repositoryです。
+BUILDは非対話adapterから既存の処理本体を実行し、`%LOCALAPPDATA%/ShizenDev/DCC/builds/<repo-key>/` にlatest.jsonとbuild ID別記録を保存します。repo、base HEAD、dirty、開始・終了日時、build ID、入力fingerprint、成果物パス・全ファイルの集約SHA-256、結果を保持します。前回成功は新しいBUILD開始時に無効化します。
 
-```text
-GPTがAI依頼を整理
-→ AI依頼欄 + テスト欄 → AI開発開始
-→ Claude実装 → 独立Tests → GPT-6 Astra read-only review → local candidate
-→ Control Centerでcandidate確認 → RUN_DEV / ユーザー実機確認
-→ BUILD
-→ UPDATE / DEPLOY
+入力監視はtrackedファイルとGitで無視されない新規ファイルを対象とし、成果物ディレクトリは除外します。Gitで無視するローカルbuild設定は `.dcc-build-inputs.json` に相対ファイルパスの配列を指定して監視に含めます（内容は記録しない）。依存関係・外部ツールの全変更や瞬間的な変更を完全追跡する再現ビルド保証ではありません。入力不安定・失敗・成果物欠落はUPDATE不可です。
+
+UPDATEの成果物hash計算はUI外のworkerで行います。UPDATEはBUILD記録、入力fingerprint、成果物hash、配布先、更新スクリプトを確認画面へ渡し、ユーザー承認後に再検査します。実行workerでも出力先ロック取得後に同じ条件を検証します。DCC経由の同じ出力先のBUILD / UPDATEはprocess間で排他します。外部ツールによる直接変更はこのロックには従わないため、配布中に外部BUILDや編集を重ねないでください。
+
+## 既存entrypointとの接続
+
+正式CMDの存在検査は維持しますが、DCCは手動CMDを実行しません。RUN / BUILDは `entrypoints.py` からPython / PowerShell / dotnetの処理本体へ接続します。UPDATEは確認済みの配布元・配布先を明示します。元のCMD / PowerShellとダブルクリック時のpauseは変更しません。
+
+| repo | 成果物 | UPDATE接続 |
+|---|---|---|
+| next-day-setup | dist/DinnerSystem | update_shared_folder.ps1 のSourcePath / TargetPath |
+| beverage-inventory-ordering-system | python_app/dist/在庫発注管理アプリ | 既存更新PS1のSourcePath / TargetPath |
+| menu-sheet-generator | publish | UPDATE.cmdと同じ4ファイルを非対話adapterでコピー |
+| food-cost-calculation-system | Development/releases | 既存更新PS1のSourceRoot / HddRoot。HddRoot配下のFoodCostCalculationへ更新 |
+
+アプリ側の安全条件はバイパスしません。飲料BUILDは既存のclean必須、翌日準備UPDATEは既存のdirty build拒否等が残ります。これらの緩和は対象repoで別途対応が必要です。未登録repoのRUN / BUILDは下記の非対話入口宣言が必要です。UPDATEは引数・成果物の契約が確認されるまで停止します。ソース配布型のQRアプリなど、BUILD入口を持たないrepoに架空の成功BUILDを作りません。
+
+## Orchestratorと終了
+
+review_pending / provider異常でrunが終了すれば通常操作のロックは解除します。他repoのAI実行でDCC全体をロックしません。同じrepoの実行中操作は競合防止のため停止します。
+
+子画面の閉じる操作は非表示のみ。AI実行中のDCC終了は保留し、明示的なAI安全停止またはrun終了後に閉じます。DCC終了後の継続・再接続はPhase 2です。DCC自身の更新も実行中操作がある間は停止します。
+
+## 検証
+
+`python -B -m unittest discover -s tests -p "test_dev_control_center*.py" -v` と `python -B -m scripts.dev_control_center.app --self-check` を使用します。UI検証はWindowsのTkで1080×720のボタン表示と子画面を確認します。実配布・プリンター・外部サービスはmock検証と区別します。
+
+## バックグラウンド実行
+
+RUN / BUILD / UPDATEは事前検査・hash計算・subprocess待機をworkerで処理します。Windowsコンソールは非表示、stdinは閉じ、stdout / stderrをまとめてDCCログへ逐次転送します。RUN対象のGUI画面は通常どおり表示します。完了時は実際の終了コードを表示します。BUILD中もDCCの移動、ログ閲覧、repo切替が可能です。同じrepoの競合操作だけを停止し、別repoの操作は続けられます。「このrepoの実行を停止」は明示確認後に子process treeを停止します。停止・失敗BUILDはUPDATE対象になりません。
+
+監査したRUN入口: 翌日準備、飲料、原価、備品、QR、メニュー、DCC。BUILD入口: 翌日準備のbuild_exe_entry.py、飲料の既存準備・clean検査・Tests・build_exe.py、原価のbuild_release.ps1、メニューのdotnet build / publish。メニューBUILDのExplorer自動表示も行いません。入口未実装のcall-reception / shizen-launcherは停止します。備品のタスク登録やQRの対話deployへ暗黙にフォールバックしません。
+
+新しいrepoは、正式入口に加えてrepoルートの `dcc_entrypoints.json` に非対話の処理本体を宣言できます（schema 1）。例:
+
+```json
+{"schema": 1, "build": {"script": "tools/build.py", "cwd": ".", "args": [], "python": ".venv/Scripts/python.exe"}}
 ```
 
-repoを選択すると、`dev_control_center_repos.toml` の `[initial_ai_tasks]` / `[initial_tests]` がAI依頼欄・テスト欄へ自動入力されます（ユーザー入力済みの内容が優先）。
-
-## SETUP / 標準化
-
-正式反映・検証結果とローカル保留は [2026-09-16 最終セットアップ記録](dcc_final_setup_20260916.md) を参照してください。既存PR作業branch上のrepoは、入口が存在してもexpected branch不一致として安全停止します。
-
-2026-09-16の初回横断整備結果は [DCC初回セットアップ記録](dcc_initial_setup_20260916.md) を参照してください。local candidateの入口検証と、expected branchへの正式反映・ユーザー実機確認は別の状態として記録しています。
-
-既存の `UPDATE.cmd` / `DEPLOY.cmd` も正式入口として認識します。service / webでBUILD入口がない場合はソース配布として `N/A` を表示します。アプリ未実装の例外は `dev_control_center_repos.toml` の `[unimplemented]` に理由を記録し、RUNはMISSINGのまま、未実装で不要なBUILD・配布だけN/Aにします。実装時はこの例外を削除します。
-
-既存repoの標準入口が不足していれば、その内容をAI依頼欄から依頼します。
-
-## 新規repo
-
-GitHub上に存在し、`scripts/repo_types.toml` に未登録の非archived・非fork repoは `GitHub未登録repo` に表示します。
-
-`セットアップ開始` は次を行います。
-
-1. 正式 `Development\repos\<repo>` 配下にrepoが無ければ `gh repo clone`
-2. 既存の非Gitディレクトリがあればfail-close
-3. `development-management` を自動選択し、そのAI依頼欄へrepo登録タスクをセット（「AI開発開始」でClaude → Tests → Astraにより登録）
-
-ユーザーがcloneコマンド、registryファイル名、標準入口の作り方を暗記する前提にはしません。登録後にDCCを更新して新repoを選択すると、`initial_ai_tasks` / `initial_tests` が自動入力されます。
-
-## Control Center自身の更新
-
-Control Centerは `development-management/main` とローカルHEADを比較します。
-
-- mainが同一 → `最新版`
-- mainが新しく、CIが `FAILED` ではない → `更新する` を有効化
-- CI `PENDING` / `NO CHECKS` / `UNAVAILABLE` は状態を表示した上で更新可能
-- CI `FAILED` は自動更新を停止
-
-`更新する` は正式 `SYNC_CLICK_ME.cmd` を `--no-pause` で呼びます。成功後は `DEV_CONTROL_CENTER.pyw` を自動再起動します。
-
-通常のダブルクリックSYNCでは従来どおりpauseします。
-
-## repo選択の非同期読込
-
-repo選択・全状態更新・起動時のself-update確認・未登録repo確認では、git / gh / ファイル走査をUIスレッドで実行しません。
-すべて `scripts/dev_control_center/loader.py` のdaemon workerで実行し、結果だけを50ms周期のheartbeatでUIへ反映します。
-
-- **根本原因（コード追跡で確認済み）**: 従来は `<<ListboxSelect>>` のたびに `inspect_repo`（git 6回）、`discover_entrypoints`
-  （`git ls-files` + ファイルstat）、`fetch_github_state`（gh 4回、各timeout 20s）をUIスレッドで直列実行していました。
-  起動時も約12 git + 9 gh が直列でした。どの項が実機で支配的かは**未確認**です（`gh` が有力な仮説）。
-  下記の計測で確認します。
-- **scope**: repo scope（local / github / suggest）は `(repo, kind)` ごとにlatest-wins。GLOBAL scope（`remote_repos` / `self_update`）は
-  repo切替で取り消しません。
-- **cancel_repo_scope**: repoを離れる・工程開始/終了・同repo再選択は単一の `cancel_repo_scope(repo, reason)` を通り、
-  そのrepoのPENDINGとRUNNINGを取り消します（通知は出しません）。cancel対応worker（git/gh/走査はcancel Eventを約0.2s周期で確認）は
-  すぐ空き、新しいrepoは古い処理の期限を待ちません。cancelを無視するworkerだけは、cancel時刻から
-  `SUPERSEDE_GRACE`（暫定10s）後に放棄され、置換workerが起動します。この最悪待ち時間（grace + 1 tick）は通常経路の目標とは分けて扱います。
-- **期限とresource**: LOCAL 30s / GITHUB 60s / GLOBAL 90s（暫定）。PENDING期限はworkerに触れず、RUNNING期限はそのworkerだけを放棄し、
-  timeoutは `TerminalNotice` として1回だけ通知（fail closed）。上限は放棄数ではなく総live thread数（pool size + 4）。
-  放棄workerが戻れば復帰（rehabilitate）または退役。resultとnoticeは1つのlockで排他的に決まります。
-- **整合性**: 表示stateは `lifecycle_epoch` のstamp付きで、accessor（`authoritative_local/github`）経由でのみ参照します。
-  repo選択・全状態更新・工程開始/終了・AI適用の直前で必ずepochを進め、古い結果・古いGitHub状態は判断に使いません。
-  candidateの由来（NONE/USER/AI/AUTO）は `CandidateProvenance` だけが書き、`NONE iff 空` を守ります。
-  AUTOのcandidateは選択のたびにクリアされ、新しいGitHub結果で再反映されます（GitHub結果が届くまで一時的に空）。
-  USER / AIのcandidateは切替後も保持されます。
-- **確認dialog**: RELEASE確認・AI candidate適用確認・新規repo clone確認・self-update確認は、開始時にsnapshotを取り、
-  dialog中は結果適用を保留し、承認後にsnapshotが変わっていれば実行せず中止します。
-- **安全条件は変更なし**: `decide_lifecycle`、`launch()` の条件、`apply_local_candidate` の自己検証、CMD/BAT限定、
-  push / BUILD / UPDATEを自動化しない点は従来どおりです。GitHub状態が無くても手入力candidateで動く従来仕様も同じです。
-- **未対応（従来どおり同期）**: `apply_local_candidate`、self-updateのSYNC実行、`clone_new_repository` はユーザー操作起点の同期処理のままです。
-  GitHub状態表示キャッシュ（設計step 16）と gh 並列化（step 17）は、計測結果で必要性が出た場合のみ入れる設計のため未実装です。
-
-### 計測（DCC_TIMING）
-
-`DCC_TIMING=1` でDCCを起動すると、標準エラーへ次を出力します（無効時は無出力）。
-
-- `startup-to-operable`、`select-to-LOCAL-shown`、`select-to-GITHUB-shown`
-- gh呼び出しごとの所要時間（`gh:api repos/.../branches/...`、`gh:pr list`、check-runs、status、`gh:repo list`）
-- UI heartbeat遅延（`ui-lag`、終了時 `ui-lag-summary` の p95 / max）
-- `repo-scope-cancel`（取消したPENDING/RUNNING数）、`superseded-worker-returned`、`superseded-worker-abandoned`、`timeout-*`、`abandon` など
-
-実機手順:
-
-1. `python scripts/measure_dcc_selection.py --iterations 5` で各repoのgit / 走査 / `fetch_github_state`（endpoint別）を測る（読み取りのみ）。
-2. `DCC_TIMING=1` でDCCを起動し、最大repoを5回選択、遅いネットワーク条件、非Git/低速FSのrepoがあればそれ、
-   さらに遅い2repoを跨ぐ A→B→C の連続切替（最後のクリックからCのLOCAL表示まで）を記録する。
-3. 目標（暫定・実機測定前は未確認）: 起動から1s以内に操作可能、選択・読込中のheartbeat遅延 p95 ≤ 100ms / max ≤ 250ms、
-   典型repoでLOCAL表示 ≤ 1s。cancel無視workerが残る場合の追加待ち（≤ grace + 1 tick）は別枠で報告する。
-   この目標を超えた場合は「目標未達」と報告する。
-
-## 安全条件
-
-- origin一致
-- expected branch一致
-- tracked clean
-- candidateは完全40桁SHA
-- RUN / BUILD / 配布時は `local HEAD == candidate`
-- force push / reset / stash / branch切替はControl Centerが勝手に行わない
-- Git管理外の業務データや秘密情報を変更しない
-- 工程は自動連続しない
-
-## CI
-
-`.github/workflows/dev-control-center.yml` で次を確認します。
-
-- registry / explicit branch契約
-- 正式入口の検出と曖昧時fail-close
-- 完全40桁candidate SHA
-- GitHub未登録repo検出
-- CI状態集約
-- Actions greenをcandidate必須条件にしない契約
-- open PR中の自動candidateブロック
-- 新規repo登録prompt契約
-- `SYNC_CLICK_ME.cmd --no-pause`
-- Python compile
-- registry self-check
-
-GUIの見た目、`gh` 認証済みWindows実機での取得・clone・各ボタンのクリック感はユーザー実機確認で扱います。
+runも同じ形式です。scriptはrepo内の `.py` / `.ps1`、cwdと任意pythonもrepo内です。PowerShellはNonInteractive、Pythonはunbufferedで実行します。処理本体は入力待ち・pause・コンソールの明示起動を含めず、失敗を非0で返す必要があります。未対応repoでは手動CMDを隠して呼ぶことはせず停止します。既知repoの手動入口を変更する際は、DCC adapter側の準備・安全条件も整合してください。

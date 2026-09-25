@@ -287,8 +287,9 @@ class ReselectionTests(SelectionBase):
         self.assertIsNone(self.sel.authoritative_github("A"))
         decision = self.decision("A")
         self.assertEqual(decision.candidate_sha, "")
-        self.assertFalse(any((decision.run_enabled, decision.build_enabled,
-                              decision.release_enabled, decision.sync_enabled)))
+        self.assertTrue(decision.run_enabled)
+        self.assertTrue(decision.build_enabled)
+        self.assertFalse(decision.sync_enabled)
 
     def test_a_b_a_only_local_delivered(self):
         self._auto_reflected_a()
@@ -323,7 +324,7 @@ class ReselectionTests(SelectionBase):
         self.select("A")
         self.pump_until(lambda: self.sel.authoritative_github("A") is not None)
         self.assertEqual(self.sel.provenance.text("A"), "")
-        self.assertFalse(self.decision("A").run_enabled)
+        self.assertTrue(self.decision("A").run_enabled)
 
     def test_user_and_ai_candidates_survive_switching(self):
         self.load_fully("A")
@@ -445,7 +446,7 @@ class TimeoutAndModalTests(SelectionBase):
         self.pump_until(lambda: self.sel.authoritative_github("A") is not None)
         self.assertTrue(self.sel.authoritative_github("A").error)
         self.assertEqual(self.sel.provenance.text("A"), "")
-        self.assertFalse(self.decision("A").run_enabled)
+        self.assertTrue(self.decision("A").run_enabled)
 
     def test_notice_is_held_during_dialog_and_delivered_once_after(self):
         self.loaders.mode[("A", "local")] = "block"
@@ -575,7 +576,7 @@ class SourceContractTests(unittest.TestCase):
         begin = APP_TEXT.index("    def _begin_process")
         end_ = APP_TEXT.index("    def _end_process")
         self.assertIn("self.active_process = (process, repo_name, action)", APP_TEXT[begin:end_])
-        for launcher in ("def launch_ai_orchestrator", "def _launch_cmd"):
+        for launcher in ("def launch_ai_orchestrator",):
             start = APP_TEXT.index(launcher)
             body = APP_TEXT[start:APP_TEXT.index("\n    def ", start + 10)]
             self.assertIn("self._begin_process(", body)

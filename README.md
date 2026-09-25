@@ -25,46 +25,15 @@
 - [STARTUP_HANDOFF_POLICY.md](STARTUP_HANDOFF_POLICY.md) — 初回Windows準備が必要な場合だけ参照
 - [AGENT_EFFICIENCY_POLICY.md](AGENT_EFFICIENCY_POLICY.md) — 旧T0〜T3運用のLegacy Reference。必読ではない
 
-## 現在の開発運用
+## 現在の開発運用（Phase 1）
 
-実装・設定変更の開始点は、**常にDCCの「AI依頼」欄**です。通常アプリ、`development-management` 自身、新規repo登録のすべて同じ経路です。
+GPT相談・指示文作成 → Claude / Codexが正式ローカルrepoで直接実装 → Tests → DCC RUN → ユーザー確認 → BUILD → UPDATE。
 
-```text
-要望
-→ GPTが意図・優先順位・受入条件をAI依頼へ整理
-→ DCCのAI依頼欄 → 「AI開発開始」
-→ Claudeが隔離worktreeで実装
-→ 独立Tests
-→ provider非依存のFinal Review Gate
-→ 明示的失敗時だけClaude diagnosis → repair → 再Verification
-→ local candidate commit
-→ RUN_DEVでユーザー実機確認
-→ 確認済みSHAを維持して次工程へ
-→ BUILD / 配布
-```
+DCCはRUN / BUILD / UPDATEを中心に使います。RUN / BUILDはdirtyな作業ツリー・candidateなしで利用でき、GitHubの状態取得に依存しません。UPDATEにはBUILD記録・成果物・配布先の確認と明示操作が必要です。アプリ側の既存制約と対応範囲は [DCC仕様](docs/dev_control_center.md) を参照してください。
 
-GPTは標準運用でGitHub上のコード・設定を直接編集しません。GitHub / PR / CIの状態表示は、同期・確認・push検証のための観測情報です。
+`RUN_DEV.cmd` でDCCを起動します。「AI Orchestrator」から既存AI機能を別画面で利用できます。通常開発の必須経路ではありません。Phase 1ではレビューJSON待ちを含む既存機能を維持し、独立run管理・終了後継続・再接続・自動レビュー・quota handoffはPhase 2です。
 
-`development-management` はDCCのManaged Repositoriesに登録済みで、`RUN_DEV.cmd` でDCCを起動できます。新規repoは「GitHub未登録repo」の「セットアップ開始」で正式ローカルへcloneした後、`development-management` のAI依頼欄へ登録タスクがセットされます。
-
-## AI Development Orchestrator
-
-v0.6は **Claude MAIN IMPLEMENTATION → 独立Verification → Final Review Gate** を通常経路とします。一発成功時はRecovery 0回。失敗時だけClaude diagnosis → repair → 再Verificationを最大30回まで行い、local candidateで停止します。Final Review未接続時はレビュー待ちとなり、承認を得るまでcandidateを作成しません。
-
-Development Control Centerから選択repoへAI依頼と独立テストコマンドを渡して起動できます。成功時はDCCがmachine-readable resultから完全40桁candidate SHAを受け取り、確認後だけローカルexpected branchへfast-forwardしてRUN_DEVによる実機確認へ繋げます。
-
-AI処理だけでpush / BUILD / UPDATE / DEPLOYは行いません。詳細は [docs/ai_orchestrator.md](docs/ai_orchestrator.md) を参照してください。
-
-## 最重要の安全条件
-
-- 実機確認前に本番配布しない。
-- NG candidateを本番へ進めない。
-- candidateを完全SHAで特定する。
-- **confirmed SHA == pushed SHA == BUILD対象SHA** を守る。
-- candidate確認開始時と正式BUILD時はtracked cleanを確認する。
-- force push / 履歴破壊 / 無断rebaseを行わない。
-- 本番データ、秘密情報、ローカル設定、Git管理外業務データを保護する。
-- BUILDで配布実体が変わるアプリは完成binaryも配布前に確認する。
+GPTによるGitHub直接編集・PC同期は標準ルートにしません。GitHubは観測・履歴共有に使用します。運用の安全条件は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) を参照します。
 
 ## 管理対象
 
@@ -82,3 +51,5 @@ AI処理だけでpush / BUILD / UPDATE / DEPLOYは行いません。詳細は [d
 - 必要なcandidate / release情報
 
 仕様・運用が変わらない修正で、README・PROJECT_STATUS・複数管理文書を形式的に更新しません。同じ状態を複数文書へ重複転記しないことを優先します。
+
+DCCの通常操作は非対話workerで実行し、進捗ログと終了コードを画面内へ表示します。手動CMDのpauseは維持します。対応入口と新規repoの宣言方法は [DCC仕様](docs/dev_control_center.md#バックグラウンド実行) を参照してください。

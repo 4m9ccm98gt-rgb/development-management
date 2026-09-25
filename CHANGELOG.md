@@ -1,5 +1,9 @@
 # 変更履歴
 
+## 2026-09-25 — Development / DCC Phase 1
+
+通常直接開発、DCC主要操作、Orchestrator別画面、BUILD記録とUPDATE確認を整備。全322テスト成功。実配布・commit・pushなし。他repoの既存制約は変更せず、Phase 2は未実装。詳細は [検証記録](docs/development-dcc-phase1.md)。
+
 新しい記録を上に追加します。「確認状況」は、未確認／開発環境確認済み／実運用確認済みを明記します。
 
 ## Unreleased
@@ -212,3 +216,4 @@ Initial stable release.
 | 2026-07-16 | development-management | 司令塔リポジトリの文書構成を新規作成 | ローカル文書作成済み。コミット／push前 |
 | 2026-07-16 | next-day-setup | Google Sheetsシフト取得、印刷、ビルド、共有版更新に関する作業を進行中として記録 | 未コミット差分を確認。動作・実運用は未確認 |
 | 2026-07-16 | inventory-reconciliation-system | Google Sheets休館日取得、キャッシュ、夜間実行、警告メールに関する作業を進行中として記録 | 未コミット差分を確認。動作・実運用は未確認 |
+- DCCのRUN / BUILD / UPDATEを非対話workerへ接続。コンソール非表示、逐次ログ、終了コード表示、repo単位の競合制御と明示停止を追加。手動CMDのUXは維持。追加後の全330テスト成功。

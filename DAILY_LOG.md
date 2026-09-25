@@ -1,5 +1,9 @@
 # Daily Log
 
+## 2026-09-25 — Development / DCC Phase 1の実装・検証
+
+通常直接開発、DCC主要操作、Orchestrator別画面、BUILD記録とUPDATE確認を整備。全322テスト成功。実配布・commit・pushなし。他repoの既存制約は変更せず、Phase 2は未実装。詳細は [検証記録](docs/development-dcc-phase1.md)。
+
 日々の作業事実を簡潔に記録します。新しい日付を上に追加し、重要な判断は `docs/decisions.md`、再発防止の知見は `LESSONS_LEARNED.md` にも反映します。
 
 ## 2026-09-02

@@ -1,6 +1,6 @@
 # AI Development Orchestrator v0.6 — Recovery
 
-運用の正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。DCCのAI依頼欄から起動し、local candidateまでで停止する。
+運用の正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。DCCから開く別画面のAI依頼欄で起動し、local candidateまでで停止する。通常Developmentの必須経路ではない。
 
 ## 通常経路
 
@@ -45,7 +45,7 @@ verdictは `PASS / FAIL / PENDING`。未設定、未知の値、空summary、req
 
 既存の `run` 引数（repo / TaskSpec / test / max-rounds）に `--resume-review <run_dir> --final-review-decision <JSONのパス>` を加えるとレビュー待ちrunを継続する。これは新規実装を開始する経路ではなく、保存済みGateの継続用interface。source branch / HEAD、TaskSpec、test commands、予算、worktree差分の一致を要求する。保存済みVerificationを利用するため、承認継続だけではAIもTestsも再実行しない。PASSならcandidate、FAILならRecoveryへ戻る。修正後は新しい要求を生成し、再承認まで停止する。
 
-Work自動接続とDCCレビュー操作UIは今回の対象外。将来のadapterは同じrequest / verdict契約を使う。
+Work自動接続は未実装。レビューJSONの読込・再開UIはOrchestrator別画面に置く。将来のadapterは同じrequest / verdict契約を使う。
 
 ## 安全境界とログ
 
@@ -60,3 +60,9 @@ Work自動接続とDCCレビュー操作UIは今回の対象外。将来のadapt
 ## 回帰検証
 
 標準ライブラリのunittestを使用する。providerはmock化し、実行回数とstage遷移を検証する。実Gitのcandidate/source保護とDCCのprocess-tree停止テストも含む。実Claude / Work接続のE2Eをmockテストと同一視しない。
+
+## Phase 1 / Phase 2の境界
+
+Phase 1は画面と通常操作の責務分離。Recovery・provider処理・Final Review JSONのアルゴリズムは維持する。子画面を閉じても非表示になるだけでDCC内の監視は続く。AI実行中はDCC本体の終了を保留し、安全停止は明示操作でのみ行う。DCC終了後の継続を保証する実装ではない。
+
+Phase 2では独立run manager、DCC終了後の継続・再接続、Primary / Secondaryの自動レビュー・修正、安全なquota handoffを扱う。これらは現在未実装。

@@ -41,7 +41,7 @@ class SetupSemanticsTests(unittest.TestCase):
         self.assertIn('self.entrypoints.sync.state == "MISSING"', text)
         self.assertIn('text="SYNC (初回)" if missing_sync else "SYNC"', text)
         self.assertIn("BOOTSTRAP_REPO_SYNC.ps1", text)
-        self.assertIn("中央bootstrap SYNC", text)
+        self.assertIn('self._start_lifecycle(command, self.current.name, "sync")', text)
 
 
 if __name__ == "__main__":

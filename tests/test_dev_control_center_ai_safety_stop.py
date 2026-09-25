@@ -188,8 +188,8 @@ class FinishAfterStopTests(unittest.TestCase):
         dcc.App._finish_ai_orchestrator(ui, "demo", 1)
         self.assertIsNone(ui.active_process)
 
-    def test_non_stop_failure_still_uses_the_original_error_path(self):
-        """Regression: an ordinary (non-safety-stop) failure must be unaffected."""
+    def test_provider_failure_is_visible_without_blocking_main_window(self):
+        """Provider errors remain visible in the AI status, without a modal dialog."""
         ui = mock.MagicMock()
         ui.ai_stop_requested = False
         ui.ai_context = {
@@ -199,7 +199,7 @@ class FinishAfterStopTests(unittest.TestCase):
         }
         with mock.patch.object(dcc.messagebox, "showerror") as showerror:
             dcc.App._finish_ai_orchestrator(ui, "demo", 1)
-        showerror.assert_called_once()
+        showerror.assert_not_called()
         status_text = ui.ai_status_var.set.call_args.args[0]
         self.assertTrue(status_text.startswith("STOP:"))
         self.assertNotIn("ユーザーによる安全停止", status_text)

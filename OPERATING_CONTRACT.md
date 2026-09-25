@@ -1,62 +1,53 @@
 # Operating Contract
 
-この文書は、Development運用で常時適用する最小契約です。
+Development運用の正本。通常Development、DCC、AI Orchestratorの責務を分離します。
 
-目的は、**DCCを中心にAI開発を高速に回しつつ、実機確認・candidate SHA・BUILD対象の一致を崩さないこと**です。
+## 通常Development（Phase 1）
 
-## 1. 単一の開発ルート
+GPT相談・要件整理・設計・指示文作成 → Claude / Codexが正式ローカルrepoで直接実装 → Tests → DCC RUN → ユーザー実機確認 → BUILD → UPDATE。
+Claude / Codexは用途・利用可能量・ユーザー判断で選択します。GPTは必要に応じてコード・ログ・設計をレビューします。GPTによるGitHub直接編集とPC同期、credit削減目的の編集・同期を標準ルートにしません。GitHubの観測・調査は可能です。
 
-実装・設定変更の開始点は、**常にDCC（Development Control Center）の「AI依頼」欄**です。
-対象は通常アプリ、`development-management` 自身、新規repo登録のすべてで、別の開発開始経路はありません。
+通常DevelopmentはDCCやOrchestratorを経由せず開始できます。AI依頼、isolated worktree、local candidate、Final Review Gate、review_pending、decision JSONの中継、request_id、Recovery fingerprint、confirmed SHAによるhandoffは通常開発の必須条件ではありません。
 
-```text
-ユーザーの要望
-→ GPTが意図・優先順位・受入条件をAI依頼へ整理
-→ DCCで対象repoを選び、AI依頼欄 + テスト欄へ入力
-→ 「AI開発開始」
-→ Claudeが隔離worktreeで実装
-→ 独立Tests
-→ PASSならprovider非依存のFinal Review Gate
-→ FAIL / HANG / ERROR / BLOCKEDならClaude diagnosis → repair → 再Verification
-→ local candidate commit
-→ DCCがcandidate SHAを取得
-→ ユーザー確認後だけlocal expected branchへfast-forward
-→ RUN_DEVでユーザー実機確認
-→ OKなら同じSHAを正式push
-→ confirmed SHA == pushed SHA を確認
-→ BUILD
-→ UPDATE / DEPLOY
-```
+## DCCメイン
 
-### GPTの役割
+repo選択、RUN、BUILD、UPDATE、AI Orchestrator別画面への入口を提供します。GitHub状態は観測情報です。AI詳細は別画面へ置きます。
 
-- GPTはユーザーの意図・要望・優先順位・受入条件を、DCCのAI依頼として貼れる形へ整理する。
-- 標準運用ではGitHub上のコード・設定を直接編集しない。
-- AI依頼にはrepo名、目的、受入条件、触れてはいけない範囲、独立テストコマンドを含める。
+| 操作 | 条件 |
+|---|---|
+| RUN | 正式repo / originと正式RUN入口を確認。現在の作業ツリーを実行。candidate、tracked clean、GitHub取得成功、candidateとHEADの一致は不要 |
+| BUILD | 正式repo / BUILD入口を確認。dirtyな作業内容も対象。設定・依存関係とデータ保護は各repoの既存build処理が検証。DCCは同じ出力先のBUILD / UPDATE競合を防止し、入力変化を検出した成果物をUPDATE可能にしない |
+| UPDATE | 明示的なユーザー操作のみ。BUILD記録、成果物hash、配布先、更新処理を確認し、確認後の変化を実行直前に再検証。未確認・不一致なら停止 |
 
-### 管理対象
+BUILD記録はrepo、base HEAD、dirty / clean、日時、build ID、成果物パスとSHA-256、入力fingerprint、終了結果をローカルへ保存します。秘密情報の内容は保存しません。HEADだけでdirty成果物を特定しません。対象・入力範囲・既存アプリ側の制約は [DCC仕様](docs/dev_control_center.md) を参照します。
 
-- `development-management` はDCCのManaged Repositoriesへ登録済みで、通常repoと同じAI Orchestrator対象。RUN_DEVは `RUN_DEV.cmd`（DCC起動）。
-- 変更は `scripts/repo_types.toml`（種別）と `scripts/dev_control_center_repos.toml`（`[branches]` / `[initial_ai_tasks]` / `[initial_tests]`）が正。
+## 共通の安全条件
 
-### 新規repo登録
+- 既存ユーザー作業、本番データ、秘密情報、ローカル設定、Git管理外業務データを保護する。
+- force push、reset --hard、stash、rebaseを無断実行しない。commit / push / タグ作成は明示指示がある場合のみ。
+- テスト可能な変更ではTestsを実施し、未実施の検証を確認済みと書かない。
+- 実機確認前に本番配布しない。BUILDで実体が変わる場合は完成成果物も確認する。
+- AI判断による自動UPDATE / DEPLOYは禁止。操作は自動連続しない。
+- 通常操作とOrchestratorは別の実行状態を持つ。同じrepoの競合は停止できるが、AI異常やレビュー待ちを理由にDCC全体をロックしない。
 
-1. DCCの「GitHub未登録repo」で対象を選び「セットアップ開始」を押す。
-2. 正式ローカルへのcloneを確認する（既存ファイルは上書きしない）。
-3. DCCが `development-management` を自動選択し、AI依頼欄へrepo登録タスクをセットする。
-4. 内容を確認して「AI開発開始」。Claude → Verification → Final Review Gateで `development-management` を変更する。
-5. local candidateの確認・反映・DCC更新後、新repoを選ぶと `initial_ai_tasks` / `initial_tests` が自動入力される。
+## AI Orchestrator（任意の正式な第二ルート）
 
-## 2. 絶対に残す安全条件
+DCC → 別画面のAI Orchestrator → AI依頼 / Tests → 既存Orchestrator。
+長時間・無人でAI開発を進める正式な自動運転モードとして育てます。通常Developmentの必須経路ではありません。
 
-- ユーザー実機確認前に本番配布しない。
-- 実機確認でNGになったcandidateを本番へ進めない。
-- candidateは完全40桁SHAで特定する。
-- 最終的に **confirmed SHA == pushed SHA == BUILD対象SHA** を成立させる。
-- candidate確認開始時と正式BUILD時はtracked cleanを確認する。
-- 本番データ、秘密情報、ローカル設定、共有先、Git管理外業務データを不用意に変更しない。
-- force push / reset --hard / stash / 無断rebase等で既存作業や承認済みSHAを壊さない。
-- remoteが想定外に進んだ場合はforceで押し切らず停止する。
+Phase 1は既存のClaude実装、Recovery、独立Tests、Final Review JSON、local candidate、安全停止を維持します。review_pendingでは外部レビュー結果が必要で、自動Final Reviewは未実装です。source保護・isolated worktree・candidate適用前のユーザー確認はOrchestrator内部の安全条件として維持します。詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。
+
+子画面は閉じても非表示になるだけでDCC内の監視を続けます。Phase 1はDCC終了後の継続・再接続を保証しません。AI実行中にDCCを閉じようとした場合は終了を保留し、勝手にAIを停止しません。停止は明示的な「AI安全停止」です。
+
+Phase 2予定: 独立run manager、DCC終了後のrun継続と再接続、Primary / Secondaryのprovider非依存な自動レビュー・修正ループ、安全なquota handoff。Phase 1の実装済み機能と混同しません。
+
+## 新規repo・初回準備
+
+「セットアップ開始」は既存のclone確認を維持し、登録指示を別画面へ表示します。指示をClaude / Codexへ渡して正式repoで直接実装できます。Orchestratorの使用は任意です。登録定義は scripts/repo_types.toml と scripts/dev_control_center_repos.toml を使用します。
+
+## 文書の読み方
+
+通常は本書、対象README、変更箇所と直接のconsumer / producer、安全上必要な文書だけを読みます。補助文書は本書を上書きしません。重要判断と必要な検証結果を記録し、同じ説明を大量に重複しません。
 
 ### 手動PowerShell貼り付け
 
@@ -66,96 +57,4 @@
 - Developmentの手動レビューでは、可能な限り `$prompt | claude.cmd -p ...` や `$prompt | codex.cmd exec ... -` のような非対話モードを使い、重要な開始行を最終行にしない。
 - この規則は手動貼り付け用PowerShellにだけ適用する。AI Orchestratorは `claude.cmd` / `codex.cmd` を子プロセスとして直接起動するため、このEnter待ち対策のためにOrchestrator本体を変更しない。
 
-## 3. AI Orchestrator
-
-AI Orchestrator v0.6は、正常時を直線、明示的な失敗時だけRecovery Loopとする。
-
-```text
-TK × Work: 共同設計・TaskSpec確定
-↓
-DCC: TaskSpec受け渡し、安全な実行・状態管理
-↓
-Claude MAIN IMPLEMENTATION
-↓
-独立Tests / 機械的Verification
-├─ PASS → Final Review Gate → PASS → local candidate
-└─ FAIL / HANG / implementation ERROR / BLOCKED
-   ↓
-   Claude diagnosis（read-only）→ Claude repair → 独立Verification
-   ├─ PASS → Final Review Gate
-   └─ FAIL → 新しい結果・履歴を材料にRecovery継続
-
-Final Reviewの明示的FAILもRecoveryへ戻す。
-Final Review未接続 / PENDINGはreview_pendingで停止し、candidateを作らない。
-```
-
-- 一発成功時はRecovery 0回。Astra調査設計・mandatory review・固定外側ループを呼ばない。Codex CLIも実行の必須依存ではない。
-- MAIN IMPLEMENTATION、Recovery diagnosis、Recovery repairは別の役割・prompt。diagnosisはRead / Glob / Grepのみで、MCP・shell・編集・sub-agentを使用しない。前後の差分不変も検証する。
-- 大きなタスクという理由でmulti-agentを起動しない。必要時に診断視点を追加できる境界だけを持つ。Work実接続・別provider追加は今回行わない。
-- Recoveryは失敗結果、直前の差分、TaskSpec、過去iterationを参照する。失敗・原因仮説・修正fingerprintとログ・Verification結果・進展判定をrun_dirへ永続化する。
-- 同じ失敗と同じ修正状態が再出現した場合、または同じ失敗のまま修正状態が変わらない場合は `RECOVERY_NO_PROGRESS` で停止。時間・heartbeatの変化だけを進展と扱わない。
-- `--max-rounds` はRecoveryだけの上限（0〜30、既定30）。通常実装やFinal Reviewは消費しない。上限で `RECOVERY_LIMIT`、candidateを生成・適用しない。
-- 既存の12turn上限と、空diffでturn上限到達時だけ同一sessionを最大2回resumeする仕組みは維持する。これは失敗したimplementationの継続であり、成功時に追加callしない。
-- quota枯渇、診断provider異常、Git安全境界違反、worktree改ざん・source変化はfail-close。安全違反をAI修正対象にしない。Final Review decisionファイルだけの誤り（下記）は例外で、`review_pending` を維持する。
-- Testsはstdout進捗・10秒heartbeat・timeoutのprocess tree停止を維持する。provider timeoutも子process tree終了後にRecoveryへ渡す。
-
-### Final Review Gate
-
-特定AI providerに固定しない外部interfaceとする。`final-review-request.json` にTaskSpec、base SHA、差分、Verification結果、run_id、Recovery回数とrequest_idを記録する。
-
-外部reviewerは同じrequest_idに対する `PASS / FAIL / PENDING` と根拠summaryを返す。未接続時にTests PASSをReview PASSへ読み替えない。WorkによるTaskSpec照合は将来この境界へ接続する。
-
-今回の外部連携はJSONファイル方式。`--resume-review <run_dir> --final-review-decision <file>` と同じrepo / TaskSpec / test / max-roundsでレビュー待ちrunを継続できる。sourceと差分が変わっていないことを再検証し、既存のVerificationを利用する。PASSなら既存candidateハーネスへ進み、FAILならClaude Recoveryへ戻る。修正後は新しいReview要求を発行し、古い承認・否認を再利用しない。
-
-decisionファイルが読み取り不能、request_id不一致、または不正なverdict / 空summaryの場合は、worktree・差分・Verificationに問題がないため `stopped` にせず `review_pending` を維持し、candidateも作らない。`result.json` の `final_review_error`（`resumable: true`、期待する `request_id`）と `status.json` のdetailから、正しいdecisionを指定して `--resume-review` を再実行すれば継続できることが分かる。worktree変化・source変化・quota超過・`RECOVERY_NO_PROGRESS` 等のfail-closeは従来通り。DCCへのWork自動接続とレビュー操作UIは対象外。
-
-### 維持する安全ハーネス
-
-- 一時isolated detached worktree。source repoのbranch / HEAD / tracked clean / originを開始時とcandidate作成前に確認する。
-- agentによるcommit / branch変更禁止、child Git push URL無効化。Claudeの `acceptEdits` と限定Bash許可を維持し、permission bypassを使用しない。
-- VerificationとReview前後の差分整合、candidate完全40桁SHA、local candidate方式を維持する。
-- DCC「AI安全停止」はrun_dir捕捉後だけ可能。OrchestratorとClaude/Codex等の子process treeを停止し、status.json / result.jsonへSTOPPED（保存値 `stopped`）、`error_code = USER_SAFETY_STOP` を永続化する。
-- 安全停止ではrun_id / worktree / stage / round / Recovery履歴を保持し、isolated worktree / run logを残す。source mainを変更せず、candidateを適用しない。
-- 自動push / BUILD / UPDATE / DEPLOY、force push / reset --hard / stash / 無断rebaseは行わない。実機確認前の本番配布禁止とconfirmed / pushed / BUILD SHA一致は従来通り。
-
-## 4. DCCでのcandidate受け渡し
-
-- DCCはOrchestratorのmachine-readable resultからcandidate SHAを取得する。
-- console文字列のスクレイピングをcandidate確定根拠にしない。
-- candidateを正式ローカルbranchへ反映する前にユーザー確認を挟む。
-- local fast-forward時はbase SHA、current HEAD、branch、origin、tracked clean、candidate ancestryを再確認する。
-- fast-forwardできない場合は自動修復せず停止する。
-- candidate反映後はRUN_DEVで実機確認する。
-
-## 5. 実機確認 / push / BUILD
-
-- RUN_DEVで業務上の正しさ、GUI、印刷、LAN、外部サービス等を必要範囲で確認する。
-- 実機確認OK後にcandidate SHAを変更しない。
-- pushはfast-forward前提とし、push後にremote SHA == confirmed SHAを確認する。
-- 正式BUILD前にHEAD == confirmed SHAかつtracked cleanを確認する。
-- Nuitka / PyInstaller / .NET/WPF等、BUILDで配布実体が変わる場合は完成binaryも配布前に確認する。
-- ソース実行確認と配布binary確認を同一視しない。
-
-## 6. GitHub / CIの位置づけ
-
-- GitHub / PR / CI表示は観測・同期・SHA確認のために使う。
-- GitHub Actionsは補助検証であり、Actions greenだけを実機確認の代わりにしない。
-- 同じ決定的テストを、理由なくローカルとActionsで重複実行しない。
-- 実プリンター、実共有サーバー、live外部接続、実HDD等は必要なときだけ実機確認する。
-
-## 7. 読み込み・判断コスト
-
-- T0〜T3の必須分類は使用しない。
-- 新しいチャットという理由だけで全Development文書を読み直さない。
-- 通常は本書、対象repoのREADME、変更箇所と直接のconsumer / producerだけを読む。
-- 毎ターンcontractを再報告しない。
-- 大きなスコープ変更、不可逆操作、本番影響が新たに必要になった場合だけ追加判断を求める。
-
-## 8. 他文書との関係
-
-- 本書がDevelopment運用の正本です。
-- `README.md` / `AI_OPERATING_MANUAL.md` / `AI_CHECKLIST.md` / `AGENTS.md` / `AI_STARTUP.md` / `STARTUP_HANDOFF_POLICY.md` は正本と整合する補助資料です。
-- `AGENT_EFFICIENCY_POLICY.md` は旧T0〜T3運用のLegacy Referenceです。
-- 詳細文書と本書が競合する場合は本書を優先します。
-
-運用の安全性は、工程数ではなく、**candidate SHA、独立テスト、独立レビュー、ユーザー実機確認、confirmed/pushed/BUILD SHA一致**で担保します。
+DCCのRUN / BUILD / UPDATEは非対話の処理本体をバックグラウンド実行し、コンソールを前面表示せず、出力と終了コードをDCCへ返します。手動CMDのpauseには依存せず、UI応答を維持します。実行中は同じrepo・出力先の競合を止めます。接続契約は [DCC仕様](docs/dev_control_center.md) を参照してください。

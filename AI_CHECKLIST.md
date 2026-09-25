@@ -1,69 +1,24 @@
 # AI Checklist
 
-必要な境界でだけ使う短いチェックです。正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md) です。
+正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)。必要な境界で確認します。
 
-## AI開発開始時
+## 通常Development
 
-- [ ] 対象repo / expected branchが正しい
-- [ ] local HEAD == origin HEAD
-- [ ] tracked clean
-- [ ] 本番データ・秘密情報・Git管理外業務データを保護できる
-- [ ] 開始点はDCCのAI依頼欄（GPTが意図・優先順位・受入条件を整理済み）
-- [ ] AI依頼が具体的
-- [ ] 独立テストコマンドが設定されている
+- [ ] 正式repoと既存変更を確認し、Claude / Codexが直接作業できる
+- [ ] 必要なTestsを実施した
+- [ ] RUNで現在の作業ツリーを確認した（candidate / cleanは不要）
+- [ ] ユーザー実機確認を行った
 
-## Orchestrator中
+## BUILD / UPDATE
 
-- [ ] Claudeは隔離worktreeで実装している
-- [ ] Claudeはcommit / branch変更 / pushをしていない
-- [ ] tests pass
-- [ ] Final Reviewはprovider非依存で、未接続を承認扱いしない
-- [ ] review後にdiffが変化していない
-- [ ] Recoveryだけを数え、設定した上限（既定30回）を超えていない
+- [ ] 正式entrypointと必要な設定・依存関係を確認した
+- [ ] BUILD記録と入力安定性・成果物hashを確認した
+- [ ] 配布成果物と配布先が明示され、ユーザーがUPDATEを指示した
+- [ ] 確認後に対象が変化していない
+- [ ] 本番データ・秘密情報を保護する
 
-## local candidate確定時
+## 任意のOrchestrator
 
-- [ ] candidateは完全40桁SHA
-- [ ] source repoが開始時baseから動いていない
-- [ ] candidateはbaseのfast-forward子孫
-- [ ] DCCのmachine-readable resultでcandidateを受け取った
-- [ ] local expected branchへ反映する前にユーザー確認を挟んだ
-- [ ] local fast-forward後はtracked clean
-
-## RUN_DEV実機確認
-
-- [ ] ユーザーが実際に確認するcandidate SHAが明確
-- [ ] 変更箇所に応じてGUI / 印刷 / LAN / 外部サービス等を確認した
-- [ ] NGならそのcandidateを本番へ進めない
-
-## ユーザーOK後 / push
-
-- [ ] 承認後にamend / rebase / squash等でSHAを変えていない
-- [ ] pushはfast-forward
-- [ ] remoteが想定外に進んでいない
-- [ ] pushed SHA == confirmed SHA
-
-## BUILD / UPDATE / DEPLOY
-
-- [ ] HEAD == confirmed SHA
-- [ ] tracked clean
-- [ ] BUILD対象SHA == pushed SHA
-- [ ] BUILDで実体が変わるアプリは完成binaryを必要範囲で確認した
-- [ ] 実機確認前の本番配布ではない
-- [ ] confirmed SHA == pushed SHA == BUILD対象SHA
-
-## 不要なもの
-
-- T0〜T3の必須分類
-- 全Development文書の毎回読み直し
-- 同じテストの無意味な重複実行
-- Actions green待ちだけを理由にした開発停止
-- 長い定型完了報告
-
-## development-management 更新時・新規repo登録時
-
-- [ ] 通常repoと同じくDCCのAI依頼欄から開始した
-- [ ] 新規repoは「セットアップ開始」でcloneを確認し、AI依頼欄へ登録タスクがセットされた
-- [ ] Claude → 独立Tests → Final Review Gate を通った
-- [ ] local candidateの完全SHAをユーザーが確認してから反映した
-- [ ] `[branches]` / `[initial_ai_tasks]` / `[initial_tests]` が登録されている
+- [ ] 別画面で対象repo・Task・Testsを確認した
+- [ ] 専用のsource保護・Review・candidate適用条件を満たす
+- [ ] Phase 2の自動レビュー・終了後継続を実装済みと扱っていない

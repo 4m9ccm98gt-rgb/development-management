@@ -238,3 +238,7 @@
 TaskSpec確定後はClaude実装 → 独立Verification → provider非依存Final Review Gateを通常経路とする。全タスク必須のAstra調査設計・reviewを外し、一発成功はRecovery 0回とする。失敗時だけClaude diagnosis / repairへ追加能力を投入し、履歴と差分・失敗fingerprintで無意味な反復を停止する。30roundはRecoveryの暴走防止上限へ変更する。
 
 Final Review未接続を自動承認にせず、request_id付きJSONとreview_pending継続interfaceを採用する。Work接続・レビューUIは将来対応。既存のdetached worktree、source/candidate SHA保護、AI安全停止を保持する。契約詳細はOPERATING_CONTRACT.md、実装interfaceはdocs/ai_orchestrator.md。
+
+## 2026-09-25: DevelopmentとDCC / Orchestratorの責務を分離
+
+通常DevelopmentはClaude / Codexが正式repoで直接実装する。DCCはRUN / BUILD / UPDATE、Orchestratorは任意の別画面とする。RUN / BUILDのcandidate・clean必須を撤去し、UPDATEは確認済み成果物とbuild provenanceを根拠とする。Phase 1はUI・通常操作の正常化に限定し、独立run管理・再接続・自動レビューはPhase 2へ分離。理由と検証・残る制約は [Phase 1記録](development-dcc-phase1.md)。正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。

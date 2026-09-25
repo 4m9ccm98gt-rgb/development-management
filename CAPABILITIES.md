@@ -16,7 +16,7 @@
 
 ## 開発ルート
 
-実装・設定変更は、常にDCCのAI依頼欄から始めます（`OPERATING_CONTRACT.md`）。Claudeが隔離worktreeで実装し、独立TestsとGPT-6 Astra read-onlyレビューを通してlocal candidateまで進みます。
+通常DevelopmentではClaude / Codexが正式ローカルrepoで直接実装します。DCCはRUN / BUILD / UPDATE、Orchestratorは任意の別画面です。詳細は `OPERATING_CONTRACT.md` を参照します。
 
 - GPTは要望・優先順位・受入条件をAI依頼へ整理する。標準運用ではGitHub上のコード・設定を直接編集しない。
 - `sandbox-exec` が利用できれば自動検証に使う。GitHub Actionsはその一実装であり必須ではない。

@@ -1,8 +1,14 @@
 # プロジェクト状況
 
-最終更新: 2026-09-19（JST）
+最終更新: 2026-09-25（JST）
 
-## 2026-09-19 現在のDevelopment運用
+## 現在のDevelopment運用（Phase 1）
+
+通常DevelopmentはClaude / Codexの正式repo直接実装へ変更。DCCはRUN / BUILD / UPDATE中心、Orchestratorは別画面。正本は [OPERATING_CONTRACT.md](OPERATING_CONTRACT.md)。独立run管理・再接続・自動レビューはPhase 2。対象アプリ側の既存BUILD / UPDATE制約は今回変更しない。全330テスト成功、ユーザー実機RUN確認・飲料BUILD rc=0と成果物記録の検証完了。ユーザー指示でcommit対象、push未実施。[Phase 1検証記録](docs/development-dcc-phase1.md)。
+
+以下の過去日付の運用・provider・SHAフローは履歴であり、現在の規則ではありません。
+
+## 2026-09-19 Development運用（旧運用の記録）
 
 Development Control Centerを日常開発の司令塔とし、**AI開発を標準ルート**へ変更した。
 

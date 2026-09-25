@@ -9,7 +9,6 @@ SYNC entrypoint.
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import tkinter as tk
 from tkinter import messagebox
@@ -34,7 +33,7 @@ class App(BaseApp):
         if not missing_sync:
             return
 
-        busy = self.active_process is not None
+        busy = self._repo_busy()
         safe = bool(self.repo_state and self.repo_state.safe_for_lifecycle(self.current))
         candidate = self.candidate_var.get().strip()
         if safe and not busy and candidate_sha_is_valid(candidate) and not self._candidate_matches_local():
@@ -52,7 +51,7 @@ class App(BaseApp):
         super().launch(action)
 
     def _launch_bootstrap_sync(self) -> None:
-        if not self.current or not self.repo_state or self.active_process is not None:
+        if not self.current or not self.repo_state or self._repo_busy():
             return
         if not self.repo_state.safe_for_lifecycle(self.current):
             messagebox.showerror("STOP", "正式repo / branch / origin / tracked clean の安全条件を満たしていません。")
@@ -70,6 +69,7 @@ class App(BaseApp):
         command = [
             "powershell.exe",
             "-NoProfile",
+            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
             "-File",
@@ -83,18 +83,8 @@ class App(BaseApp):
             "-ExpectedSha",
             candidate,
         ]
-        try:
-            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            process = subprocess.Popen(command, cwd=repo_root, creationflags=flags)
-        except OSError as exc:
-            messagebox.showerror("初回SYNC起動失敗", str(exc))
-            return
+        self._start_lifecycle(command, self.current.name, "sync")
 
-        self.active_process = (process, self.current.name, "sync")
-        self._log(f"{self.current.name}: 中央bootstrap SYNC → {candidate[:12]}")
-        self.banner_var.set("初回SYNC実行中。正式SYNC入口を含むcandidateへ安全にfast-forwardします。")
-        self._set_button_states()
-        self.master.after(750, self._poll)
 
 
 def main(argv: list[str] | None = None) -> int:

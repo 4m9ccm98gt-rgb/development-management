@@ -19,6 +19,7 @@ from typing import Callable, Iterable
 from urllib.parse import quote
 
 from .timing import TIMING
+from .processes import hidden_options
 
 DEFAULT_OWNER = "4m9ccm98gt-rgb"
 ACTIVE_TYPES = {"desktop", "web", "service", "management"}
@@ -166,6 +167,11 @@ class RepoState:
     untracked_count: int = 0
     error: str = ""
 
+    def safe_for_development(self, definition: RepoDefinition) -> bool:
+        """Direct development may use dirty trees and feature branches."""
+        return (self.exists and self.is_git_repo and not self.error
+                and self.origin_repo.lower() == definition.full_name.lower())
+
     def safe_for_lifecycle(self, definition: RepoDefinition) -> bool:
         return (
             self.exists
@@ -284,38 +290,26 @@ def decide_lifecycle(
         return ""
 
     sync_reason = blocked_reason(entrypoints.sync, require_match=False)
-    run_reason = blocked_reason(entrypoints.run, require_match=True)
-    build_reason = blocked_reason(entrypoints.build, require_match=True)
-    release_reason = blocked_reason(entrypoints.release, require_match=True)
 
+    def development_reason(choice: EntryPointChoice) -> str:
+        if busy:
+            return "このrepoで競合する工程を実行中"
+        if not repo_state.safe_for_development(definition):
+            return repo_state.error or "正式repo / originを確認してください"
+        if not choice.ready:
+            return f"正式入口が {choice.state}"
+        return ""
+
+    run_reason = development_reason(entrypoints.run)
+    build_reason = development_reason(entrypoints.build)
+    # Release is only eligible here. Provenance and explicit confirmation are
+    # checked immediately before launch; a button is never an approval.
+    release_reason = development_reason(entrypoints.release)
     sync_enabled = not sync_reason
     run_enabled = not run_reason
     build_enabled = not build_reason
     release_enabled = not release_reason
-
-    if busy:
-        banner = "工程実行中。完了後に状態を自動再評価します。"
-    elif not safe:
-        banner = "安全条件NG。repo / branch / origin / tracked clean を確認してください。"
-    elif not candidate_sha_is_valid(candidate):
-        if github_error:
-            banner = "GitHub状態を取得できません。必要なら完全40桁candidate SHAを手入力してください。"
-        else:
-            banner = "candidateを確定できません。GitHub状態を更新してください。"
-    elif not matches:
-        banner = f"candidate {short_sha(candidate)} へSYNCしてください。"
-    else:
-        available: list[str] = []
-        if run_enabled:
-            available.append("RUN")
-        if build_enabled:
-            available.append("BUILD")
-        if release_enabled:
-            available.append(entrypoints.release_label)
-        if available:
-            banner = f"candidate {short_sha(candidate)} 同期済み。利用可能: {' / '.join(available)}"
-        else:
-            banner = f"candidate {short_sha(candidate)} 同期済み。正式入口の状態を確認してください。"
+    banner = run_reason or "現在の作業ツリーをRUN / BUILDできます。UPDATEは成果物確認後に実行します。"
 
     return LifecycleDecision(
         candidate_sha=candidate,
@@ -364,7 +358,7 @@ def _run_cancellable(
     if text:
         kwargs.update(text=True, encoding="utf-8", errors="replace")
     try:
-        proc = subprocess.Popen(args, **kwargs)
+        proc = subprocess.Popen(args, **kwargs, **hidden_options())
     except OSError as exc:
         raise RuntimeError(f"command unavailable: {args[0]}: {exc}") from exc
     with _CHILDREN_LOCK:
@@ -409,6 +403,7 @@ def _run_process(
             errors="replace",
             check=False,
             timeout=timeout,
+            **hidden_options(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"command timed out: {' '.join(args[:4])}") from exc
@@ -616,18 +611,18 @@ def fetch_github_state(
 
 
 def build_new_repo_setup_prompt(remote: RemoteRepo, local_path: Path) -> str:
-    """AI request text (for the DCC AI request field) that registers a new repo."""
+    """Copyable instruction for direct Claude / Codex repository registration."""
     branch_text = remote.default_branch or "未確定（GitHub上で確認して明示設定すること）"
     return (
         "新規repoをdevelopment-managementの正式管理対象へ登録してください。\n"
         f"GitHub: {remote.github_url}\n"
         f"正式ローカル: {local_path}\n"
         f"GitHub default branch: {branch_text}\n\n"
-        "対象repoのREADMEと構成を確認し、repo種別を確定してください。candidate branchは推測せず明示してください。\n"
+        "対象repoのREADMEと構成を確認し、repo種別を確定してください。管理対象branchは推測せず明示してください。\n"
         "scripts/repo_types.toml と scripts/dev_control_center_repos.toml の [branches] へ正式登録してください。\n"
         "同じ scripts/dev_control_center_repos.toml の [initial_ai_tasks] / [initial_tests] へ、"
-        "このrepoの最初のAI依頼と独立テストコマンドを追加してください。\n"
-        "SYNC / RUN_DEV / BUILD / UPDATE・DEPLOYの正式入口の有無を確認し、不足はこのrepo側の最初のAI依頼へ含めてください。"
+        "任意のOrchestrator用初期値として、このrepoの最初のAI依頼と独立テストコマンドを必要なら追加してください。\n"
+        "SYNC / RUN_DEV / BUILD / UPDATE・DEPLOYの正式入口の有無を確認し、不足はClaude / Codexへの直接実装指示へ含めてください。"
         "このタスクではdevelopment-management以外のrepoを変更しません。\n"
         "秘密情報・実運用データはGit管理しません。関連する自動テストを追加・更新してください。"
     )
@@ -684,7 +679,7 @@ def _tracked_files(repo_root: Path, cancel: threading.Event | None = None) -> li
             proc = _run_cancellable(args, GIT_TIMEOUT_SECONDS, cancel, text=False)
         else:
             proc = subprocess.run(
-                args, capture_output=True, check=False, timeout=GIT_TIMEOUT_SECONDS
+                args, capture_output=True, check=False, timeout=GIT_TIMEOUT_SECONDS, **hidden_options()
             )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("git ls-files timed out") from exc
@@ -837,6 +832,7 @@ def _run_git(
                 errors="replace",
                 check=False,
                 timeout=GIT_TIMEOUT_SECONDS,
+                **hidden_options(),
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"git {' '.join(args)}: timed out") from exc
@@ -925,6 +921,7 @@ def apply_local_candidate(
         encoding="utf-8",
         errors="replace",
         check=False,
+        **hidden_options(),
     )
     if ancestry.returncode != 0:
         raise RuntimeError("candidate is not a fast-forward descendant of the orchestration base")
@@ -936,6 +933,7 @@ def apply_local_candidate(
         encoding="utf-8",
         errors="replace",
         check=False,
+        **hidden_options(),
     )
     if merge.returncode != 0:
         detail = (merge.stderr or merge.stdout or f"exit {merge.returncode}").strip()
