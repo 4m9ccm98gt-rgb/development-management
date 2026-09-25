@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from tools.ai_orchestrator import providers as p
 from tools.ai_orchestrator import usage as u
@@ -87,7 +88,8 @@ class ClaudeParseTests(unittest.TestCase):
         self.assertTrue(r.ok)
 
     def test_review_command_is_read_only(self):
-        command = p.ClaudeProvider()._review_command()
+        with mock.patch.object(p, "resolved_command", lambda name: [name]):  # no CLI needed to build the command
+            command = p.ClaudeProvider()._review_command()
         self.assertIn("Read,Glob,Grep", command)
         self.assertNotIn("acceptEdits", command)
         self.assertNotIn("Bash", " ".join(command))
@@ -123,8 +125,9 @@ class CodexParseTests(unittest.TestCase):
 
     def test_write_capable_only_for_main(self):
         provider = p.CodexProvider()
-        main = provider._command(Path("w"), "workspace-write")
-        review = provider._command(Path("w"), "read-only")
+        with mock.patch.object(p, "resolved_command", lambda name: [name]):  # no CLI needed to build the command
+            main = provider._command(Path("w"), "workspace-write")
+            review = provider._command(Path("w"), "read-only")
         self.assertIn("workspace-write", main)
         self.assertIn("read-only", review)
 

@@ -313,12 +313,13 @@ def list_runs(*, repo: str | None = None, limit: int = 200) -> list[dict]:
     except OSError:
         return []
     items = []
+    wanted = _norm(repo) if repo is not None else None
     for directory in dirs:
         info = inspect_run(directory)
         record = info["record"]
         if record is None:
             continue
-        if repo is not None and _norm(record.get("repo")) != _norm(repo):
+        if wanted is not None and _norm(record.get("repo")) != wanted:
             continue
         info["run_dir"] = directory
         items.append(info)
@@ -326,7 +327,9 @@ def list_runs(*, repo: str | None = None, limit: int = 200) -> list[dict]:
 
 
 def _norm(path) -> str:
-    return os.path.normcase(os.path.normpath(str(path or "")))
+    """Canonical spelling: an 8.3 short path and its long form name the same repo."""
+    text = str(path or "")
+    return os.path.normcase(os.path.realpath(text)) if text else ""
 
 
 def active_runs(repo: str | None = None) -> list[dict]:

@@ -208,6 +208,25 @@ class StaleDetectionTests(LifecycleCase):
                                                            "stage": stage, "seq": 1})
         return run_dir
 
+    @unittest.skipUnless(os.name == "nt", "8.3 short paths are Windows only")
+    def test_runs_are_found_through_the_short_spelling_of_the_repo_path(self):
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(1024)
+        if not ctypes.windll.kernel32.GetShortPathNameW(str(self.repo.resolve()), buffer, 1024):
+            self.skipTest("8.3 short names unavailable")
+        short = buffer.value
+        if os.path.normcase(short) == os.path.normcase(str(self.repo.resolve())):
+            self.skipTest("8.3 short names disabled on this volume")
+        run_dir = self.fabricate(pid=os.getpid(), token=process_start_token(os.getpid()), heartbeat_age=0)
+        record = rs.read_json(run_dir / "run.json")
+        record["repo"] = str(self.repo.resolve())  # runs record the canonical (long) repo path
+        write_json_atomic(run_dir / "run.json", record)
+        for spelled in (str(self.repo.resolve()), short):
+            with self.subTest(spelled=spelled):
+                self.assertEqual([i["run_dir"].name for i in rs.active_runs(spelled)], [run_dir.name])
+        other = self.make_repo("other")
+        self.assertEqual(rs.active_runs(str(other)), [])  # a different repo is still a different repo
+
     def dead_pid(self):
         proc = subprocess.Popen([sys.executable, "-c", "pass"])
         token = process_start_token(proc.pid) or "gone"
