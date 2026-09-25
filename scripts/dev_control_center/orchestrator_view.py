@@ -22,6 +22,8 @@ from tools.ai_orchestrator import usage as usage_mod
 from tools.ai_orchestrator.common import OrchestratorError
 from tools.ai_orchestrator.providers import DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_CLASSES
 
+from .character import CharacterView, mood_for
+
 POLL_SECONDS = 2.0
 UI_TICK_MS = 400
 MAX_LOG_CHARS = 400_000
@@ -221,6 +223,10 @@ class OrchestratorWindow:
         left = ttk.Frame(outer)
         left.grid(row=0, column=0, sticky="ns", padx=(0, 12))
         ttk.Label(left, text="実行中 / 過去のrun", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        # Packed before the run list so a short window shrinks the list, not the character.
+        self.character = CharacterView(left, background=DARK_BG)
+        if self.character.available:
+            self.character.widget.pack(side="bottom", pady=(10, 0))
         self.run_list = tk.Listbox(left, width=58, exportselection=False)
         configure_dark_listbox(self.run_list)
         self.run_list.pack(fill="both", expand=True, pady=(6, 0))
@@ -354,6 +360,7 @@ class OrchestratorWindow:
             pass
         if self._own_monitor:
             self.monitor.stop()
+        self.character.destroy()
         self.window.destroy()
 
     # ---------------------------------------------------------------- repo / drafts
@@ -601,6 +608,7 @@ class OrchestratorWindow:
     def _render_selected(self) -> None:
         item = self._selected_item()
         # busy start button while a start is in flight is handled by the notice; recompute here
+        self.character.set_mood(mood_for(item["record"]["stage"], item["liveness"]) if item else "idle")
         if item is None:
             for var in (self.stage_var, self.counts_var, self.calls_var, self.fp_var, self.time_var,
                         self.result_var, self.roles_var):

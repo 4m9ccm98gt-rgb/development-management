@@ -413,5 +413,25 @@ class RunMonitorTests(unittest.TestCase):
             monitor.stop()
 
 
+
+class CharacterMoodTests(ViewCase):
+    def test_character_follows_the_selected_run(self):
+        character = self.window.character
+        self.assertTrue(character.available)
+        self.assertEqual(character.mood, "idle")
+        self.window.apply_snapshot(self.snapshot(runs=[item()]))
+        self.assertEqual(character.mood, "test")
+        self.window.apply_snapshot(self.snapshot(runs=[item(record(stage=rs.NEEDS_HUMAN), liveness=rs.LIVE_FINISHED)]))
+        self.assertEqual(character.mood, "error")
+        self.window.apply_snapshot(self.snapshot(runs=[item(record(stage=rs.COMPLETED), liveness=rs.LIVE_FINISHED)]))
+        self.assertEqual(character.mood, "done")
+
+    def test_closing_the_window_stops_the_character(self):
+        character = self.window.character
+        self.window.close()
+        self.assertTrue(character._destroyed)
+        self.assertIsNone(character._after_id)
+
+
 if __name__ == "__main__":
     unittest.main()
