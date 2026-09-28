@@ -204,6 +204,13 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
     target, backup = Path(body["target"]), Path(body["backup"])
     exe = config["commit_file"]
     progress = Progress(7, emit)
+    from .provenance import restore_intent_path
+
+    intent = restore_intent_path(dcc_repo) if dcc_repo is not None else None
+    if intent is not None and intent.exists():
+        raise ReleaseError(f"a previous restore did not finish recording ({intent}); verify the target, then "
+                           "`restore_release clear-interrupted` (it records the revocation it was about to make)",
+                           "INTERRUPTED")
 
     progress.stage(1, "Lock and in-use check")
     with LockSet(target, config):
@@ -241,6 +248,10 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
         save_root = safe_join(target, f"backup/rollback_before_{now_stamp()}_{from_commit}")
         guard = InUseGuard([safe_join(target, rel) for rel in config.get("in_use", [exe])])
         transaction = Transaction(target, save_root, protected, commit_file=exe, progress=progress, guard=guard)
+        if intent is not None:  # durable before the first write to the share (revokes the source while pending)
+            write_json(intent, {"plan_id": body["plan_id"], "target": body["target"],
+                                "rolled_back_from": (body.get("current_build_info") or {}).get("Git commit SHA", ""),
+                                "deployed_commit": body["restore_commit"], "at": now_stamp()})
         try:
             progress.stage(3, f"Saving the {sum(1 for c in changes if c.before_sha)} current files -> {save_root}")
             transaction.save(changes)
@@ -289,15 +300,54 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
                 raise ReleaseError("operational data changed during the restore (not written by this tool; it is kept as "
                                    f"it is). The application files were put back; nothing recorded: {failed} {op_diff}",
                                    "OPERATIONAL_CHANGED")
-
+        except RollbackIncomplete:
+            raise  # the intent stays: UPDATE stays blocked and the restored-away SHA counts as revoked
+        except BaseException as failure:
+            if transaction.applied:  # whatever failed after the first replace: undo (idempotent)
+                errors = transaction.undo()
+                if errors:
+                    raise RollbackIncomplete(f"{failure}; ROLLBACK INCOMPLETE; recovery copies: {save_root}; "
+                                             + "; ".join(errors)) from failure
+            if intent is not None:
+                intent.unlink(missing_ok=True)  # nothing live is left changed
+            raise
         finally:
             guard.release()
 
     progress.stage(7, "Recording the deployed state in DCC")
     if dcc_repo is not None:
         record_rollback(dcc_repo, body, result)
+        intent.unlink(missing_ok=True)  # only once the revocation and production are durably recorded
     emit("RESTORE complete")
     return result
+
+
+def clear_interrupted(dcc_repo: Path, confirm: str) -> dict:
+    """After someone verified the target: close an unfinished restore record conservatively. The SHA the restore
+    was taking out of production is revoked (never harmful: it was being removed), then the intent is dropped."""
+    from .candidate import CandidateError
+    from .provenance import restore_intent_path, revoked_path
+
+    path = restore_intent_path(dcc_repo)
+    try:
+        intent = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ReleaseError(f"no readable restore intent: {path} ({exc})", "NOTHING_TO_CLEAR") from exc
+    if not confirm or len(confirm) < 12 or not str(intent.get("plan_id", "")).startswith(confirm):
+        raise ReleaseError("confirm with the first 12+ characters of the restore plan id", "NOT_CONFIRMED")
+    if changes_commit(intent):
+        revoked = {"revoked": []}
+        if revoked_path(dcc_repo).exists():
+            try:
+                revoked = json.loads(revoked_path(dcc_repo).read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise CandidateError(f"revoked.json unreadable: {exc}", "STATE_UNREADABLE") from exc
+        if all(str(r.get("sha", "")).lower() != intent["rolled_back_from"].lower() for r in revoked["revoked"]):
+            revoked["revoked"].append({"sha": intent["rolled_back_from"], "replaced_by": intent["deployed_commit"],
+                                       "plan_id": intent["plan_id"], "at": now_stamp(), "note": "unfinished restore"})
+        write_json(revoked_path(dcc_repo), revoked)
+    path.unlink()
+    return intent
 
 
 def _final_checks(target: Path, body: dict, config: dict, candidates: set, before: dict, critical_before: dict,
@@ -406,10 +456,15 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--plan", required=True, type=Path)
     e.add_argument("--confirm", required=True, help="first 12+ characters of the plan id")
     e.add_argument("--dcc-repo", type=Path, help="source repo whose DCC release record is updated on success")
+    c = sub.add_parser("clear-interrupted", help="close an unfinished restore record (revokes its source SHA)")
+    c.add_argument("--dcc-repo", required=True, type=Path)
+    c.add_argument("--confirm", required=True, help="first 12+ characters of the restore plan id")
     args = parser.parse_args(argv)
     try:
         if args.action == "plan":
             plan(args.target, args.backup, args.repo_name, args.commit, args.version, args.out, args.expect_count)
+        elif args.action == "clear-interrupted":
+            print(json.dumps(clear_interrupted(args.dcc_repo, args.confirm), ensure_ascii=False))
         else:
             execute(args.plan, args.confirm, dcc_repo=args.dcc_repo)
         return 0

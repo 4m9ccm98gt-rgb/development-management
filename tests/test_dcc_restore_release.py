@@ -42,6 +42,9 @@ class RestoreCase(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(prefix="dcc restore ")
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
+        env = mock.patch.dict(os.environ, {"LOCALAPPDATA": str(self.root / "local")})  # DCC state stays in the temp
+        env.start()
+        self.addCleanup(env.stop)
         self.target = self.root / "share"
         self.backup = self.target / "backup" / "update_before_20260928_125309"
         self.write_build(self.backup, OLD, "v1.4.0", b"exe-v140", previous=b"exe-v13x-old")
@@ -364,6 +367,104 @@ class ExecuteTests(RestoreCase):
             ended.assert_not_called()
             REAL_RECORD_ROLLBACK(repo, *self.rollback_record_inputs(NEW, OLD))     # a real rollback still revokes
             self.assertEqual(candidate.revoked_shas(repo), {NEW})
+
+    # ---- Astra review round 4
+
+    def test_restore_intent_blocks_and_revokes_until_the_restore_is_recorded(self):
+        from scripts.dev_control_center import candidate, provenance
+        from scripts.dev_control_center import release_update as ru
+
+        repo = self.root / "repo"
+        body = self.plan()
+        self.record.side_effect = OSError("local state disk full")   # the very first record write fails
+        with self.assertRaises(OSError):
+            self.execute(body)
+        intent = provenance.restore_intent_path(repo)
+        self.assertTrue(intent.exists())
+        self.assertIn(NEW, candidate.revoked_shas(repo))              # revoked while the record is pending
+        with self.assertRaises(re_.ReleaseError) as ctx:              # another restore / UPDATE is blocked
+            self.execute(self.plan())
+        self.assertEqual(ctx.exception.code, "INTERRUPTED")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            ru.plan(repo, self.target, repo_name="next-day-setup", emit=lambda t: None)
+        self.assertEqual(ctx.exception.code, "INTERRUPTED")
+        with self.assertRaises(re_.ReleaseError):
+            rr.clear_interrupted(repo, "wrong")
+        rr.clear_interrupted(repo, body["plan_id"][:12])
+        self.assertFalse(intent.exists())
+        revoked = json.loads(provenance.revoked_path(repo).read_text(encoding="utf-8"))["revoked"]
+        self.assertEqual([r["sha"] for r in revoked], [NEW])          # the revocation is made durable
+        self.assertEqual(candidate.revoked_shas(repo), {NEW})
+
+    def test_a_failed_restore_that_was_undone_leaves_no_intent(self):
+        from scripts.dev_control_center import provenance
+
+        body = self.plan()
+
+        def fail_exe(change):
+            if change.rel == "DinnerSystem.exe":
+                raise OSError("injected")
+
+        with self.assertRaises(OSError):
+            self.execute(body, before_each=fail_exe)
+        self.assertFalse(provenance.restore_intent_path(self.root / "repo").exists())
+
+    def test_malformed_rollback_history_fails_closed(self):
+        from scripts.dev_control_center import candidate, provenance
+
+        repo = self.root / "repo"
+        for bad in (b"{}", b'{"kind": "rollback", "deployed_commit": "x"}', b"not json"):
+            with self.subTest(bad=bad):
+                path = provenance.revoked_path(repo).with_name("release-20260928_000000-rollback.json")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(bad)
+                with self.assertRaises(candidate.CandidateError) as ctx:
+                    candidate.revoked_shas(repo)
+                self.assertEqual(ctx.exception.code, "STATE_UNREADABLE")
+
+    @unittest.skipUnless(os.name == "nt", "junctions")
+    def test_backup_writes_never_follow_a_backup_ancestor_swapped_for_a_junction(self):
+        import _winapi
+
+        save_root = self.target / "backup" / "gen" / "files"
+        outside = self.root / "outside"
+        write = self.write
+        write(outside / "gen" / "files" / "_internal" / "ucrtbase.dll", b"outside data")
+        changes = [re_.Change(rel, self.target / rel, self.target / rel, sha(b"x"), sha((self.target / rel).read_bytes()))
+                   for rel in ("_internal/base_library.zip", "_internal/ucrtbase.dll")]
+        transaction = re_.Transaction(self.target, save_root, rr.protected_of(rr.release_config("next-day-setup")))
+        transaction.save(changes[:1])
+        os.rename(self.target / "backup", self.target / "backup_moved")
+        _winapi.CreateJunction(str(outside), str(self.target / "backup"))
+        try:
+            with self.assertRaises(re_.ReleaseError) as ctx:
+                transaction.save(changes[1:])
+            self.assertEqual(ctx.exception.code, "PATH_REPARSE")
+            self.assertEqual((outside / "gen/files/_internal/ucrtbase.dll").read_bytes(), b"outside data")
+        finally:
+            os.rmdir(self.target / "backup")
+
+    @unittest.skipUnless(os.name == "nt", "junctions")
+    def test_staging_cleanup_never_deletes_through_a_folder_swapped_for_a_junction(self):
+        import _winapi
+
+        source = self.root / "new.dat"
+        source.write_bytes(b"new")
+        change = re_.Change("_internal/sub/new.dat", source, self.target / "_internal/sub/new.dat", sha(b"new"), None)
+        transaction = re_.Transaction(self.target, self.root / "saved",
+                                      rr.protected_of(rr.release_config("next-day-setup")))
+        transaction.stage([change])
+        outside = self.root / "outside"
+        self.write(outside / change.staged.name, b"outside data with the same name")
+        os.rename(self.target / "_internal/sub", self.target / "_internal/sub_moved")
+        _winapi.CreateJunction(str(outside), str(self.target / "_internal/sub"))
+        try:
+            skipped = transaction.cleanup([change])
+            transaction.remove_created_dirs()
+            self.assertTrue(skipped)
+            self.assertEqual((outside / change.staged.name).read_bytes(), b"outside data with the same name")
+        finally:
+            os.rmdir(self.target / "_internal/sub")
 
     def assert_back_to_pre_restore(self, before):
         after = tree(self.target)

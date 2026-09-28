@@ -281,13 +281,27 @@ def revoked_shas(repo: Path) -> set[str]:
                                  "STATE_UNREADABLE")
         result.update(i["sha"].lower() for i in items)
     # The immutable rollback history is a second, independent source: a revocation survives even when writing
-    # revoked.json failed after the restore (it is written first, before any other record).
+    # revoked.json failed after the restore (it is written first, before any other record). An unfinished restore
+    # (its intent is written before the first write to the deployment) revokes its source while pending.
+    from .provenance import restore_intent_path
     from .restore_release import changes_commit
+
+    intent_path = restore_intent_path(Path(repo).resolve())
+    if intent_path.exists():
+        intent = _read_json(intent_path)
+        if intent is None or not isinstance(intent.get("rolled_back_from"), str):
+            raise CandidateError(f"restore intent unreadable: {intent_path}（失効SHAを確認できないため停止）",
+                                 "STATE_UNREADABLE")
+        if changes_commit(intent):
+            result.add(intent["rolled_back_from"].strip().lower())
 
     for path in sorted(revoked_path(Path(repo).resolve()).parent.glob("release-*-rollback.json")):
         data = _read_json(path)
-        if data is None:
-            raise CandidateError(f"rollback history unreadable: {path}（失効SHAを確認できないため停止）", "STATE_UNREADABLE")
+        if (data is None or data.get("kind") != "rollback"
+                or not all(isinstance(data.get(k), str) and SHA_RE.fullmatch(data[k].strip().lower())
+                           for k in ("rolled_back_from", "deployed_commit"))):
+            raise CandidateError(f"rollback history unreadable or invalid: {path}（失効SHAを確認できないため停止）",
+                                 "STATE_UNREADABLE")
         if changes_commit(data):
             result.add(str(data["rolled_back_from"]).lower())
     result.discard("")

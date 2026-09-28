@@ -332,6 +332,9 @@ def plan(repo: Path, target: Path, *, branch: str = "main", repo_name: str | Non
         raise _stop(f"a previous UPDATE did not finish (release {str(marker.get('release_id', '?'))[:12]}, target "
                     f"{marker.get('target')}, recovery copies {marker.get('backup')}). Verify the target, restore it "
                     "if needed, then clear the marker (release_update clear-interrupted)", "INTERRUPTED")
+    if provenance.restore_intent_path(repo).exists():
+        raise _stop(f"a restore of this repo did not finish recording ({provenance.restore_intent_path(repo)}); "
+                    "verify the target, then run `restore_release clear-interrupted`", "INTERRUPTED")
     for warning in provenance.reconcile_candidate(repo):  # retry the follow-up of an earlier committed release
         progress.detail(f"NOTE {warning}")
 
@@ -455,8 +458,9 @@ def execute(plan_path: Path, confirm: str, *, config: dict | None = None, emit=p
     config = config or release_config(body["repo_name"])
     if config_digest(config) != body["config_digest"]:
         raise _stop("[release] configuration changed since the dry-run; make a new plan", "PLAN_DRIFT")
-    if inflight_path(repo).exists():
-        raise _stop("a previous UPDATE did not finish (update-inflight.json); verify the target and clear it", "INTERRUPTED")
+    if inflight_path(repo).exists() or provenance.restore_intent_path(repo).exists():
+        raise _stop("a previous UPDATE or restore did not finish (update-inflight.json / restore-inflight.json); "
+                    "verify the target and clear it", "INTERRUPTED")
     progress = Progress(7, emit)
     protected = protected_of(config)
     started = time.monotonic()

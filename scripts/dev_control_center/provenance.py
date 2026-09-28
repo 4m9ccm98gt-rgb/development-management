@@ -58,6 +58,12 @@ def revoked_path(repo: Path) -> Path:
     return state_root() / repo_key(repo) / "revoked.json"
 
 
+def restore_intent_path(repo: Path) -> Path:
+    """Written by restore_release before its first write to the deployment; removed once the restore is recorded
+    (or fully undone). While present, UPDATE is blocked and the SHA being restored away counts as revoked."""
+    return state_root() / repo_key(repo) / "restore-inflight.json"
+
+
 def record_release_result(repo: Path, request: dict, rc: int, started: str) -> dict:
     """Keep every attempt (history + last), change the confirmed production state only on success,
     and end the candidate lifecycle when exactly its bound artifact was deployed."""

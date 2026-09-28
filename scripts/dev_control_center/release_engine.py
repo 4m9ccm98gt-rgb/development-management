@@ -74,12 +74,15 @@ def _is_reparse(path: Path) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
-def safe_join(root: Path, rel: str) -> Path:
-    """`root/rel`, refusing invalid names and any reparse point on the way (existing components)."""
+def safe_join(root: Path, rel: str, *, ancestors: bool = False) -> Path:
+    """`root/rel`, refusing invalid names and any reparse point on the way (existing components).
+    `ancestors=True` (every write / delete path) also re-checks every existing ancestor of `root` itself, so a
+    parent folder swapped for a junction after `root` was derived is refused too."""
     if not valid_relative(rel):
         raise ReleaseError(f"invalid relative path: {rel}", "PATH_INVALID")
-    if _is_reparse(root):
-        raise ReleaseError(f"reparse point not allowed: {root}", "PATH_REPARSE")
+    for part in ([root, *root.parents] if ancestors else [root]):
+        if _is_reparse(part):
+            raise ReleaseError(f"reparse point not allowed: {part}", "PATH_REPARSE")
     path = root
     for part in PurePosixPath(rel).parts:
         path = path / part
@@ -351,7 +354,7 @@ class LockSet:
 
     def __init__(self, target: Path, config: dict):
         names = [config.get("lock", ".dcc-release.lock"), *config.get("legacy_locks", [])]
-        self.locks = [ExclusiveLock(safe_join(target, name)) for name in dict.fromkeys(names)]
+        self.locks = [ExclusiveLock(safe_join(target, name, ancestors=True)) for name in dict.fromkeys(names)]
         self._held: list[ExclusiveLock] = []
 
     def __enter__(self):
@@ -511,9 +514,9 @@ class Transaction:
     def _revalidate(self, change: Change) -> None:
         """Immediately before a write: the paths still resolve to the planned locations and no component has
         become a reparse point (e.g. a folder swapped for a junction into operational data since planning)."""
-        if safe_join(self.target_root, change.rel) != change.target:
+        if safe_join(self.target_root, change.rel, ancestors=True) != change.target:
             raise ReleaseError(f"target path changed: {change.rel}", "PATH_CHANGED")
-        if change.saved is not None and safe_join(self.save_root, change.rel) != change.saved:
+        if change.saved is not None and safe_join(self.save_root, change.rel, ancestors=True) != change.saved:
             raise ReleaseError(f"backup path changed: {change.rel}", "PATH_CHANGED")
 
     def _current(self, path: Path) -> str | None:
@@ -553,9 +556,12 @@ class Transaction:
     def remove_created_dirs(self) -> None:
         """Folders this transaction created for new files, when they are empty again (deepest first)."""
         for folder in sorted(set(self.created_dirs), key=lambda p: len(p.parts), reverse=True):
-            try:
+            try:  # re-derived and re-checked right before removing (never through a swapped-in junction)
+                rel = folder.relative_to(self.target_root).as_posix()
+                if safe_join(self.target_root, rel, ancestors=True) != folder or _is_reparse(folder):
+                    continue
                 folder.rmdir()
-            except OSError:
+            except (OSError, ValueError, ReleaseError):
                 pass
 
     def save(self, changes: list[Change]) -> None:
@@ -563,7 +569,7 @@ class Transaction:
         existing = [c for c in changes if c.before_sha]
         for number, change in enumerate(existing, 1):
             self.protected.assert_writable(change.rel)
-            saved = safe_join(self.save_root, change.rel)
+            saved = safe_join(self.save_root, change.rel, ancestors=True)
             saved.parent.mkdir(parents=True, exist_ok=True)
             with open(change.target, "rb") as src, open(saved, "wb") as dst:
                 while chunk := src.read(1 << 20):
@@ -586,7 +592,7 @@ class Transaction:
     def _stage(self, changes: list[Change]) -> None:
         for number, change in enumerate(changes, 1):
             self.protected.assert_writable(change.rel)
-            target = safe_join(self.target_root, change.rel)
+            target = safe_join(self.target_root, change.rel, ancestors=True)
             self._make_parents(target)
             staged = target.with_name(f"{target.name}.{uuid.uuid4().hex[:12]}.dcc-stage")
             change.staged = staged
@@ -668,14 +674,22 @@ class Transaction:
             self.remove_created_dirs()
         return errors
 
-    @staticmethod
-    def cleanup(changes: list[Change]) -> None:
+    def cleanup(self, changes: list[Change]) -> list[str]:
+        """Remove leftover staged copies. Each path is re-derived from the target (every ancestor re-checked)
+        right before deleting; a path that no longer resolves to the same plain location is left and reported."""
+        skipped = []
         for change in changes:
-            if change.staged is not None and change.staged.exists():
-                try:
-                    change.staged.unlink()
-                except OSError:
-                    pass
+            if change.staged is None:
+                continue
+            try:
+                fresh = safe_join(self.target_root, change.rel, ancestors=True).with_name(change.staged.name)
+                if fresh != change.staged:
+                    raise ReleaseError("staged path changed", "PATH_CHANGED")
+                if fresh.exists():
+                    fresh.unlink()
+            except (OSError, ReleaseError) as exc:
+                skipped.append(f"{change.rel}: staged copy not removed ({exc})")
+        return skipped
 
 
 # ------------------------------------------------------------------ release manifest (schema v2)
@@ -729,7 +743,7 @@ def write_manifest_atomic(target: Path, config: dict, body: dict, repo_name: str
     validate_manifest(body, config, repo_name)
     name = config["manifest"]
     protected_of(config).assert_writable(name)
-    final = safe_join(target, name)
+    final = safe_join(target, name, ancestors=True)
     data = json.dumps(body, ensure_ascii=False, indent=1).encode("utf-8")
     temp = final.with_name(f"{final.name}.{uuid.uuid4().hex[:12]}.dcc-stage")
     try:
@@ -754,7 +768,8 @@ BACKUP_KIND = "dcc_release_backup"
 
 
 def backup_folder(target: Path, config: dict, release_id: str) -> Path:
-    return safe_join(target, f"{config.get('backup_dir', 'backup')}/{BACKUP_PREFIX}{now_stamp()}_{release_id[:12]}")
+    return safe_join(target, f"{config.get('backup_dir', 'backup')}/{BACKUP_PREFIX}{now_stamp()}_{release_id[:12]}",
+                     ancestors=True)
 
 
 def engine_backups(target: Path, config: dict, repo_name: str) -> list[Path]:
@@ -801,7 +816,7 @@ def remove_backup(target: Path, config: dict, name: str) -> None:
     before deleting (backup root and every ancestor re-checked for reparse points), never taken from a cache."""
     if not name.startswith(BACKUP_PREFIX) or "/" in name or "\\" in name:
         raise ReleaseError(f"not an engine backup: {name}", "PATH_INVALID")
-    remove_tree(safe_join(target, f"{config.get('backup_dir', 'backup')}/{name}"))
+    remove_tree(safe_join(target, f"{config.get('backup_dir', 'backup')}/{name}", ancestors=True))
 
 
 def prune_backups(target: Path, config: dict, repo_name: str, keep_path: Path | None = None) -> dict:
