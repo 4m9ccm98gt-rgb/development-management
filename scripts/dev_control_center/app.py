@@ -19,7 +19,6 @@ from .core import (
     RemoteRepo,
     RepoDefinition,
     active_repo_definitions,
-    apply_local_candidate,
     build_new_repo_setup_prompt,
     candidate_sha_is_valid,
     choice_text,
@@ -32,7 +31,7 @@ from .core import (
     short_sha,
     unmanaged_github_repositories,
 )
-from . import provenance, processes, entrypoints as machine_entries
+from . import candidate as candidate_flow, provenance, processes, entrypoints as machine_entries
 from .loader import Coordinator, NoticeKind
 from .selection import (
     DEV_MANAGEMENT,
@@ -235,6 +234,10 @@ class App(ttk.Frame):
         self.remote_status_var = tk.StringVar(value="未確認")
         self.self_update_var = tk.StringVar(value="未確認")
         self.orchestrator_button_var = tk.StringVar(value="AI Orchestrator")
+        # Orchestrator candidate lifecycle (RUN_DEV -> approval -> push -> BUILD -> UPDATE), per repo.
+        self.flow: dict[str, dict] = {}
+        self.flow_var = tk.StringVar(value="-")
+        self.run_button_var = tk.StringVar(value="RUN")
 
         self._build()
         self.candidate_var.trace_add("write", lambda *_: self._candidate_changed())
@@ -362,8 +365,13 @@ class App(ttk.Frame):
         ttk.Label(right, textvariable=self.title_var, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(right, textvariable=self.meta_var, wraplength=580).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
-        status = ttk.LabelFrame(right, text="ローカル現在状態", padding=10)
-        status.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        # Local and GitHub state side by side: the candidate flow needs the vertical space at 1080x720.
+        info = ttk.Frame(right)
+        info.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        info.columnconfigure(0, weight=1)
+        info.columnconfigure(1, weight=1)
+        status = ttk.LabelFrame(info, text="ローカル現在状態", padding=8)
+        status.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         status.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("branch", self.branch_var),
@@ -371,19 +379,19 @@ class App(ttk.Frame):
             ("origin", self.origin_var),
             ("working tree", self.clean_var),
         ]):
-            ttk.Label(status, text=label, width=14).grid(row=row, column=0, sticky="w")
-            ttk.Label(status, textvariable=var, wraplength=440).grid(row=row, column=1, sticky="w")
+            ttk.Label(status, text=label, width=11).grid(row=row, column=0, sticky="w")
+            ttk.Label(status, textvariable=var, wraplength=260).grid(row=row, column=1, sticky="w")
 
-        github_box = ttk.LabelFrame(right, text="GitHub / PR / CI", padding=10)
-        github_box.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        github_box = ttk.LabelFrame(info, text="GitHub / PR / CI", padding=8)
+        github_box.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         github_box.columnconfigure(1, weight=1)
         for row, (label, var) in enumerate([
             ("branch HEAD", self.github_head_var),
             ("CI", self.ci_var),
             ("open PR", self.pr_var),
         ]):
-            ttk.Label(github_box, text=label, width=14).grid(row=row, column=0, sticky="w")
-            ttk.Label(github_box, textvariable=var, wraplength=540).grid(row=row, column=1, sticky="w")
+            ttk.Label(github_box, text=label, width=11).grid(row=row, column=0, sticky="w")
+            ttk.Label(github_box, textvariable=var, wraplength=220).grid(row=row, column=1, sticky="w")
         ttk.Button(github_box, text="PR / CIを開く", command=self.open_pr_or_ci).grid(row=0, column=2, rowspan=3, sticky="ns", padx=(12, 0))
 
         lifecycle = ttk.LabelFrame(right, text="実機確認・配布", padding=10)
@@ -393,7 +401,7 @@ class App(ttk.Frame):
 
         self.run_button = ttk.Button(
             lifecycle,
-            text="RUN",
+            textvariable=self.run_button_var,
             command=lambda: self.launch("run"),
         )
         self.run_button.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(8, 0))
@@ -419,8 +427,21 @@ class App(ttk.Frame):
 
         ttk.Label(
             lifecycle,
-            text="RUN / BUILDは現在の作業内容を使用。UPDATEは成果物・配布先の確認が必要です。", wraplength=570,
+            text="Orchestrator candidateがあればRUN_DEV → 承認 → push → BUILD → UPDATEを同一SHAで行います。"
+                 "無ければRUN / BUILDは現在の作業内容を使用。", wraplength=570,
         ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+        flow_box = ttk.LabelFrame(right, text="Orchestrator candidate フロー（同一SHA）", padding=8)
+        flow_box.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        flow_box.columnconfigure(0, weight=1)
+        self.flow_label = ttk.Label(flow_box, textvariable=self.flow_var, font=("Consolas", 9), justify="left")
+        self.flow_label.grid(row=0, column=0, rowspan=3, sticky="w")
+        self.approve_button = ttk.Button(flow_box, text="RUN_DEV OKを承認", command=self.approve_candidate)
+        self.approve_button.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.push_button = ttk.Button(flow_box, text="承認済みSHAをpush", command=self.push_candidate)
+        self.push_button.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
+        self.discard_button = ttk.Button(flow_box, text="candidateを破棄", command=self.discard_candidate)
+        self.discard_button.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
 
         self.orchestrator_button = ttk.Button(lifecycle, textvariable=self.orchestrator_button_var, command=self.open_orchestrator)
         self.orchestrator_button.grid(row=1, column=3, sticky="ew", padx=(3, 0), pady=(8, 0))
@@ -496,17 +517,22 @@ class App(ttk.Frame):
         self.pr_var.set("取得中...")
         self.candidate_source_var.set("-")
 
+    def _configured_tests(self, name: str) -> str:
+        definition = next((d for d in self.definitions if d.name == name), None)
+        return getattr(definition, "initial_test", "") if definition else ""
+
     def on_request_suggestion(self, name: str) -> None:
-        # A suggested Tests command only fills an empty Orchestrator draft; it never overrides input.
+        # A suggested Tests command only fills an empty Orchestrator draft; it never overrides input,
+        # and a repo's configured default ([initial_tests]) always wins over the heuristic guess.
         draft = self.ai_drafts.get(name)
-        if not (draft and draft.tests):
+        if not (draft and draft.tests) and not self._configured_tests(name):
             self.selection.submit_suggest(name)
 
     def on_suggestion(self, name: str, value: str) -> None:
         from .orchestrator_view import Draft
 
         draft = self.ai_drafts.get(name)
-        if value and not (draft and draft.tests):
+        if value and not (draft and draft.tests) and not self._configured_tests(name):
             self.ai_drafts[name] = Draft(draft.task if draft else "", value)
             window = self.orchestrator_window
             if window is not None and window.exists():
@@ -524,6 +550,7 @@ class App(ttk.Frame):
         self.build_var.set(choice_text(entries.build, repo_root))
         self.release_var.set(choice_text(entries.release, repo_root))
         self.release_button_var.set(entries.release_label)
+        self._refresh_flow(name)
 
     def on_local_unavailable(self, name: str, text: str) -> None:
         for var in (self.branch_var, self.head_var, self.origin_var,
@@ -877,59 +904,100 @@ class App(ttk.Frame):
         return any(name == repo_name for name, _ in ACTIVE_OPERATIONS.values())
 
     def apply_ai_candidate(self, record: dict, run_dir: Path) -> None:
-        """Apply a completed Orchestrator run to the local expected branch (never push / BUILD / UPDATE).
-
-        Normal Development may have moved the repo while the run worked: then applying is *held*
-        (nothing is forced and the run stays completed), and the reason is shown."""
-        from tools.ai_orchestrator import runstate as run_state
-
+        """Orchestrator window "DCCで実機確認へ": select the repo so its candidate flow is shown.
+        The candidate is applied only by the push step after RUN_DEV and a human approval
+        (this window itself does no push / BUILD / UPDATEは行いません)."""
         repo_name = Path(str(record.get("repo", ""))).name
+        names = [d.name for d in self.definitions]
+        if repo_name not in names:
+            return
+        if not self.current or self.current.name != repo_name:
+            self.repo_list.selection_clear(0, "end")
+            self.repo_list.selection_set(names.index(repo_name))
+            self._select_repo()
+        else:
+            self._refresh_flow(repo_name)
+        sha = str(record.get("candidate_sha", ""))
+        self._log(f"{repo_name}: Orchestrator candidate {sha[:12]}（run {record.get('run_id')}）をRUN_DEVで確認してください")
+        self.master.lift()
+
+    # --- Orchestrator candidate lifecycle -------------------------------------------------
+    def _refresh_flow(self, repo_name: str) -> None:
+        """Recompute the candidate flow off the UI thread (git + run files)."""
         definition = next((d for d in self.definitions if d.name == repo_name), None)
-        candidate = str(record.get("candidate_sha", "")).strip().lower()
-        base_sha = str(record.get("base_sha", "")).strip().lower()
-        parent = getattr(self.orchestrator_window, "window", self.master)
-        if definition is None or not candidate_sha_is_valid(candidate):
-            messagebox.showerror("candidate適用停止", "対象repoまたはcandidate SHAを確認できません。", parent=parent)
+        if definition is None:
             return
-        if self._repo_name_busy(repo_name):
-            messagebox.showinfo("candidate適用を保留", f"{repo_name}でRUN / BUILD / UPDATE等を実行中です。完了後に再度適用してください。", parent=parent)
+        events = self.lifecycle_events
+
+        def work() -> None:
+            try:
+                snap = candidate_flow.snapshot(REPOS_ROOT / repo_name, definition.branch)
+            except Exception as exc:  # noqa: BLE001 - shown, never fatal
+                snap = {"candidate": None, "active": True, "error": f"candidate状態を確認できません: {exc}", "stages": [],
+                        "can_run": False, "can_approve": False, "can_push": False, "mismatch": ""}
+            events.put(("flow", repo_name, snap))
+
+        threading.Thread(target=work, name="candidate-flow", daemon=True).start()
+
+    def _current_flow(self) -> dict | None:
+        return self.flow.get(self.current.name) if self.current else None
+
+    def _render_flow(self) -> None:
+        flow = self._current_flow()
+        self.run_button_var.set(candidate_run_label(flow))
+        self.flow_var.set(flow_text(flow))
+        self._set_button_states()
+
+    def approve_candidate(self) -> None:
+        flow, definition = self._current_flow(), self.current
+        if not flow or not flow.get("can_approve") or definition is None or App._repo_busy(self):
             return
-        approved, unchanged = self._confirm_with_guard(
-            "ai_apply",
-            lambda: self._ai_apply_fields(repo_name),
-            lambda: messagebox.askyesno(
-                "AI candidate",
-                f"candidate {candidate}\n\nこのcandidateをローカルexpected branchへfast-forwardし、"
-                "RUN / BUILDで実機確認できる状態にしますか？\n\npush / BUILD / UPDATEは行いません。",
-                parent=parent,
-            ),
-        )
-        if not unchanged:
-            self._log(f"{repo_name}: AI candidate適用は中止されました（状態が変わりました）")
+        candidate = flow["candidate"]
+        run = candidate_flow.last_run(flow["state"]) or {}
+        if not messagebox.askyesno(
+                "RUN_DEV承認", f"承認するSHA: {candidate.sha}\nOrchestrator run: {candidate.run_id}\n"
+                f"RUN_DEV: {run.get('result')} rc={run.get('returncode')} {run.get('finished_at')}\n"
+                f"RUN対象: {run.get('target')}\n\nこのSHAを実機確認OKとして承認しますか？\n"
+                "（承認はこのSHAにだけ有効です。再RUNやcandidate変更で無効になります）", parent=self.master):
             return
-        if not approved:
+
+        def ready(state):
+            self._log(f"{definition.name}: Human approval APPROVED {candidate.sha}")
+            self._reload_after(definition.name)
+
+        self._prepare_operation(definition.name, "approve", lambda: candidate_flow.approve(candidate, candidate.sha), ready)
+
+    def push_candidate(self) -> None:
+        flow, definition = self._current_flow(), self.current
+        if not flow or not flow.get("can_push") or definition is None or App._repo_busy(self):
             return
-        self.selection.new_epoch(repo_name, "ai-apply")
-        try:
-            apply_local_candidate(REPOS_ROOT / repo_name, definition, base_sha=base_sha, candidate_sha=candidate)
-        except RuntimeError as exc:
-            text = f"Orchestrator成果物の適用を保留しました: {exc}"
-            self._log(f"{repo_name}: {text}")
-            self.banner_var.set(text)
-            messagebox.showwarning("candidate適用を保留", f"{exc}\n\nOrchestratorのrunと成果物(candidate {short_sha(candidate)})は保持されています。"
-                                   "base状態を確認してから再度適用してください。", parent=parent)
-            self._reload_after(repo_name)
+        candidate = flow["candidate"]
+        if not messagebox.askyesno(
+                "承認済みcandidateをpush", f"push対象SHA: {candidate.sha}\n承認: {flow['state']['approval']['at']}\n"
+                f"base: {candidate.base_sha}\n\nsource repoの {definition.branch} をこのSHAへfast-forwardし、"
+                f"origin/{definition.branch} へpushしますか？\n（merge commit / rebase / force pushはしません。"
+                "baseが動いていれば停止します）", parent=self.master):
             return
-        self.selection.provenance.ai_result(repo_name, candidate)
-        try:
-            run_state.mark_applied(run_dir, f"local branchへfast-forward済み {short_sha(candidate)}")
-        except Exception as exc:  # noqa: BLE001 - the note is informational
-            self._log(f"{repo_name}: run記録の更新に失敗: {exc}")
-        done = f"AI candidate {short_sha(candidate)} をローカル適用済み。RUN / BUILDで実機確認してください。"
-        self._log(f"{repo_name}: {done}")
-        self.selection.post_action_notice[repo_name] = done
-        self._reload_after(repo_name)
-        self.banner_var.set(done)
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.candidate", "push",
+                   "--repo", str(REPOS_ROOT / definition.name), "--branch", definition.branch, "--expect-sha", candidate.sha]
+        self._log(f"{definition.name}: PUSH 対象 = 承認済みcandidate {candidate.sha}")
+        self._start_lifecycle(command, definition.name, "push")
+
+    def discard_candidate(self) -> None:
+        flow, definition = self._current_flow(), self.current
+        if not flow or not flow.get("candidate") or definition is None or App._repo_busy(self):
+            return
+        candidate = flow["candidate"]
+        if not messagebox.askyesno(
+                "candidateを破棄", f"Orchestrator candidate {candidate.sha}（run {candidate.run_id}）をDCCの確認対象から外し、"
+                "作業ツリーの通常RUN / BUILDへ戻しますか？\n\ncommit・branch・run記録は削除しません。", parent=self.master):
+            return
+
+        def ready(state):
+            self._log(f"{definition.name}: candidate {candidate.sha[:12]} を破棄（通常ルートへ）")
+            self._reload_after(definition.name)
+
+        self._prepare_operation(definition.name, "discard", lambda: candidate_flow.discard(candidate), ready)
 
     # --- Orchestrator badge: reconnect visibility for runs that outlive DCC -------------
     def _start_orchestrator_badge(self) -> None:
@@ -1005,15 +1073,33 @@ class App(ttk.Frame):
                 raise ValueError(f"{action.upper()}の正式入口を一意に特定できません")
             if action in {"run", "build"} and not machine_entries.supported(repo_root, action):
                 raise ValueError("非対話entrypoint未登録です。dcc_entrypoints.jsonで本体を指定してください")
-            return state, choice
+            flow = None
+            if action == "run":
+                flow = candidate_flow.snapshot(repo_root, definition.branch)
+                if flow["active"] and flow["error"]:
+                    raise ValueError(f"Orchestrator candidate停止: {flow['error']}")
+                if flow["active"] and not flow["can_run"]:
+                    raise ValueError(f"Orchestrator candidateのSHA不一致: {flow['mismatch']}")
+                flow = flow if flow["active"] else None
+            elif action == "build":
+                flow = candidate_flow.build_gate(repo_root, definition.branch)
+            return state, choice, flow
 
         def ready(result):
-            state, choice = result
+            state, choice, flow = result
             if self.current != definition or App._repo_busy(self):
                 self._log(f"{definition.name}: 開始中止（選択または実行状態が変化）")
                 return
             if action == "sync":
                 self._log("SYNCは手動の正式入口を使用してください。DCC通常操作はRUN / BUILD / UPDATEです。")
+                return
+            if action == "run" and flow:
+                sha = flow["candidate"].sha
+                command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.candidate", "run-dev",
+                           "--repo", str(repo_root), "--branch", definition.branch, "--expect-sha", sha]
+                self._log(f"{definition.name}: RUN_DEV 対象 = Orchestrator candidate {sha}"
+                          f"（run {flow['candidate'].run_id} / {flow['candidate'].branch}）。source repoは変更しません")
+                self._start_lifecycle(command, definition.name, "run_dev")
                 return
             if action == "run":
                 command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.entrypoints", "run", "--repo", str(repo_root)]
@@ -1034,6 +1120,9 @@ class App(ttk.Frame):
                     return
                 command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.provenance", "build",
                            "--repo", str(repo_root), "--entry", str(choice.path), "--artifact", str(artifact)]
+                if flow is not None:
+                    command += ["--expect-sha", flow.sha, "--candidate-run", flow.run_id, "--expect-branch", definition.branch]
+                    self._log(f"{definition.name}: BUILD 対象 = 承認・push済みcandidate {flow.sha}（local / origin 一致を確認済み）")
                 self._start_lifecycle(command, definition.name, action)
                 return
             folder = filedialog.askdirectory(title="配布先フォルダを選択（HDD更新はドライブ直下）", parent=self.master)
@@ -1103,6 +1192,11 @@ class App(ttk.Frame):
             if event[0] == "output":
                 _, repo, action, text = event
                 self._log_process(repo, action, text)
+            elif event[0] == "flow":
+                _, repo, snap = event
+                self.flow[repo] = snap
+                if self.current and self.current.name == repo:
+                    self._render_flow()
             elif event[0] == "prepared":
                 _, token, repo, action, result, error, ready = event
                 ACTIVE_OPERATIONS.pop(id(token), None)
@@ -1137,7 +1231,9 @@ class App(ttk.Frame):
             if self.current != definition or App._repo_busy(self):
                 return
             record = snapshot["receipt"]
-            details = (f"repo: {repo_root}\nBUILD: {record['build_id']}\nbase HEAD: {record['base_head']}\n"
+            bound = (f"Orchestrator candidate: {snapshot['expected_sha']}（承認・push・BUILDと一致）\n"
+                     if snapshot.get("expected_sha") else "")
+            details = (bound + f"repo: {repo_root}\nBUILD: {record['build_id']}\nbase HEAD: {record['base_head']}\n"
                        f"dirty: {record['dirty']}\n成果物: {record['artifact']}\nSHA256: {record['artifact_hash']}\n"
                        f"配布先: {snapshot.get('destination_detail', snapshot['target'])}\n\nこの成果物を実機確認済みで、UPDATEを実行しますか？")
             if not messagebox.askyesno("UPDATE確認", details, parent=self.master):
@@ -1151,7 +1247,12 @@ class App(ttk.Frame):
                        "--repo", str(repo_root), "--request", str(request_path)]
             self._start_lifecycle(command, definition.name, "release")
 
-        self._prepare_operation(definition.name, "release", lambda: provenance.release_snapshot(repo_root, target), ready)
+        def snapshot():
+            expected = candidate_flow.release_expectation(repo_root, definition.branch)
+            return provenance.release_snapshot(repo_root, target, expected_sha=expected.sha if expected else None,
+                                               expected_branch=definition.branch if expected else None)
+
+        self._prepare_operation(definition.name, "release", snapshot, ready)
 
     def _begin_process(self, process, repo_name: str, action: str) -> None:
         """The ONLY place that sets active_process: new epoch, invalidate, cancel old loads."""
@@ -1201,6 +1302,13 @@ class App(ttk.Frame):
 
     def _set_button_states(self) -> None:
         self._apply_lifecycle_state()
+        if hasattr(self, "approve_button"):
+            flow = self._current_flow() or {}
+            idle = self.current is not None and not App._repo_busy(self)
+            for button, enabled in ((self.approve_button, flow.get("can_approve")),
+                                    (self.push_button, flow.get("can_push")),
+                                    (self.discard_button, flow.get("candidate") is not None and flow.get("active"))):
+                button.state(["!disabled" if idle and enabled else "disabled"])
         if hasattr(self, "operation_stop_button"):
             running = self.current and self.current.name in self.lifecycle_cancellations
             self.operation_stop_button.configure(state="normal" if running else "disabled")
@@ -1238,6 +1346,31 @@ class App(ttk.Frame):
             self.log.delete("1.0", "2000.0")
         self.log.see("end")
         self.log.configure(state="disabled")
+
+
+def candidate_run_label(flow: dict | None) -> str:
+    if flow and flow.get("active") and flow.get("candidate") and not flow.get("error"):
+        return f"RUN_DEV {flow['candidate'].sha[:8]}"
+    return "RUN"
+
+
+def flow_text(flow: dict | None) -> str:
+    """One line per stage with its SHA; a SHA change or a stop is shown loudly."""
+    production = (flow or {}).get("production")
+    head = ([f"{'production (DCC記録)':<22} {production['commit'][:12]:<12}  {production.get('version') or ''} "
+             f"{production['how']}".rstrip()] if production and production.get("commit") else [])
+    if not flow or not flow.get("candidate"):
+        return "\n".join(head + ["Orchestrator candidateなし — RUN / BUILDは作業ツリーの通常ルート"])
+    lines = head + [f"{name:<22} {(sha[:12] if sha else '-'):<12}  {status}" for name, sha, status in flow.get("stages", [])]
+    if flow.get("error"):
+        lines.append(f"■ 停止: {flow['error']}")
+    if flow.get("mismatch"):
+        lines.append(f"■ SHA不一致で停止: {flow['mismatch']}")
+    if flow.get("stale"):
+        lines.append("■ baseが移動: fast-forwardできません。再Orchestratorまたは人間の判断が必要です")
+    if not flow.get("active") and not flow.get("error"):
+        lines.append("（このcandidateは完了・破棄済み、または既にoriginに含まれます。通常ルート）")
+    return "\n".join(lines)
 
 
 def self_check() -> int:

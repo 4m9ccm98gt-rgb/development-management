@@ -27,7 +27,8 @@ from .providers import (
     ERR_AUTH, ERR_QUOTA, ERR_TRANSIENT, AgentResult, Provider,
 )
 from .review import (
-    ReviewParseError, ReviewVerdict, extract_acceptance, failure_fingerprint, head, parse_review, tail,
+    RUNNER_NO_TESTS, ReviewParseError, ReviewVerdict, classify_runner_problem, extract_acceptance,
+    failure_fingerprint, head, parse_review, tail,
 )
 from .runstate import (
     COMPLETED, FAILED, FINALIZING, IMPLEMENTING, NEEDS_HUMAN, PREFLIGHT, REPAIRING, REVIEWING, STOPPED,
@@ -129,6 +130,7 @@ class Engine:
                         return COMPLETED
                     self._repair(source="review", review=verdict)
                     continue
+                self._check_runner_problem()
                 self._check_failure_limits()
                 record = rec.record
                 if not record["reviewer_engaged"] and record["tests_fail_count"] < self.limits.reviewer_trigger_fails:
@@ -281,14 +283,32 @@ class Engine:
         fails = rec.incr("tests_fail_count")
         rec.incr("tests_consecutive_fail_count")
         fingerprint, summary = failure_fingerprint(text)
+        runner = classify_runner_problem(text)
         counts = dict(rec.record["failure_fingerprint_counts"])
         counts[fingerprint] = counts.get(fingerprint, 0) + 1
         rec.update(current_failure_fingerprint=fingerprint, failure_fingerprint_counts=counts)
         rec.append("failure_history", {"tests_run": number, "fail_no": fails, "fingerprint": fingerprint,
                                        "occurrence": counts[fingerprint], "summary": summary,
-                                       "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
-        rec.log(f"[tests] FAIL #{fails} (run #{number}) fingerprint={fingerprint} x{counts[fingerprint]}: {summary}")
+                                       "runner_problem": runner, "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        rec.log(f"[tests] FAIL #{fails} (run #{number}) fingerprint={fingerprint} x{counts[fingerprint]}"
+                + (f" [test runner: {runner}]" if runner else "") + f": {summary}")
         return False
+
+    def _check_runner_problem(self) -> None:
+        """A Tests failure caused by the command / runner (0 tests, runner missing) is not
+        something repairs can fix. The first one gets one Main repair (the change may really
+        have broken discovery); a second one in a row ends the run before any further AI call."""
+        history = self.rec.record["failure_history"]
+        latest = history[-1] if history else {}
+        kind = latest.get("runner_problem")
+        if not kind or len(history) < 2:
+            return
+        previous = history[-2]
+        if previous.get("runner_problem") and previous.get("tests_run") == latest.get("tests_run", 0) - 1:
+            what = "0 tests（テストが1件も実行されない）" if kind == RUNNER_NO_TESTS else "テストランナーを起動できない"
+            raise NeedsHuman(f"Testsが連続して{what}状態です。実装ではなくTestsコマンド・実行環境の問題の可能性が高いため、"
+                             f"AIによる修正を続けず停止します。Testsコマンド: {' / '.join(self.tests)}",
+                             "TEST_RUNNER_PROBLEM")
 
     def _check_failure_limits(self) -> None:
         fingerprint = self.rec.record["current_failure_fingerprint"]
@@ -325,6 +345,11 @@ class Engine:
         else:
             trigger = (f"Independent Tests failed (Tests FAIL #{rec.record['tests_fail_count']}) and the Reviewer AI "
                        "analysed the failure.")
+        if source != "review" and classify_runner_problem(self.last_tests_text):
+            trigger += (" The output indicates a test command / runner problem (no tests ran, or the runner could not"
+                        " start), not an assertion failure. If your change broke test discovery, fix that. If the"
+                        " code is fine and the command itself is the problem, do not move, rename or rewrite tests to"
+                        " suit it: report it with the standalone line `IMPLEMENTATION_STATUS: BLOCKED`.")
         prompt = read_prompt("main_repair.md", {
             "TASK": self.task,
             "TRIGGER": trigger,

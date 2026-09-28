@@ -40,7 +40,18 @@ Phase 2の標準フロー: Main AI（既定Claude）が実装 → 独立Tests。
 
 runはrun単位の独立workerが所有し、DCCとOrchestrator画面は監視・操作するclientにすぎない。画面を閉じる・DCCを閉じる・DCCを再起動してもrunは継続し、再起動後に検出・再接続して進捗・ログ・usageを再表示する。停止は明示的な「AI安全停止」だけで、そのrunが所有するprocess treeだけを終了する（名前による一括killは禁止）。実行中判定はPIDだけで行わず、run ID・process作成時刻・heartbeatで確認し、確認できなければ「接続不能・状態確認が必要」とする。
 
-Orchestrator内部の安全ハーネス（isolated detached worktree、source保護、agentのcommit / push / deploy / source main直接変更の禁止、Tests前後のdiff確認、failure履歴、run記録、process tree管理）はOrchestrator専用で、通常Developmentへ強制しない。Orchestratorの実行中・失敗・quota・crash・stale・usage取得失敗で、通常Developmentや他repoのRUN / BUILD / UPDATEをロックしない（同一repoでOrchestratorが起動中の二重起動だけを防ぐ）。実行中にsource側へ通常Developmentの変更が入った場合は開発を止めず、成果物の適用を保留してbase再確認後にだけ適用する。成功時もpush / BUILD / UPDATEは行わず、local candidateの適用はユーザー確認後のfast-forwardのみ。
+Orchestrator内部の安全ハーネス（isolated detached worktree、source保護、agentのcommit / push / deploy / source main直接変更の禁止、Tests前後のdiff確認、failure履歴、run記録、process tree管理）はOrchestrator専用で、通常Developmentへ強制しない。Orchestratorの実行中・失敗・quota・crash・stale・usage取得失敗で、通常Developmentや他repoのRUN / BUILD / UPDATEをロックしない（同一repoでOrchestratorが起動中の二重起動だけを防ぐ）。実行中にsource側へ通常Developmentの変更が入った場合は開発を止めず、成果物の適用を保留してbase再確認後にだけ適用する。成功時もOrchestrator自身はpush / BUILD / UPDATEを行わない。
+
+### Orchestrator candidateの標準ルート（DCC）
+
+Orchestrator completed candidate → RUN_DEV → Human approval → push → BUILD → UPDATE / DEPLOY を**同一SHA**で行う。どのcommitがcandidateかは最新の `completed / OK` runの `run.json`（candidate_sha / candidate_branch / base_sha）だけが決め、expected branch HEAD・open PR・手入力SHAで置き換えない。
+
+- RUN_DEV: candidate SHAのdetached worktree（source repoのcheckoutは変えない）をcwdにし、source repoの `.venv` で登録済みRUN（`[run.<repo>]`）を起動。開始前・終了後にHEAD == candidateを確認し、実行SHA・target・command・終了コードを記録。repo設定の `seed` に指定したgit管理外ランタイムデータ（設定・保存データ）だけを、RUN_DEVごとにsource → candidate worktreeへ一方向コピーする（sourceへは書き戻さない）。
+- Human approval: 最新RUN_DEVがPASSした同一SHAだけ、明示操作で承認。再RUN・新しいrun・candidate変更で無効。自動承認しない。
+- push: 承認済みSHAだけ。source repoが管理branch・cleanで、local / originがOrchestrator開始時のbaseのままの場合だけ `merge --ff-only` → 通常push。merge commit / rebase / cherry-pick / force pushはしない。base移動は停止（再Orchestratorまたは人間判断）。push後にorigin == candidateを確認。
+- BUILD: 承認SHA == push SHA == local HEAD == origin（その場で確認）かつcleanの場合だけ。BUILD記録へcandidate SHA / run idを保存。
+- UPDATE: BUILD記録のSHA == 承認・push済みSHA == origin（その場で確認）で、dirtyでない成果物だけ。既存のUPDATE確認・再検証はそのまま。
+- 途中でSHAが変わればDCCの「Orchestrator candidate フロー」に停止として表示し、先へ進めない。完了（UPDATE成功）または明示的な「candidateを破棄」で作業ツリーの通常ルートへ戻る。候補がある間の通常BUILD / UPDATEはこのルートの条件を満たすまで停止する。
 
 Phase 3以降の課題: 安全なquota handoff（現在は常にfail-close）。
 

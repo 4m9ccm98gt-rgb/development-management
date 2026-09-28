@@ -67,6 +67,8 @@ run記録（`run.json`）: run ID、repo、Task、Main / Reviewer、stage、Test
 | `max_runtime_minutes` | 360 | `MAX_RUNTIME` |
 | `agent_timeout` / `review_timeout` / `test_timeout` | 1800 / 1200 / 600秒 | process tree終了後、providerは `PROVIDER_ERROR`、Testsは失敗（`HANG`） |
 
+**Tests runner問題**: 終了コード0でも出力が `Ran 0 tests` / `NO TESTS RAN` / `collected 0 items` / `no tests ran` ならFAIL（`TEST RUNNER: 0 tests ran...` の診断行を付与）。0 tests、またはランナー起動不能（`is not recognized...`、`python: No module named <runner>`、`command not found`）は `failure_history[].runner_problem` に記録します。1回目はMainへ「discoveryを壊したなら直す。コマンド自体の問題ならテストを動かさず `IMPLEMENTATION_STATUS: BLOCKED`」と伝えて1回だけ修正させ、**連続2回目は Reviewer・追加repairを呼ばず `TEST_RUNNER_PROBLEM` で `needs_human`**（同一failureの無駄なAI呼出しを防ぐ）。
+
 failure fingerprintは、所要時間・時刻・temp path・アドレス・行番号を正規化し、失敗したtest名とエラー文で同一性を判断します（iteration数だけでは「同じ問題の繰り返し」を判断しません）。すべての上限は `needs_human` で終了し、無限loopはありません。
 
 ## provider異常・quota
@@ -101,9 +103,27 @@ account / plan枠と、session / callのcontextは**別概念**として保存�
 - DCC起動時に実行中runを検出して操作ログ・ボタン（「AI Orchestrator ● 実行中 N」）へ表示。Orchestrator画面は同じrunへ再接続し、repo・Main / Reviewer・stage・Tests回数・FAIL回数・開始時刻・usage・ログ・AI安全停止を復元します。
 - AI安全停止: `control.json`で依頼 → workerが自分のprocess tree（Claude / Codex / Tests）を終了し `stopped`（`stopped_by_user`、停止時のstage、process終了結果）を記録。応答が無ければ、workerのPID+作成時刻を検証したうえでworker treeと登録済み子processだけを強制終了。名前による一括killはしません。
 
+## 開始時のsource repo準備（DCCから開始した場合）
+
+DCCは `prepare_source=True`（CLIは `--prepare-source`）で開始します。repoロック取得後、次を自動で行います。
+
+1. Git repositoryであること（`NOT_A_GIT_REPO`）、merge / rebase / cherry-pick等が進行中でないこと（`SOURCE_OPERATION_IN_PROGRESS`）、detachedでないこと（`SOURCE_DETACHED`）を確認。
+2. tracked fileに未コミット変更があれば**何も変更せず停止**（`SOURCE_DIRTY`、変更ファイルを表示）。untracked fileは従来通り対象外（branch切替で上書きになる場合はgit自身が拒否し `SOURCE_SWITCH_FAILED`）。
+3. `origin/<管理branch>` をfetchし、local branchとの関係を判定。ahead（`SOURCE_AHEAD`）・diverged（`SOURCE_DIVERGED`）は**branch切替前に停止**。merge / reset / rebaseはしない。
+4. 管理branch以外にいれば `git switch <branch>`（元のbranchは削除しない）、behindなら `git merge --ff-only`（= `pull --ff-only`）。
+5. その後、従来の `repo_baseline`（clean・branch一致・HEAD == origin）で改めて検証。
+
+stash / reset --hard / force checkout / branch削除は行いません。行った操作は `run.json` の `source_preparation` と `events.log`（`[source]`）へ記録します。同じrepoのrunが動作中ならロックで拒否され、sourceは動かしません。
+
+## 既定Testsとコマンドの解釈
+
+- repo別の既定Testsは `scripts/dev_control_center_repos.toml` の `[initial_tests]`。Orchestrator画面でrepoを選ぶと自動入力され、編集できます（編集内容はrepo別draftとして保持）。設定値はDCCの推測コマンド（`suggest_test_command`）より優先。未設定repoだけ推測値を使います。`--test` 必須・`--allow-no-tests` は明示例外のまま。
+- **repo-local venv**: source repoに `.venv\Scripts\python.exe`（POSIXは `.venv/bin/python`）があれば、独立Testsのprocessに限りその `Scripts` / `bin` をPATHの先頭へ置き `VIRTUAL_ENV` を設定します。Testsコマンドは書き換えず、`python` / `pytest` がrepoのvenvへ解決されます。cwdはisolated worktreeのままなので、テストされるのはworktree側のコードです（`.venv` はgit管理外でworktreeに存在せず、コピーもしません）。venvが無いrepoは従来通りPATH上のPython。Main / Reviewer AIの環境には影響しません。使用したvenvはTests出力の `(repo-local venv first on PATH: ...)` に表示されます。next-day-setupの既定Testsは正式runnerに合わせ `python -m pytest -q`（pytestはrepoの `.venv` に導入済み）。
+- Testsコマンドは**POSIX shell（Git Bash等）での意味**を基準にします。Windowsでは `cmd.exe /d /s /c` で実行するため、cmdがquoteとして扱わない `'...'` だけを等価な `"..."` へ変換します（`-p 'test_*.py'` → `-p "test_*.py"`）。double quote内の `'`、未対応の `'`、`%`、`\"`、`'...'` 内の `"` を含む場合は意味を保証できないため**変換せずそのまま**実行します。それ以外の文字は変更しません。変換した場合はTests出力に `(executed by cmd.exe as: ...)` を表示します。
+
 ## source repoとの競合
 
-Orchestratorはisolated detached worktreeで動作し、開始時にsourceのclean / branch / origin同期を確認します。実行中にsource側で通常Development（commit / 編集）が進んでも、通常Developmentを禁止せず、runも失敗させません。成果物は `apply_status`（`ready` / `held_base_moved` / `held_source_dirty`）で表示され、適用（DCC「candidateをlocalへ適用」）はbase HEADとの一致・fast-forward可能性・repo無競合を再確認したうえで、確認ダイアログの後にだけ行います。不一致なら適用を保留（candidateとrunは保持）。
+Orchestratorはisolated detached worktreeで動作し、開始時にsourceのclean / branch / origin同期を確認します。実行中にsource側で通常Development（commit / 編集）が進んでも、通常Developmentを禁止せず、runも失敗させません。成果物は `apply_status`（`ready` / `held_base_moved` / `held_source_dirty`）で表示されます。完了runのcandidateはDCCの「Orchestrator candidate フロー」（RUN_DEV → 承認 → push → BUILD → UPDATE、同一SHA）で扱い、Orchestrator画面の「DCCで実機確認へ（RUN_DEV）」はそのrepoをDCCで選択するだけです。source branchへの反映は承認後のpush工程（fast-forwardのみ、base移動なら停止）だけで行います。詳細は [DCC仕様](dev_control_center.md#orchestrator-candidateフロー)。
 
 ## 安全境界（Orchestrator専用ハーネス。通常Developmentへ強制しない）
 
@@ -112,6 +132,24 @@ isolated worktree、agentのcommit / branch付替え検出（Main呼出し・Tes
 ## ログ・保存先
 
 `%LOCALAPPDATA%/ShizenDev/AIOrchestrator/runs/<run-id>/`: `run.json` / `heartbeat.json` / `control.json` / `events.log` / `task.md` / `worker.out` / `calls/`（各provider呼出しの生出力・Main要約）/ `tests/`（Tests出力）。`AI_ORCHESTRATOR_STATE_ROOT`で変更可。
+
+- すべて**BOM無しUTF-8**です。Windows PowerShell 5.1の `Get-Content` は既定でBOM無しファイルをCP932として読むため文字化けして見えます（ファイル自体は正常）。直接読む場合は `Get-Content -Encoding UTF8` を使ってください。通常はDCCの「ログをコピー」を使います。
+- DCC Orchestrator画面の選択中runに「ログをコピー」（`runstate.run_report`: run id・repo・stage / final_result・source_preparation・candidate・task・tests・回数・failure / repair / review history・provider / quota error・events.log・worker.out・最新Tests出力を1つのテキストでClipboardへ。無いファイルは省略、長いログは末尾を採用）と「runフォルダを開く」があります。
+- worktreeは `<temp>/ai-orch-<repo>-<run-id>-*/<repo名>` です。checkout directory名からrepo名を導くテスト（例: next-day-setupのSYNC契約テスト）がsourceと同じ結果になるよう、repoと同じ名前にしています。
+
+### 子process出力のencoding
+
+子processへは `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` を渡してUTF-8出力に統一します（git、Claude CLI / Codex CLI（node）は元々UTF-8）。ただしWindowsのconsole program（cmd.exe自身のメッセージ、taskkill、icacls、pipeへ書くWindows PowerShell 5.1）はconsoleの無い状態でOEM code page（日本語WindowsではCP932）で出力し、UTF-8へ切り替えられません。同じpipeに両方が混在するため、`common.decode_output` は**行単位で** UTF-8 → OEM code page の順にdecodeし、どちらでも読めないbyteだけを置換します（reader threadは例外で止まりません）。DCCのRUN / BUILD / UPDATE出力（`processes.stream`）も同じ `OutputDecoder` を使います。出力を使わない `taskkill` はDEVNULLへ捨てます。`events.log` の画面表示は行境界でだけ読み進め、UTF-8文字を途中で切りません。
+
+## Main AIとOrchestratorの責務
+
+Main AIに見えるのはbase commitのdetached worktreeだけです。source repoの準備（branch切替・origin同期）、独立Tests、repair / review回数、candidate作成・適用状態はOrchestratorが自分で保証し `run.json` / `events.log` へ記録し、DCCの「source準備」欄とログコピーに表示します。これらをMain AIへ確認させるTaskは書かないでください（Main用promptでも「Orchestratorが記録する事実は確認しようとせず、blockingとしない」と明示しています）。
+
+## 実装Taskとverification-only Task
+
+- Orchestratorは**実装Task専用**です。完成は「差分あり + Tests PASS + Reviewer PASS + 安全チェックPASS → candidate」だけで、差分が無ければ `NO_CHANGES`（`needs_human`）、Mainが人間判断を要すると報告すれば `TASK_BLOCKED` で、candidate readyにはなりません（変更なしで成功扱いにする経路はありません）。
+- 「実機確認のみ・コード変更不要」のTaskはOrchestratorへ渡さず、DCC（source準備はrun記録で確認）・通常DevelopmentのTests実行で確認します。Orchestratorの動作確認は、小さな実装Task（例: 文書1行の追加）で行うとcandidateまで確認できます。
+- 将来verification-onlyを正式対応する場合は、candidateを作らない**別の終端stage**（例: `verified`）とし、AIを呼ばず独立Testsだけを実行する形を想定します（`completed` / candidate readyとは混同させない）。現時点では未実装です。
 
 ## 旧Final Review JSON
 

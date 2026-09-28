@@ -26,6 +26,91 @@ RUN_DEV.cmd（.venvを作成しrequirements.txtからPySide6を導入して起�
 ヘッドレスで実行できる最小のテストを追加してください。
 BUILD / UPDATEの入口はこの依頼では作成せず、秘密情報・実運用データは含めないでください。"""
 
+# Default independent Tests command per repo, filled into the Orchestrator Tests field (editable there).
+# Takes precedence over DCC's guessed command. Written as a POSIX-shell command line; on Windows
+# the Orchestrator keeps its meaning under cmd.exe ('...' quoting is converted).
+# `python` resolves to the source repo's git-ignored `.venv` when it exists (cwd stays the worktree).
 [initial_tests]
 development-management = "python -m unittest discover -s tests -v"
+next-day-setup = "python -m pytest -q"
 shizen-launcher = "python -m unittest discover -s tests -v"
+
+# DCC RUN (non-interactive body of each repo's RUN_DEV.cmd). One table per repo:
+#   cwd    folder of the repo to run in (relative; the RUN target is the source repo, or the
+#          candidate worktree for an Orchestrator candidate — resolved against that target)
+#   entry  script path relative to cwd, or `module` for `python -m <module>`
+#   probe  import check before start; env: extra variables, values relative to the target when
+#          they name a path (PYTHONPATH). The repo's `.venv` Python is used.
+#   seed   candidate RUN_DEV only: git-ignored runtime data (settings / saved data) copied one way
+#          from the source repo into the candidate worktree before every RUN_DEV. Never copied back;
+#          each path must be ignored in the source and untracked in the candidate.
+# A repo's own dcc_entrypoints.json still takes precedence.
+[run.next-day-setup]
+cwd = "."
+entry = "dinner_system/hotel_app_entry.py"  # v1.4.1+: production entry (extends hotel_app.HotelApp)
+probe = "import openpyxl; import reportlab; import PIL"
+seed = [
+    "dinner_system/master_settings.json",
+    "dinner_system/ui_prefs.json",
+    "dinner_system/closing_tasks.json",
+    "dinner_system/monthly_tasks.json",
+    "dinner_system/config/print_preparation.json",
+    "dinner_system/保存データ",
+]
+
+# DCC BUILD body of repos whose manual BUILD CMD only wraps one Python script (the CMD and its `pause`
+# are never run by DCC). build_info: the file the build writes into the artifact with the commit it was
+# built from; DCC accepts the BUILD only when that SHA equals the built HEAD (and the candidate).
+[build.next-day-setup]
+cwd = "."
+script = "build_exe.py"
+build_info = { file = "BUILD_INFO.txt", sha_key = "Git commit SHA", tree_key = "Git working tree" }
+
+# DCC release / restore settings (release_engine / restore_release). The engine is common; a repo only
+# declares what belongs to it. protected / protected_names: operational data the engine never writes
+# (checked when planning and in every write). critical: SHA-256 before/after; all other operational data
+# is compared by path / presence / size / mtime. records: updater-owned files outside the build.
+# commit_file is replaced last. lock: shared with the legacy PowerShell updater (FileShare none).
+[release.next-day-setup]
+artifact = "dist/DinnerSystem"
+child_target = "DinnerSystem"
+commit_file = "DinnerSystem.exe"
+in_use = ["DinnerSystem.exe"]
+records = ["DinnerSystem.exe.previous", "DEPLOY_MANIFEST.json"]
+build_info = "BUILD_INFO.txt"
+deploy_manifest = "DEPLOY_MANIFEST.json"
+lock = ".nds-update.lock"
+protected = [
+    "保存データ/*", "*/保存データ/*",
+    "print_work/*", "*/print_work/*",
+    "logs/*", "*/logs/*", "log/*", "*/log/*", "*.log",
+    "backup/*",
+    "_internal/outputs/*",
+    "_internal/tools/SumatraPDF-settings.txt",
+]
+protected_names = ["closing_tasks.json", "master_settings.json", "ui_prefs.json"]
+critical = ["closing_tasks.json", "master_settings.json", "ui_prefs.json"]
+# the only folders searched for protected data (plus the top-level files); backup/ and unrelated folders never
+operational_roots = ["_internal", "保存データ", "print_work", "logs", "log"]
+retain = ["README.txt"]
+
+[run.food-cost-calculation-system]
+cwd = "."
+module = "food_cost_app.main"
+probe = "import PySide6; import cv2; import PIL; import pytesseract; import flask; import qrcode"
+env = { PYTHONPATH = "src" }
+
+[run.inventory-reconciliation-system]
+cwd = "."
+entry = "room_inventory_reconcile.py"
+probe = "import openpyxl"
+
+[run.qr-supply-ordering-system]
+cwd = "."
+entry = "run.py"
+probe = "import flask"
+
+[run.beverage-inventory-ordering-system]
+cwd = "python_app"
+entry = "app.py"
+probe = "import PySide6; assert PySide6.__version__.startswith('6.8.')"

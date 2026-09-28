@@ -334,6 +334,64 @@ class UiTests(unittest.TestCase):
             self.assertEqual(command[command.index("--entry") + 1], str(entry.path))
             self.assertNotIn("--candidate", command)
 
+    def candidate_flow(self, **extra):
+        candidate = MagicMock(sha="c" * 40, run_id="20260926-165346-534560", branch="ai-candidate/x")
+        return dict({"candidate": candidate, "active": True, "error": "", "can_run": True, "mismatch": ""}, **extra)
+
+    def test_run_with_an_orchestrator_candidate_runs_run_dev_of_that_sha(self):
+        definition = self.ui.current
+        state = RepoState(True, True, branch="main", head="b" * 40, origin_repo=definition.full_name)
+        entry = MagicMock(ready=True, path=Path("RUN_DEV.cmd"))
+        with patch.object(dcc, "inspect_repo", return_value=state), \
+             patch("scripts.dev_control_center.core.discover_entrypoints", return_value=MagicMock(run=entry)), \
+             patch.object(dcc.candidate_flow, "snapshot", return_value=self.candidate_flow()), \
+             patch.object(self.ui, "_start_lifecycle") as launch:
+            self.ui.launch("run")
+            self.pump_until(lambda: launch.called)
+        command, repo, action = launch.call_args.args
+        self.assertEqual((repo, action), (definition.name, "run_dev"))
+        self.assertIn("scripts.dev_control_center.candidate", command)
+        self.assertEqual(command[command.index("--expect-sha") + 1], "c" * 40)  # never the branch HEAD b...
+        self.assertIn("c" * 40, self.ui.log.get("1.0", "end"))
+
+    def test_run_stops_on_an_inconsistent_candidate(self):
+        state = RepoState(True, True, branch="main", head="b" * 40, origin_repo=self.ui.current.full_name)
+        entry = MagicMock(ready=True, path=Path("RUN_DEV.cmd"))
+        with patch.object(dcc, "inspect_repo", return_value=state), \
+             patch("scripts.dev_control_center.core.discover_entrypoints", return_value=MagicMock(run=entry)), \
+             patch.object(dcc.candidate_flow, "snapshot", return_value=self.candidate_flow(error="消失")), \
+             patch.object(self.ui, "_start_lifecycle") as launch:
+            self.ui.launch("run")
+            self.pump_until(lambda: "candidate停止" in self.ui.banner_var.get())
+        launch.assert_not_called()
+
+    def test_build_of_a_candidate_passes_the_verified_sha_to_the_build_worker(self):
+        definition = self.ui.current
+        state = RepoState(True, True, branch="main", head="c" * 40, origin_repo=definition.full_name)
+        entry = MagicMock(ready=True, path=Path("BUILD.cmd"))
+        gate = MagicMock(sha="c" * 40, run_id="20260926-165346-534560")
+        with patch.object(dcc, "inspect_repo", return_value=state), \
+             patch("scripts.dev_control_center.core.discover_entrypoints", return_value=MagicMock(build=entry)), \
+             patch.object(dcc.candidate_flow, "build_gate", return_value=gate), \
+             patch.object(self.ui, "_start_lifecycle") as launch:
+            self.ui.launch("build")
+            self.pump_until(lambda: launch.called)
+        command = launch.call_args.args[0]
+        self.assertEqual(command[command.index("--expect-sha") + 1], "c" * 40)
+        self.assertEqual(command[command.index("--candidate-run") + 1], "20260926-165346-534560")
+
+    def test_build_gate_refusal_never_starts_a_build(self):
+        state = RepoState(True, True, branch="main", head="c" * 40, origin_repo=self.ui.current.full_name)
+        entry = MagicMock(ready=True, path=Path("BUILD.cmd"))
+        refusal = dcc.candidate_flow.CandidateError("承認済みcandidateが未pushです", "NOT_PUSHED")
+        with patch.object(dcc, "inspect_repo", return_value=state), \
+             patch("scripts.dev_control_center.core.discover_entrypoints", return_value=MagicMock(build=entry)), \
+             patch.object(dcc.candidate_flow, "build_gate", side_effect=refusal), \
+             patch.object(self.ui, "_start_lifecycle") as launch:
+            self.ui.launch("build")
+            self.pump_until(lambda: "未push" in self.ui.banner_var.get())
+        launch.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

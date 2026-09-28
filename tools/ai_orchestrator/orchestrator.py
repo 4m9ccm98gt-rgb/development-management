@@ -25,6 +25,7 @@ from .common import (
     resolved_command, run_streaming, slugify, write_json_atomic,
 )
 from .engine import Engine, NeedsHuman, SafetyViolation, Snapshot
+from .review import NO_TESTS_MARKER, zero_tests_ran
 from .providers import (
     DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_NAMES, active_api_billing_env, agent_env,
     make_provider, validate_roles,
@@ -57,6 +58,78 @@ def _fetch_expected_origin_branch(root: Path, branch: str) -> None:
                                 "GIT_FETCH_FAILED")
 
 
+_IN_PROGRESS_MARKERS = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG")
+
+
+def repo_toplevel(repo_arg: Path) -> Path:
+    repo_arg = repo_arg.expanduser().resolve()
+    probe = run_streaming([*resolved_command("git"), "-C", str(repo_arg), "rev-parse", "--show-toplevel"], timeout=120)
+    if probe.returncode != 0:
+        raise OrchestratorError(f"not a Git repository: {repo_arg}", "NOT_A_GIT_REPO")
+    return Path(probe.stdout.strip()).resolve()
+
+
+def _is_ancestor(root: Path, older: str, newer: str) -> bool:
+    result = run_streaming([*resolved_command("git"), "-C", str(root), "merge-base", "--is-ancestor", older, newer],
+                           timeout=120)
+    if result.returncode not in (0, 1):
+        raise OrchestratorError(f"git merge-base failed: {(result.stderr or result.stdout).strip()}", "GIT_FAILED")
+    return result.returncode == 0
+
+
+def prepare_source_branch(root: Path, branch: str | None) -> list[str]:
+    """Bring a clean source repo onto the latest `branch` before a run: switch from another
+    branch and fast-forward to origin. Only non-destructive Git operations are used (no stash,
+    reset, force checkout, merge commit or branch deletion); anything else stops the start.
+    Returns what was done, for the run record."""
+    if not branch:
+        raise OrchestratorError("the repo's managed branch is not configured; cannot prepare the source repo",
+                                "BRANCH_UNKNOWN")
+    git_dir = Path(git(root, "rev-parse", "--absolute-git-dir").stdout.strip())
+    busy = [name for name in _IN_PROGRESS_MARKERS if (git_dir / name).exists()]
+    if busy:
+        raise OrchestratorError("a Git operation is in progress in the source repo (" + ", ".join(busy)
+                                + "); finish or abort it first", "SOURCE_OPERATION_IN_PROGRESS")
+    if _tracked_dirty(root):
+        changed = git(root, "status", "--porcelain", "--untracked-files=no").stdout.strip().splitlines()
+        raise OrchestratorError("source repo has uncommitted changes; nothing was switched or pulled. "
+                                "Commit or discard them yourself first:\n" + "\n".join(changed[:20]), "SOURCE_DIRTY")
+    current = git(root, "branch", "--show-current").stdout.strip()
+    if not current:
+        raise OrchestratorError("source repository is detached; switch to a branch yourself first", "SOURCE_DETACHED")
+    _fetch_expected_origin_branch(root, branch)
+    remote = git(root, "rev-parse", f"refs/remotes/origin/{branch}").stdout.strip().lower()
+    local_probe = run_streaming([*resolved_command("git"), "-C", str(root), "rev-parse", "--verify", "--quiet",
+                                 f"refs/heads/{branch}"], timeout=120)
+    local = local_probe.stdout.strip().lower() if local_probe.returncode == 0 else ""
+    behind = False
+    if local and local != remote:
+        if _is_ancestor(root, local, remote):
+            behind = True
+        elif _is_ancestor(root, remote, local):
+            raise OrchestratorError(f"local {branch} has commits not on origin/{branch} ({local[:12]} ahead of "
+                                    f"{remote[:12]}); push or resolve them yourself", "SOURCE_AHEAD")
+        else:
+            raise OrchestratorError(f"local {branch} and origin/{branch} have diverged ({local[:12]} / {remote[:12]}); "
+                                    "no merge or reset is done automatically", "SOURCE_DIVERGED")
+    actions: list[str] = []
+    if current != branch:
+        args = ("switch", branch) if local else ("switch", "--track", f"origin/{branch}")
+        try:
+            git(root, *args, timeout=300)
+        except OrchestratorError as exc:
+            raise OrchestratorError(f"could not switch the source repo from {current} to {branch}: {exc}",
+                                    "SOURCE_SWITCH_FAILED") from exc
+        actions.append(f"switched {current} -> {branch} ({current} is kept)")
+    if behind:
+        try:
+            git(root, "merge", "--ff-only", f"refs/remotes/origin/{branch}", timeout=300)
+        except OrchestratorError as exc:
+            raise OrchestratorError(f"fast-forward of {branch} failed: {exc}", "SOURCE_FF_FAILED") from exc
+        actions.append(f"fast-forwarded {branch} {local[:12]} -> {remote[:12]}")
+    return actions
+
+
 def repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) -> RepoBaseline:
     """Start-time preconditions only: clean tracked tree on the expected branch == origin."""
     repo_arg = repo_arg.expanduser().resolve()
@@ -80,7 +153,9 @@ def repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) -
 
 def create_worktree(baseline: RepoBaseline, run_id: str) -> tuple[Path, Path]:
     parent = Path(tempfile.mkdtemp(prefix=f"ai-orch-{slugify(baseline.root.name)}-{run_id}-"))
-    worktree = parent / "worktree"
+    # Same directory name as the source repo: tests that derive the repo name from their
+    # checkout directory (e.g. next-day-setup's SYNC contract test) behave as in the source.
+    worktree = parent / baseline.root.name
     git(baseline.root, "worktree", "add", "--detach", str(worktree), baseline.head_sha, timeout=300)
     return parent, worktree
 
@@ -134,6 +209,38 @@ def diff_snapshot(worktree: Path) -> Snapshot:
                 content = "<binary or unreadable>"
             pieces.append(f"\n# Untracked: {rel}\n{content}")
     return Snapshot(stat, "\n".join(pieces), tuple(files))
+
+
+def windows_test_command_line(command: str) -> str:
+    """The cmd.exe line meaning what the command means in a POSIX shell (Git Bash, where the
+    agents run it). cmd.exe does not treat '...' as quoting, so `-p 'test_*.py'` reached the
+    program *with* the quotes and matched nothing ("Ran 0 tests"). Only single-quoted
+    segments outside double quotes are rewritten, to the equivalent "..." form; everything
+    else is kept byte-for-byte. When the meaning cannot be kept exactly (unbalanced quote,
+    `"` or `%` inside the segment, backslash-escaped quotes) the command is left unchanged."""
+    if "'" not in command or "%" in command or '\\"' in command:
+        return command
+    out: list[str] = []
+    in_double = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if char == '"':
+            in_double = not in_double
+        elif char == "'" and not in_double:
+            end = command.find("'", index + 1)
+            if end < 0:
+                return command
+            content = command[index + 1:end]
+            if '"' in content:
+                return command
+            trailing = len(content) - len(content.rstrip("\\"))
+            out.append('"' + content + "\\" * trailing + '"')  # 2n backslashes before " stay n literal ones
+            index = end + 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 class GitHost:
@@ -191,24 +298,54 @@ class GitHost:
             parts.append(f"### {name}\n{text[:8000]}")
         return "\n\n".join(parts)
 
+    def tests_env(self) -> tuple[dict[str, str], Path | None]:
+        """Environment of the independent Tests: the source repo's own `.venv` (git-ignored, so absent
+        from the worktree) comes first on PATH when it exists, so `python` / `pytest` in the command
+        resolve to the repo's interpreter and dependencies. Only the executables come from the source
+        repo; the cwd stays the worktree, so the worktree's code is what gets tested."""
+        env = agent_env()
+        bin_dir = self.baseline.root / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+        if not (bin_dir / ("python.exe" if os.name == "nt" else "python")).is_file():
+            return env, None
+        env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+        env["VIRTUAL_ENV"] = str(bin_dir.parent)
+        env.pop("PYTHONHOME", None)
+        env["AI_ORCHESTRATOR_TEST_VENV_BIN"] = str(bin_dir)
+        return env, bin_dir
+
     def run_tests(self, commands: list[str], timeout: int, hooks: ProcessHooks) -> tuple[bool, str]:
         outputs: list[str] = []
+        env, venv_bin = self.tests_env()
         for command in commands:
+            line = windows_test_command_line(command) if os.name == "nt" else command
             if hooks.on_line:
-                hooks.on_line("stdout", f"START {command}")
+                hooks.on_line("stdout", f"START {command}" + (f"  [cmd.exe: {line}]" if line != command else "")
+                              + (f"  [repo .venv: {venv_bin}]" if venv_bin else ""))
             # One command line string on Windows: with /s cmd strips only the outer quotes, so
             # quotes inside the test command survive (a list would re-escape them as \").
-            args = f'cmd.exe /d /s /c "{command}"' if os.name == "nt" else ["/bin/sh", "-lc", command]
+            if os.name == "nt":
+                args = f'cmd.exe /d /s /c "{line}"'
+            else:  # a login shell may reset PATH from the profile: put the repo venv back in front
+                prefix = 'PATH="$AI_ORCHESTRATOR_TEST_VENV_BIN:$PATH"; export PATH; ' if venv_bin else ""
+                args = ["/bin/sh", "-lc", prefix + command]
+            header = (f"$ {command}" + (f"\n(executed by cmd.exe as: {line})" if line != command else "")
+                      + (f"\n(repo-local venv first on PATH: {venv_bin})" if venv_bin else ""))
             try:
-                result = run_streaming(args, cwd=self.worktree, timeout=timeout, env=agent_env(), hooks=hooks)
+                result = run_streaming(args, cwd=self.worktree, timeout=timeout, env=env, hooks=hooks)
             except StopRequested:
                 raise
             except OrchestratorError as exc:
                 partial = getattr(exc, "partial_output", "")
                 marker = f"\nTEST TIMEOUT/HANG after {timeout}s: {command}\n" if exc.code == "COMMAND_TIMEOUT" else f"\n{exc}\n"
-                outputs.append(f"$ {command}\n{partial}{marker}".rstrip())
+                outputs.append(f"{header}\n{partial}{marker}".rstrip())
                 return False, "\n\n".join(outputs)
-            outputs.append(f"$ {command}\n{result.stdout}{result.stderr}".rstrip())
+            output = f"{result.stdout}{result.stderr}"
+            if zero_tests_ran(output):
+                # A green exit code with nothing tested is not a PASS (and a red one gets a diagnosis).
+                output = output.rstrip() + "\n" + NO_TESTS_MARKER + f" command: {command}"
+                outputs.append(f"{header}\n{output}".rstrip())
+                return False, "\n\n".join(outputs)
+            outputs.append(f"{header}\n{output}".rstrip())
             if result.returncode != 0:
                 return False, "\n\n".join(outputs)
         return True, "\n\n".join(outputs)
@@ -258,6 +395,7 @@ class StartRequest:
     allow_api_billing: bool = False
     fetch: bool = True
     allow_no_tests: bool = False
+    prepare_source: bool = False  # switch a clean source repo to expected_branch and fast-forward it (DCC)
 
 
 def prepare_run(request: StartRequest) -> tuple[Path, dict]:
@@ -276,10 +414,13 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
     if active and not request.allow_api_billing:
         raise OrchestratorError("API/third-party billing environment detected: " + ", ".join(active)
                                 + ". Refusing to start.", "API_BILLING_ENV")
-    baseline = repo_baseline(Path(request.repo), request.expected_branch, request.fetch)
+    root = repo_toplevel(Path(request.repo))
     run_id = now_id()
-    lock = rs.acquire_repo_lock(str(baseline.root), run_id)
+    # Lock before touching the source repo: its branch is never moved under another live run.
+    lock = rs.acquire_repo_lock(str(root), run_id)
     try:
+        preparation = prepare_source_branch(root, request.expected_branch) if request.prepare_source else []
+        baseline = repo_baseline(root, request.expected_branch, request.fetch and not request.prepare_source)
         run_dir = rs.runs_root() / run_id
         run_dir.mkdir(parents=True)
         record = rs.new_record(
@@ -288,6 +429,7 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
             branch=baseline.branch, base_sha=baseline.head_sha)
         record["billing_env_override"] = list(active)
         record["same_provider_override"] = request.main_agent == request.review_agent
+        record["source_preparation"] = preparation if request.prepare_source else None  # None: not requested
         (run_dir / "task.md").write_text(task + "\n", encoding="utf-8")
         write_json_atomic(run_dir / "run.json", record)
     except BaseException:
@@ -371,6 +513,8 @@ def worker_main(run_dir: Path, *, engine_factory=None, refresh_usage: bool = Tru
     parent = worktree = None
     try:
         rec.transition(rs.PREFLIGHT, "CLI・worktreeを準備中")
+        for action in record.get("source_preparation") or []:
+            rec.log(f"[source] {action}")
         main = make_provider(record["main_agent"])
         reviewer = make_provider(record["review_agent"])
         validate_roles(record["main_agent"], record["review_agent"], allow_same=bool(record.get("same_provider_override")))
@@ -441,7 +585,8 @@ def _request_from_args(args: argparse.Namespace) -> StartRequest:
     return StartRequest(
         repo=args.repo, task=task or "", tests=list(args.test), main_agent=args.main, review_agent=args.reviewer,
         expected_branch=args.expected_branch, limits=limits, allow_same_provider=args.allow_same_provider,
-        allow_api_billing=args.allow_api_billing, fetch=not args.no_fetch, allow_no_tests=args.allow_no_tests)
+        allow_api_billing=args.allow_api_billing, fetch=not args.no_fetch, allow_no_tests=args.allow_no_tests,
+        prepare_source=args.prepare_source)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -463,6 +608,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--allow-same-provider", action="store_true", help="permit Main == Reviewer (not independent)")
         p.add_argument("--allow-api-billing", action="store_true")
         p.add_argument("--no-fetch", action="store_true")
+        p.add_argument("--prepare-source", action="store_true",
+                       help="if the source repo is clean, switch it to --expected-branch and fast-forward to origin")
         _limit_args(p)
     worker = sub.add_parser("worker", help="(internal) run one prepared run to completion")
     worker.add_argument("--run-dir", required=True)

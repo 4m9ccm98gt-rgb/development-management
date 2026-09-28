@@ -417,13 +417,13 @@ class SelectionState:
         ):
             self.view.on_candidate_text(self.provenance.text(repo))
             self.view.on_log(
-                f"{repo}: expected branch HEADをcandidateへ自動反映 "
+                f"{repo}: SYNC基準SHA（expected branch HEAD。Orchestrator candidateとは別）を設定 "
                 f"{state.branch_sha[:12]} / CI={state.ci_state}"
             )
         if state.candidate_blocked_by_pr and state.latest_pr:
             self.view.on_log(
                 f"{repo}: open PR #{state.latest_pr.number} は表示のみ。"
-                f"candidateはexpected branch HEAD {state.branch_sha[:12]} を使用します。"
+                f"SYNC基準はexpected branch HEAD {state.branch_sha[:12]} です（Orchestrator candidateとは別）。"
             )
         TIMING.since_mark(f"select-gh:{repo}", record_as="select-to-GITHUB-shown")
         self.view.on_lifecycle()

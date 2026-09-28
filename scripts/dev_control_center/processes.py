@@ -1,14 +1,14 @@
 """Hidden, non-interactive subprocess transport shared by DCC workers."""
 from __future__ import annotations
 
-import codecs
-import io
 import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
 from typing import Callable
+
+from tools.ai_orchestrator.common import OutputDecoder
 
 
 def hidden_options() -> dict:
@@ -60,7 +60,8 @@ def stream(command: list[str], *, cwd: Path, emit: Callable[[str], None], env: d
         if cancel is not None:
             monitor = threading.Thread(target=stop_when_requested, daemon=True)
             monitor.start()
-        decoder = io.IncrementalNewlineDecoder(codecs.getincrementaldecoder("utf-8")(errors="replace"), translate=True)
+        # UTF-8 children and Windows console tools (OEM code page) share this pipe: decoded line by line.
+        decoder = OutputDecoder()
         while True:
             data = process.stdout.read(4096)
             if not data:

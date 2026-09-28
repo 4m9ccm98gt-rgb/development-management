@@ -529,7 +529,9 @@ class UiLifecycleContractTests(unittest.TestCase):
     def test_orchestrator_is_a_client_of_independent_runs_not_a_dcc_child_process(self):
         text = (ROOT / "scripts" / "dev_control_center" / "app.py").read_text(encoding="utf-8")
         view = (ROOT / "scripts" / "dev_control_center" / "orchestrator_view.py").read_text(encoding="utf-8")
-        self.assertIn("apply_local_candidate(", text)
+        # a completed candidate reaches the source branch only through RUN_DEV -> approval -> push
+        self.assertNotIn("apply_local_candidate(", text)
+        self.assertIn("scripts.dev_control_center.candidate", text)
         self.assertIn("def open_orchestrator", text)
         self.assertNotIn('"ai_orchestrator"', text)
         self.assertNotIn("_spawn_ai_process", text)

@@ -175,6 +175,24 @@ class RoleAndStartTests(ViewCase):
             self.pump(lambda: (self.window._tick(), error.called)[1])
         self.assertIn("実行中のrun", error.call_args.args[1])
 
+    def test_repo_default_tests_are_prefilled_editable_and_start_prepares_the_source(self):
+        self.assertEqual(self.window.tests_var.get(), "python -m unittest")  # the repo's configured default
+        self.window.tests_var.set("python -m unittest discover -s tests -p 'test_*.py' -q")  # user edit
+        self.window.repo_var.set("other")
+        self.window._on_repo_changed()
+        self.assertEqual(self.window.tests_var.get(), "")
+        self.window.repo_var.set("app")
+        self.window._on_repo_changed()
+        self.assertEqual(self.window.tests_var.get(), "python -m unittest discover -s tests -p 'test_*.py' -q")
+        captured = []
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(orch, "start_run", side_effect=lambda r, **k: captured.append(r) or Path("C:/runs/r1")):
+            self.window.start_run()
+            self.pump(lambda: bool(captured))
+        self.assertEqual(captured[0].tests, ["python -m unittest discover -s tests -p 'test_*.py' -q"])
+        self.assertTrue(captured[0].prepare_source)
+        self.assertFalse(captured[0].allow_no_tests)
+
     def test_drafts_are_kept_per_repo(self):
         self.window.task_text.insert("1.0", "draft for app")
         self.window.repo_var.set("other")
@@ -266,6 +284,48 @@ class RunStatusTests(ViewCase):
         self.assertIn("testing", w.stage_var.get())
         self.assertIn("実行中", w.stage_var.get())
         self.assertEqual(w.run_list.size(), 1)
+
+    def test_source_preparation_is_shown_from_the_orchestrator_record(self):
+        self.show(item(record(source_preparation=["switched chatgpt/x -> main (chatgpt/x is kept)"])))
+        self.assertIn("switched chatgpt/x -> main", self.window.prep_var.get())
+        self.assertIn("main@aaaaaaaaaaaa", self.window.prep_var.get())
+        self.show(item(record(source_preparation=[])))
+        self.assertIn("変更なし", self.window.prep_var.get())
+        self.show(item(record(source_preparation=None)))
+        self.assertIn("自動準備なし", self.window.prep_var.get())
+        self.window.selected_run = None
+        self.window.apply_snapshot(self.snapshot())
+        self.assertEqual(self.window.prep_var.get(), "-")
+        self.assertTrue(self.window.copy_button.instate(["disabled"]))
+
+    def test_copy_log_puts_the_run_report_on_the_clipboard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "20260925-100000-000001"
+            run_dir.mkdir()
+            rec = record(source_preparation=["switched feature -> main (feature is kept)"])
+            write_json_atomic(run_dir / "run.json", rec)
+            (run_dir / "events.log").write_text("10:00:00 [preflight] CLI・worktreeを準備中\n", encoding="utf-8")
+            self.show(item(rec, run_dir=run_dir))  # task.md / worker.out / tests do not exist: skipped
+            self.assertTrue(self.window.copy_button.instate(["!disabled"]))
+            self.window.copy_run_log()
+            copied = self.root.clipboard_get()
+        self.assertIn("run id: 20260925-100000-000001", copied)
+        self.assertIn("source_preparation: switched feature -> main", copied)
+        self.assertIn("CLI・worktreeを準備中", copied)
+        self.assertNotIn("## worker.out", copied)
+        self.assertIn("コピーしました", self.window.notice_var.get())
+
+    def test_open_run_folder_opens_only_the_selected_run_dir(self):
+        run_dir = Path("C:/runs/20260925-100000-000001")
+        self.show(item(run_dir=run_dir))
+        if os.name == "nt":
+            with mock.patch.object(view.os, "startfile", create=True) as opener:
+                self.window.open_run_dir()
+            opener.assert_called_once_with(str(run_dir))
+        else:
+            with mock.patch.object(view.subprocess, "Popen") as opener:
+                self.window.open_run_dir()
+            self.assertEqual(opener.call_args.args[0][-1], str(run_dir))
 
     def test_unresponsive_and_lost_runs_are_never_shown_as_plainly_running(self):
         self.show(item(liveness=rs.LIVE_UNRESPONSIVE, reason="接続不能: heartbeatが途絶えています。状態確認が必要です"))

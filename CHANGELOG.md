@@ -1,5 +1,33 @@
 # 変更履歴
 
+## 2026-09-28 — NDS本番rollbackとv1.4.1統合準備
+
+`restore_release`（dry-run必須・plan確認・共通 `release_engine` の検証済み退避 / staging / EXE最後の置換 / 失敗時の限定巻き戻し）で、9/28 UPDATEにより910d29de（v1.3.0）へ意図せず下がったNDS本番を、変更された46ファイルだけ1a03178（v1.4.0）へ復旧（rc 0、運用データ・重要ファイル不変）。DCCは本番（最終配布記録）とmainを区別して表示し、rollbackされたcandidateはRUN_DEV / 承認 / push不可・非activeのまま、rollbackされたSHAのBUILDは再配布不可。`[run.next-day-setup]` のentryをv1.4.1の `dinner_system/hotel_app_entry.py` に変更（next-day-setupの `integration/v1.4.1` と対応）。自動テスト全438件成功。merge / push / BUILD / UPDATEなし。
+
+## 2026-09-28 — DCC BUILDの成功判定
+
+next-day-setupのDCC BUILDが存在しない `build_exe_entry.py`（未mergeの `codex/dcc-initial-setup*` にだけ存在）を起動して即rc=2で失敗していたため、BUILD本体を `[build.next-day-setup]`（`build_exe.py`、`.venv` のPython）で管理し、本体が無ければ起動前に停止。BUILDの成功条件を明文化（returncode 0・入力不変・HEAD不変・このBUILDで書かれた成果物・`BUILD_INFO.txt` のSHA一致・成果物hash、candidate時はworker内でgate再確認）し、不成立理由を `reject_reasons` に記録。UPDATEも `BUILD_INFO` のSHAがcandidateと一致する成果物だけに限定。実機相当確認: DCCと同じworkerでnext-day-setupをcandidate 910d29de でBUILDし `ready`（rc 0、artifact_refreshed true、BUILD_INFO SHA一致、pause表示なし）。自動テスト全416件成功。push / UPDATE / DEPLOYなし。commit / pushなし。
+
+## 2026-09-28 — RUN_DEVのランタイムデータseed
+
+candidate RUN_DEVに限り、`[run.<repo>].seed` で指定したgit管理外ランタイムデータをsource → candidate worktreeへ一方向コピー（毎回置換、書き戻しなし、ignored必須・candidate管理下のパスとリンクは拒否）。next-day-setupは設定JSON 5件と `保存データ/` を指定。実機相当確認: next-day-setupのcandidate worktreeへ310ファイル（約165MB）をコピーし内容一致、source側の内容・更新時刻・git状態は不変。アプリ起動・push / BUILD / UPDATEは未実施。commit / pushなし。
+
+## 2026-09-26 — Orchestrator candidate lifecycleの一本化
+
+完了runのcandidateをDCCの正式な確認対象にし、RUN_DEV → Human approval → push → BUILD → UPDATEを同一SHAで行うフローを追加（`scripts/dev_control_center/candidate.py`）。RUN_DEVはcandidate SHAのworktreeをsource repoの `.venv` で起動し、source repoは変更しない。pushはfast-forwardのみ・base移動で停止、BUILD / UPDATEはSHA一致を実行直前にも検証。RUN定義をtomlの `[run.<repo>]` へ移し、next-day-setupの誤ったentrypoint（`hotel_app_entry.py`）を `dinner_system/hotel_app.py` へ修正。Orchestrator画面の「candidateをlocalへ適用」は「DCCで実機確認へ」に置換。確認状況: 自動テスト全396件成功、next-day-setupの完了run 20260926-165346-534560 を実機相当で確認（candidate認識・RUN対象SHA・entrypoint・source無変更）。実際のRUN_DEV起動・push / BUILD / UPDATEは未実施。commit / pushなし。
+
+## 2026-09-25 — 独立Testsでrepo-local venvを使用
+
+source repoに `.venv` があれば独立TestsのPATH先頭へ置き（cwdはworktreeのまま・コマンド不変・venvが無ければ従来通り）、next-day-setupの既定Testsを正式runnerの `python -m pytest -q` へ変更（next-day-setup側は無変更）。実機相当確認: next-day-setupの `.venv` Pythonでworktree相当checkoutの `python -m pytest -q` が788 passed / 4 skipped、import元はworktree側、source repoのファイル・git status変化なし。確認状況: 自動テスト全369件成功（開発環境確認済み）。実runでの確認は未確認。commit / pushなし。
+
+## 2026-09-25 — Orchestrator出力encoding・ログコピー（実機run 20260925-201312-118052の指摘）
+
+子process出力を行単位でUTF-8 → Windows OEM code page（CP932）の順にdecodeし、reader threadの `UnicodeDecodeError`（`taskkill` のCP932出力を厳格UTF-8で読んでいた）とcmd.exeメッセージの文字化けを解消。DCCのログ表示が行途中・文字途中で切れないよう修正。run記録は元々正常なUTF-8で、文字化けはPowerShell 5.1の `Get-Content` 既定encodingによる表示上のもの。DCCに「ログをコピー」「runフォルダを開く」「source準備」表示を追加。worktree directoryをrepo名にし、next-day-setupのSYNC契約テストがOrchestratorでだけ失敗する問題を解消。実装Task / verification-only Taskの扱いを仕様へ明記（新status追加なし）。確認状況: 自動テスト全366件成功（開発環境確認済み）。実runでの再確認は未確認。commit / pushなし。
+
+## 2026-09-25 — Orchestrator開始準備・Tests実行の改善
+
+DCCからの開始時、clean（tracked）なsource repoを管理branchへ自動切替し `--ff-only` で同期（dirty / ahead / diverged / 進行中操作 / detachedは無変更で停止、stash・reset・branch削除なし）。`[initial_tests]` を設定値優先にし（DCCの推測値で上書きされていた不具合を修正）next-day-setupの既定Testsを追加。Windowsの `cmd.exe` が `'...'` をquoteとして扱わず `-p 'test_*.py'` が `Ran 0 tests` になっていた根本原因を修正（`'...'` のみ等価な `"..."` へ変換）。0 testsは終了コード0でもFAIL、runner問題が連続したらReviewer・追加repairを呼ばず `TEST_RUNNER_PROBLEM` で停止。詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。確認状況: 自動テスト全344件成功（開発環境確認済み）。実runでの確認は未確認。commit / pushなし。
+
 ## 2026-09-25 — AI Orchestrator Phase 2（自動運転）
 
 Main / Reviewer（Claude / Codex選択）の自動修正ループ、独立run worker・DCC終了後継続・再接続・AI安全停止、Claude / Codex usage表示を実装。外部Final Review JSON（review_pending / resume-review）を廃止。詳細は [Orchestrator仕様](docs/ai_orchestrator.md) / [検証記録](docs/development-orchestrator-phase2.md)。commit / push・実配布なし。

@@ -8,8 +8,11 @@ poller of the run files) and stopped only by the explicit "AI安全停止" actio
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -49,6 +52,16 @@ ROLE_LABEL = {"claude": "Claude", "codex": "Codex"}
 
 def role_label(name: str) -> str:
     return ROLE_LABEL.get(name, name)
+
+
+def prep_text(record: dict) -> str:
+    """What the Orchestrator itself did to the source repo before the run (recorded, not asked of Main)."""
+    if record.get("source_preparation") is None:
+        return "自動準備なし（開始時のclean / branch / origin一致を検査のみ）"
+    actions = record["source_preparation"]
+    branch = record.get("source_branch") or "-"
+    base = (record.get("base_sha") or "")[:12]
+    return ("; ".join(actions) if actions else "変更なし（既に最新）") + f" → base {branch}@{base}"
 
 
 class RunMonitor:
@@ -212,6 +225,7 @@ class OrchestratorWindow:
         self.time_var = tk.StringVar(value="-")
         self.result_var = tk.StringVar(value="-")
         self.roles_var = tk.StringVar(value="-")
+        self.prep_var = tk.StringVar(value="-")
         self.usage_vars = {name: tk.StringVar(value="取得不能（未取得）") for name in ("claude", "codex")}
         self.usage_role_vars = {name: tk.StringVar(value="") for name in ("claude", "codex")}
 
@@ -299,12 +313,16 @@ class OrchestratorWindow:
         for r, (label, var) in enumerate([
             ("Main / Reviewer", self.roles_var), ("Current stage", self.stage_var), ("Tests", self.counts_var),
             ("AI呼出し", self.calls_var), ("failure fingerprint", self.fp_var), ("時刻", self.time_var),
-            ("最終結果", self.result_var),
+            ("最終結果", self.result_var), ("source準備", self.prep_var),
         ]):
             ttk.Label(status, text=label, width=20).grid(row=r, column=0, sticky="nw")
             ttk.Label(status, textvariable=var, wraplength=720, justify="left").grid(row=r, column=1, sticky="w")
-        self.apply_button = ttk.Button(status, text="candidateをlocalへ適用", command=self.apply_candidate)
+        self.apply_button = ttk.Button(status, text="DCCで実機確認へ（RUN_DEV）", command=self.apply_candidate)
         self.apply_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(12, 0))
+        self.copy_button = ttk.Button(status, text="ログをコピー", command=self.copy_run_log)
+        self.copy_button.grid(row=2, column=2, sticky="ne", padx=(12, 0), pady=(4, 0))
+        self.open_button = ttk.Button(status, text="runフォルダを開く", command=self.open_run_dir)
+        self.open_button.grid(row=3, column=2, sticky="ne", padx=(12, 0), pady=(4, 0))
 
         row += 1
         ttk.Label(right, text="ログ（画面を閉じてもrunは継続します）", foreground=DARK_MUTED).grid(
@@ -447,9 +465,10 @@ class OrchestratorWindow:
         main, reviewer = self._names()
         repo_root = (self.repos_root or Path(__file__).resolve().parents[3]) / name
         request = orch.StartRequest(repo=str(repo_root), task=task, tests=[tests], main_agent=main,
-                                    review_agent=reviewer, expected_branch=definition.branch)
+                                    review_agent=reviewer, expected_branch=definition.branch,
+                                    prepare_source=True)
         self.start_button.state(["disabled"])
-        self.notice_var.set("開始条件を確認し、独立したrun workerを起動しています...")
+        self.notice_var.set(f"source repoを{definition.branch}の最新へ揃え（clean時のみ）、独立したrun workerを起動しています...")
 
         events, closed = self._events, self._closed_event
 
@@ -515,6 +534,29 @@ class OrchestratorWindow:
         if item is None or self.on_apply is None:
             return
         self.on_apply(item["record"], item["run_dir"])
+
+    def copy_run_log(self) -> None:
+        """One text with everything needed to share the selected run (e.g. with ChatGPT)."""
+        item = self._selected_item()
+        if item is None:
+            return
+        text = rs.run_report(item["run_dir"])
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+        self.notice_var.set(f"run {item['record']['run_id']} のログをClipboardへコピーしました（{len(text):,} 文字）。")
+
+    def open_run_dir(self) -> None:
+        item = self._selected_item()
+        if item is None:
+            return
+        path = Path(item["run_dir"])
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # noqa: S606 - the user's own run folder
+            else:
+                subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
+        except OSError as exc:
+            self.notice_var.set(f"runフォルダを開けません: {path} ({exc})")
 
     # ---------------------------------------------------------------- polling / rendering
     def _selected_item(self) -> dict | None:
@@ -611,10 +653,12 @@ class OrchestratorWindow:
         self.character.set_mood(mood_for(item["record"]["stage"], item["liveness"]) if item else "idle")
         if item is None:
             for var in (self.stage_var, self.counts_var, self.calls_var, self.fp_var, self.time_var,
-                        self.result_var, self.roles_var):
+                        self.result_var, self.roles_var, self.prep_var):
                 var.set("-")
             _set_enabled(self.stop_button, False)
             _set_enabled(self.apply_button, False)
+            _set_enabled(self.copy_button, False)
+            _set_enabled(self.open_button, False)
             _set_enabled(self.start_button, True)
             return
         record, liveness = item["record"], item["liveness"]
@@ -648,6 +692,9 @@ class OrchestratorWindow:
             self.result_var.set(text)
         else:
             self.result_var.set("実行中")
+        self.prep_var.set(prep_text(record))
+        _set_enabled(self.copy_button, True)
+        _set_enabled(self.open_button, True)
         active = liveness in (rs.LIVE_RUNNING, rs.LIVE_STARTING, rs.LIVE_UNRESPONSIVE, rs.LIVE_LOST)
         self.stop_button.configure(text="stale runを整理" if liveness == rs.LIVE_LOST else "AI安全停止")
         _set_enabled(self.stop_button, active)

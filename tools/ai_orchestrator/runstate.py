@@ -338,21 +338,41 @@ def active_runs(repo: str | None = None) -> list[dict]:
             if i["liveness"] in (LIVE_RUNNING, LIVE_STARTING, LIVE_UNRESPONSIVE)]
 
 
-def tail_log(run_dir: Path, offset: int = 0, initial_limit: int = 60_000) -> tuple[str, int]:
-    """New log text since `offset`; the first read of a long log starts near its end."""
+def tail_log(run_dir: Path, offset: int = 0, initial_limit: int = 60_000, chunk: int = 200_000) -> tuple[str, int]:
+    """New complete log lines since `offset`; the first read of a long log starts near its end.
+
+    Only whole lines are consumed, so a UTF-8 character is never cut at a read boundary
+    (a jump into the middle of the log skips to the next line start)."""
     path = run_dir / "events.log"
     try:
         size = path.stat().st_size
         if size < offset:
             offset = 0
-        if offset == 0 and size > initial_limit:
+        jumped = offset == 0 and size > initial_limit
+        if jumped:
             offset = size - initial_limit
         with open(path, "rb") as handle:
             handle.seek(offset)
-            data = handle.read(200_000)
-        return data.decode("utf-8", errors="replace"), offset + len(data)
+            data = handle.read(chunk)
     except OSError:
         return "", offset
+    if jumped:
+        start = data.find(b"\n") + 1
+        data, offset = data[start:], offset + start
+    end = data.rfind(b"\n") + 1
+    if not end:
+        if len(data) < chunk:
+            return "", offset  # the line is still being written
+        end = len(data)  # one line longer than a chunk: still never cut inside a character
+        for trim in range(4):
+            try:
+                data[:end - trim].decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            end -= trim
+            break
+    data = data[:end]
+    return data.decode("utf-8", errors="replace"), offset + len(data)
 
 
 # --- repo lock (duplicate start prevention) ------------------------------------------
@@ -512,3 +532,71 @@ def mark_applied(run_dir: Path, detail: str) -> None:
     record["apply_status"] = "applied"
     record["apply_detail"] = detail
     write_json_atomic(run_dir / "run.json", record)
+
+
+# --- shareable report ------------------------------------------------------------------
+
+REPORT_LIMITS = {"events.log": 200_000, "worker.out": 50_000, "tests": 30_000}
+
+
+def _read_tail(path: Path, limit: int) -> str | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    return text if len(text) <= limit else f"…(先頭 {len(text) - limit} 文字を省略)…\n" + text[-limit:]
+
+
+def run_report(run_dir: Path) -> str:
+    """Everything needed to share one run as a single text (DCC「ログをコピー」).
+    Files that do not exist are skipped; this never raises for a missing or partial run."""
+    run_dir = Path(run_dir)
+    record = read_record(run_dir) or {}
+    final = record.get("final_result") or {}
+    lines = ["# AI Orchestrator run report", f"run id: {record.get('run_id') or run_dir.name}",
+             f"run dir: {run_dir}"]
+    if record:
+        lines += [
+            f"repo: {record.get('repo', '')}",
+            f"stage: {record.get('stage', '')}",
+            f"final_result: {final.get('stage', '-')} / {final.get('code', '-')}" if final else "final_result: (未終了)",
+            f"main / reviewer: {record.get('main_agent', '')} / {record.get('review_agent', '')}",
+            f"source: {record.get('source_branch', '')} @ {record.get('base_sha', '')}",
+        ]
+        prep = record.get("source_preparation")
+        lines.append("source_preparation: " + ("自動準備なし" if prep is None else
+                                               "; ".join(prep) if prep else "変更なし（既に管理branchの最新）"))
+        if record.get("candidate_sha"):
+            lines.append(f"candidate: {record['candidate_sha']} ({record.get('candidate_branch', '')}) "
+                         f"apply={record.get('apply_status') or '-'} {record.get('apply_detail') or ''}".rstrip())
+        lines += [
+            "tests: " + " / ".join(record.get("tests") or []),
+            f"counts: tests run {record.get('tests_run_count', 0)} / fail {record.get('tests_fail_count', 0)} / "
+            f"repair {record.get('repair_iteration', 0)} / main calls {record.get('main_calls', 0)} / "
+            f"review calls {record.get('review_calls', 0)}",
+            f"times: created {record.get('created_at', '-')} / started {record.get('started_at', '-')} / "
+            f"finished {record.get('finished_at', '-')}",
+        ]
+        if final.get("message"):
+            lines += ["", "## final_result message", str(final["message"])]
+    else:
+        lines.append("run.json: (なし・読込不能)")
+    task = _read_tail(run_dir / "task.md", 50_000) or record.get("task")
+    if task:
+        lines += ["", "## task", task.rstrip()]
+    for key in ("failure_history", "repair_history", "review_history", "provider_errors", "quota_errors"):
+        items = record.get(key) or []
+        if items:
+            lines += ["", f"## {key}"] + [json.dumps(item, ensure_ascii=False) for item in items]
+    tests_dir = run_dir / "tests"
+    latest = sorted(tests_dir.glob("run-*.txt")) if tests_dir.is_dir() else []
+    sections = [("events.log", run_dir / "events.log", REPORT_LIMITS["events.log"]),
+                ("worker.out", run_dir / "worker.out", REPORT_LIMITS["worker.out"])]
+    if latest:
+        sections.append((f"latest Tests output ({latest[-1].name})", latest[-1], REPORT_LIMITS["tests"]))
+    for title, path, limit in sections:
+        text = _read_tail(path, limit)
+        if text is not None and text.strip():
+            lines += ["", f"## {title}", text.rstrip()]
+    return "\n".join(lines) + "\n"

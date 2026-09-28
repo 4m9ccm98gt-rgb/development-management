@@ -201,6 +201,39 @@ def failure_fingerprint(text: str) -> tuple[str, str]:
     return _hash("\n".join(unique)[:50_000]), summary
 
 
+NO_TESTS_MARKER = ("TEST RUNNER: 0 tests ran. This is usually a test command / discovery problem "
+                   "(pattern, quoting, working directory), not an implementation bug.")
+_RAN_COUNT = re.compile(r"(?m)^Ran (\d+) tests? in ")
+_NO_TESTS = re.compile(r"(?m)^(?:NO TESTS RAN\b|collected 0 items\b|=+ no tests ran\b)")
+_RUNNER_UNAVAILABLE = re.compile(
+    r"(?mi)(?:is not recognized as an internal or external command|内部コマンドまたは外部コマンド"
+    r"|^\S*: (?:\d+: )?\S+: (?:command )?not found\s*$"
+    r"|python[\w.]*(?:\.exe)?: No module named [\w.]+\s*$"      # `python -m <runner>` without the runner
+    r"|python[\w.]*(?:\.exe)?: can't open file )")
+
+RUNNER_NO_TESTS = "no_tests"
+RUNNER_UNAVAILABLE = "runner_unavailable"
+
+
+def zero_tests_ran(output: str) -> bool:
+    """True when a test runner's own summary says nothing was tested (unittest / pytest).
+    For unittest only the last summary counts, so nested runner output inside tests is ignored."""
+    counts = _RAN_COUNT.findall(output)
+    if counts:
+        return counts[-1] == "0"
+    return bool(_NO_TESTS.search(output))
+
+
+def classify_runner_problem(text: str) -> str:
+    """Classify a Tests failure caused by the command / runner rather than by the code:
+    `no_tests`, `runner_unavailable`, or "" for an ordinary test failure."""
+    if NO_TESTS_MARKER in text:
+        return RUNNER_NO_TESTS
+    if _RUNNER_UNAVAILABLE.search(text):
+        return RUNNER_UNAVAILABLE
+    return ""
+
+
 def extract_acceptance(task: str) -> str:
     """Acceptance criteria section of the TaskSpec (marker line up to the next heading or
     40 lines), or an empty string when the TaskSpec has no such section."""

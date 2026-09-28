@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import locale
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,84 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+# --- child output decoding -------------------------------------------------------
+#
+# Children are asked to write UTF-8 (PYTHONUTF8 / PYTHONIOENCODING; git and the node-based
+# Claude / Codex CLIs do so natively). Windows console programs (cmd.exe's own messages,
+# taskkill, icacls, Windows PowerShell 5.1 writing to a pipe) still write the OEM code page
+# (cp932 on Japanese Windows) and can not be switched without a console. One stream can
+# carry both, so every line is decoded on its own: UTF-8 first, then the OEM code page;
+# only bytes that neither can read are replaced.
+
+_LEGACY_ENCODING: str | None = None
+
+
+def legacy_output_encoding() -> str:
+    """Encoding of Windows console-program output written to a pipe (the OEM code page)."""
+    global _LEGACY_ENCODING
+    if _LEGACY_ENCODING is None:
+        encoding = "utf-8"
+        if os.name == "nt":
+            try:
+                import ctypes
+
+                encoding = f"cp{ctypes.windll.kernel32.GetOEMCP()}"
+                "".encode(encoding)
+            except (AttributeError, OSError, LookupError):
+                encoding = locale.getpreferredencoding(False) or "utf-8"
+        _LEGACY_ENCODING = encoding
+    return _LEGACY_ENCODING
+
+
+def decode_output(data: bytes) -> str:
+    """Decode one line (or block) of child output; never raises."""
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    legacy = legacy_output_encoding()
+    if legacy.replace("-", "").lower() != "utf8":
+        try:
+            return data.decode(legacy)
+        except (UnicodeDecodeError, LookupError):
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
+def _newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+class OutputDecoder:
+    """Incremental, line-wise `decode_output` for streamed output (universal newlines).
+
+    A partial last line is released as soon as it is complete UTF-8 (prompts / progress stay
+    visible); otherwise it waits for its newline so a split multibyte character is never
+    decoded in halves. `limit` bounds that wait."""
+
+    def __init__(self, limit: int = 65536):
+        self._pending = b""
+        self._limit = limit
+
+    def decode(self, data: bytes, final: bool = False) -> str:
+        buffer = self._pending + data
+        self._pending = b""
+        if not final and buffer.endswith(b"\r"):
+            buffer, self._pending = buffer[:-1], b"\r"  # the \n of a \r\n may arrive with the next read
+        cut = max(buffer.rfind(b"\n"), buffer.rfind(b"\r")) + 1
+        complete, rest = buffer[:cut], buffer[cut:]
+        parts = [decode_output(line) for line in complete.splitlines(keepends=True)]
+        if rest:
+            try:
+                parts.append(rest.decode("utf-8"))
+            except UnicodeDecodeError:
+                if final or len(rest) >= self._limit:
+                    parts.append(decode_output(rest))
+                else:
+                    self._pending = rest + self._pending
+        return _newlines("".join(parts))
 
 
 def now_id() -> str:
@@ -149,7 +228,8 @@ def process_start_token(pid: int) -> str | None:
     except (OSError, IndexError):
         pass
     try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, check=False)
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", check=False)
     except OSError:
         return None
     text = out.stdout.strip()
@@ -165,9 +245,10 @@ def terminate_pid_tree(pid: int, token: str | None = None) -> bool:
     if token is not None and not pid_matches(pid, token):
         return False
     if os.name == "nt":
+        # The output is not used, and taskkill writes it in the OEM code page: never decode it.
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True, text=True, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
     else:
         import signal
@@ -226,8 +307,7 @@ def run_streaming(
     try:
         proc = subprocess.Popen(
             args, cwd=str(cwd) if cwd else None,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,  # bytes: see decode_output
             start_new_session=(os.name != "nt"), env=env,
         )
     except OSError as exc:
@@ -238,20 +318,22 @@ def run_streaming(
 
     def pump(stream_name: str, stream) -> None:
         try:
-            for line in stream:
-                chunks[stream_name].append(line)
+            for raw in iter(stream.readline, b""):
+                text = _newlines(decode_output(raw))  # line by line: the encoding may differ per line
+                chunks[stream_name].append(text)
                 if hooks.on_line:
-                    try:
-                        hooks.on_line(stream_name, line.rstrip("\r\n"))
-                    except Exception:  # noqa: BLE001 - logging must never kill the reader
-                        pass
+                    for line in text.splitlines():
+                        try:
+                            hooks.on_line(stream_name, line)
+                        except Exception:  # noqa: BLE001 - logging must never kill the reader
+                            pass
         except (OSError, ValueError):
             pass
 
     def feed() -> None:
         try:
             if input_text is not None:
-                proc.stdin.write(input_text)
+                proc.stdin.write(input_text.encode("utf-8"))
             proc.stdin.close()
         except (OSError, ValueError):
             pass
