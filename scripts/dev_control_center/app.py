@@ -1357,7 +1357,7 @@ def flow_text(flow: dict | None) -> str:
     """One line per stage with its SHA; a SHA change or a stop is shown loudly."""
     production = (flow or {}).get("production")
     head = ([f"{'production (DCC記録)':<22} {production['commit'][:12]:<12}  {production.get('version') or ''} "
-             f"{production['how']}".rstrip()] if production and production.get("commit") else [])
+             f"{production['how']}".rstrip()] if production and production.get("ok") and production.get("commit") else [])
     if not flow or not flow.get("candidate"):
         return "\n".join(head + ["Orchestrator candidateなし — RUN / BUILDは作業ツリーの通常ルート"])
     lines = head + [f"{name:<22} {(sha[:12] if sha else '-'):<12}  {status}" for name, sha, status in flow.get("stages", [])]

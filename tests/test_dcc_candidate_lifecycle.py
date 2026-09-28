@@ -536,22 +536,81 @@ class BuildAndReleaseGateTests(LifecycleCase):
                 "candidate_sha": sha if candidate else None, "candidate_run_id": None, "dirty": False,
                 "artifact_hash": "h", "artifact": str(self.tmp / "artifact")}
 
+    def valid_receipt(self, sha, build_id):
+        """A receipt read_receipt() accepts on its own merits (real artifact hash and inputs hash)."""
+        artifact = self.tmp / "artifact-valid"
+        artifact.mkdir(exist_ok=True)
+        (artifact / "App.exe").write_bytes(b"app")
+        return {"repo": str(self.repo.resolve()), "status": "ready", "build_id": build_id, "base_head": sha,
+                "candidate_sha": None, "candidate_run_id": None, "dirty": False, "artifact": str(artifact),
+                "artifact_hash": provenance.tree_hash(artifact), "inputs_hash": provenance.inputs_hash(self.repo, artifact)}
+
+    def assert_revoked(self, sha):
+        provenance.write_json(provenance.receipt_path(self.repo), self.valid_receipt(sha, "rebuild"))
+        with self.assertRaises(ValueError) as ctx:
+            provenance.read_receipt(self.repo)
+        self.assertIn("rollback済み", str(ctx.exception))
+
+    def test_revocation_without_candidate_state_survives_later_updates(self):
+        from scripts.dev_control_center import restore_release
+
+        revoked = "e" * 40
+        good = git(self.repo, "rev-parse", "HEAD")
+        provenance.write_json(provenance.receipt_path(self.repo), self.valid_receipt(good, "control"))
+        self.assertEqual(provenance.read_receipt(self.repo)["base_head"], good)      # control: accepted
+        body = {"target": "T", "backup": "B", "restore_commit": self.base, "restore_version": "v1.4.0",
+                "plan_id": "p" * 64, "current_build_info": {"Git commit SHA": revoked}}
+        with mock.patch("builtins.print"):
+            restore_release.record_rollback(self.repo, body, {"exe_sha256": "E" * 64, "saved": "S"})
+        self.assertFalse(any(cf.load_state(self.candidate()).get(k) for k in ("rolled_back",)))  # revoked.json only
+        for rc in (1, 0):
+            provenance.record_release_result(self.repo, {"receipt": self.valid_receipt(good, f"u{rc}"), "target": "T"},
+                                             rc, "t")
+            self.assert_revoked(revoked)
+
+    def test_rollback_record_is_kept_as_immutable_history(self):
+        self.rolled_back()
+        good = git(self.repo, "rev-parse", "HEAD")
+        for rc in (1, 0):  # later failed and successful UPDATE attempts overwrite last_release.json
+            provenance.record_release_result(self.repo, {"receipt": self.valid_receipt(good, f"h{rc}"), "target": "T"},
+                                             rc, "t")
+        history = [json.loads(p.read_text(encoding="utf-8"))
+                   for p in provenance.release_record_path(self.repo).parent.glob("release-*-rollback.json")]
+        self.assertEqual(len(history), 1)
+        self.assertEqual((history[0]["kind"], history[0]["restored_from"], history[0]["saved_before_restore"],
+                          history[0]["rolled_back_from"]), ("rollback", "B", "S", self.sha))
+        self.assertTrue(list(provenance.release_record_path(self.repo).parent.glob("release-superseded-*.json")))
+
+    def test_a_failed_attempt_is_never_production(self):
+        good = git(self.repo, "rev-parse", "HEAD")
+        attempt = {"receipt": self.valid_receipt(good, "first"), "target": "T"}
+        provenance.record_release_result(self.repo, attempt, 1, "t")                 # first-ever attempt fails
+        self.assertIsNone(cf.production_state(self.repo))
+        self.assertNotIn("production", dcc_app.flow_text(cf.snapshot(self.repo, "main")))
+
+    def test_legacy_successful_release_survives_a_later_failure(self):
+        legacy = "d" * 40
+        provenance.write_json(provenance.release_record_path(self.repo),
+                              {"build_id": "old", "base_head": legacy, "candidate_sha": None, "returncode": 0,
+                               "target": "T", "finished_at": "x"})                 # written before production.json
+        good = git(self.repo, "rev-parse", "HEAD")
+        provenance.record_release_result(self.repo, {"receipt": self.valid_receipt(good, "new"), "target": "T"}, 1, "t")
+        self.assertEqual(cf.production_state(self.repo)["commit"], legacy)
+
     def test_later_update_attempts_never_erase_the_rollback(self):
         self.rolled_back()
         other = git(self.repo, "rev-parse", "HEAD")
         started = "2026-09-29T00:00:00"
         provenance.record_release_result(self.repo, {"receipt": self.receipt(other, "failed1"), "target": "T"}, 1, started)
         self.assertEqual(cf.production_state(self.repo)["commit"], self.base)     # a failed attempt changes nothing
-        provenance.write_json(provenance.receipt_path(self.repo), self.receipt(self.sha, "rebuild-910"))
-        with self.assertRaises(ValueError):                                       # revoked SHA still refused
-            provenance.read_receipt(self.repo)
+        self.assert_revoked(self.sha)                                             # revoked SHA still refused
         new = self.make_candidate("v1.4.1", run_id="20260929-000000-000009")
         provenance.record_release_result(self.repo, {"receipt": self.receipt(new, "ok1"), "target": "T"}, 0, started)
         self.assertEqual(cf.production_state(self.repo)["commit"], new)          # confirmed only on success
-        provenance.write_json(provenance.receipt_path(self.repo), self.receipt(self.sha, "rebuild-910b"))
-        with self.assertRaises(ValueError):                                       # ... and still refused afterwards
-            provenance.read_receipt(self.repo)
-        self.assertEqual(len(list(provenance.release_record_path(self.repo).parent.glob("release-2*.json"))), 2)
+        self.assert_revoked(self.sha)                                             # ... and still refused afterwards
+        attempts = [p for p in provenance.release_record_path(self.repo).parent.glob("release-2*.json")
+                    if not p.name.endswith("-rollback.json")]
+        self.assertEqual(len(attempts), 2)                                        # every UPDATE attempt kept
 
     def test_rolled_back_candidate_with_a_moved_branch_stays_inactive(self):
         self.rolled_back()

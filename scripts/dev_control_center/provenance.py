@@ -69,6 +69,7 @@ def record_release_result(repo: Path, request: dict, rc: int, started: str) -> d
               "target": request["target"], "returncode": rc, "started_at": started,
               "finished_at": datetime.now(timezone.utc).isoformat()}
     folder = release_record_path(repo).parent
+    _migrate_confirmed_production(repo)  # older states: keep what was confirmed before this attempt overwrites it
     write_json(folder / f"release-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{receipt['build_id'][:8]}.json", record)
     write_json(release_record_path(repo), record)
     if rc == 0:
@@ -80,6 +81,29 @@ def record_release_result(repo: Path, request: dict, rc: int, started: str) -> d
 
             candidate_flow.mark_deployed(repo, binding["expected_sha"], binding["candidate_run_id"], receipt["build_id"])
     return record
+
+
+def _migrate_confirmed_production(repo: Path) -> None:
+    """States written before production.json existed: promote their last successful record once."""
+    if production_record_path(repo).exists():
+        return
+    try:
+        previous = json.loads(release_record_path(repo).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if previous.get("returncode") != 0:
+        return
+    folder = release_record_path(repo).parent
+    write_json(folder / f"release-migrated-{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", previous)
+    if previous.get("kind") == "rollback":
+        from .restore_release import record_confirmed_rollback
+
+        record_confirmed_rollback(repo, previous)
+        return
+    write_json(production_record_path(repo), {
+        "schema": 1, "commit": previous.get("candidate_sha") or previous.get("base_head"), "version": "",
+        "build_id": previous.get("build_id"), "how": "DCC UPDATE", "target": previous.get("target"),
+        "at": previous.get("finished_at")})
 
 
 def candidate_binding(repo: Path, branch: str | None) -> dict | None:

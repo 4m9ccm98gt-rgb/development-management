@@ -249,7 +249,8 @@ class ExecuteTests(RestoreCase):
         body = self.plan()
         before = tree(self.target)
         for field, value in (("target", str(self.root / "elsewhere")), ("files", body["files"][:1]),
-                             ("restore_version", "v9")):
+                             ("restore_version", "v9"),
+                             ("current_build_info", dict(body["current_build_info"], **{"Git commit SHA": "f" * 40}))):
             with self.subTest(field=field):
                 edited = dict(body, **{field: value})
                 self.plan_path.write_text(json.dumps(edited), encoding="utf-8")

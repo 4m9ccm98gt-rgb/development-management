@@ -94,7 +94,8 @@ def _identity(backup: Path, commit: str, version: str, config: dict) -> tuple[di
     return info, manifest
 
 
-PLAN_FIELDS = ("repo", "target", "backup", "restore_commit", "restore_version", "files", "expected", "live_stats")
+PLAN_FIELDS = ("repo", "target", "backup", "restore_commit", "restore_version", "current_build_info", "files",
+               "expected", "live_stats")
 
 
 def plan_digest(body: dict) -> str:
@@ -237,6 +238,9 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
 
         progress.stage(2, "Re-verifying the reviewed plan (backup, current files, operational data)")
         _identity(backup, body["restore_commit"], body["restore_version"], config)
+        live_info = read_key_values(target / config.get("build_info", "BUILD_INFO.txt"))
+        if live_info != body.get("current_build_info"):  # the release being replaced is the one that gets revoked
+            raise ReleaseError("the live BUILD_INFO differs from the plan's current_build_info", "PLAN_DRIFT")
         changes = []
         for number, item in enumerate(body["files"], 1):
             protected.assert_writable(item["path"])
@@ -350,6 +354,7 @@ def record_rollback(repo: Path, body: dict, result: dict) -> None:
         "exe_sha256": result["exe_sha256"], "rolled_back_from": from_commit, "restored_from": body["backup"],
         "saved_before_restore": result["saved"], "plan_id": body["plan_id"], "finished_at": now_stamp(),
         "build_id": None, "candidate_sha": None}
+    write_json(path.with_name(f"release-{record['finished_at']}-rollback.json"), record)  # immutable history
     write_json(path, record)
     record_confirmed_rollback(repo, record)
     candidate_flow.mark_rolled_back(repo, from_commit, body["restore_commit"])

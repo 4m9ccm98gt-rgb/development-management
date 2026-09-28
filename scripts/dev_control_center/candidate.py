@@ -307,14 +307,13 @@ def production_state(repo: Path) -> dict | None:
         return {"commit": str(confirmed.get("commit") or ""), "version": confirmed.get("version") or "",
                 "how": confirmed.get("how") or "", "ok": True}
     record = release_record(repo)
-    if not record:
-        return None
+    if not record or record.get("returncode") != 0:
+        return None  # nothing confirmed: a failed attempt is never shown as production
     if record.get("kind") == "rollback":
         return {"commit": str(record.get("deployed_commit") or ""), "version": record.get("app_version") or "",
                 "how": f"rollback（{str(record.get('rolled_back_from') or '')[:12]} から復旧）", "ok": record.get("returncode") == 0}
     commit = str(record.get("candidate_sha") or record.get("base_head") or "")
-    return {"commit": commit, "version": "", "ok": record.get("returncode") == 0,
-            "how": "DCC UPDATE" if record.get("returncode") == 0 else f"DCC UPDATE失敗 rc={record.get('returncode')}"}
+    return {"commit": commit, "version": "", "ok": True, "how": "DCC UPDATE"}
 
 
 def _refuse_if_rolled_back(state: dict) -> None:
