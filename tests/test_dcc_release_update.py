@@ -405,7 +405,7 @@ class TrustTests(ReleaseCase):
         self.release(self.v2(), "v2")
         path = self.target / "_internal/b.dat"
         stat = path.stat()
-        path.write_bytes(b"DAMAGE")                        # same size, then the old mtime put back
+        path.write_bytes(b"SAME")                        # same size, then the old mtime put back
         os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
         manifest_path = self.target / "DCC_RELEASE_MANIFEST.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -759,6 +759,122 @@ class TransactionTests(ReleaseCase):
             ru.clear_interrupted(self.repo, "wrong-id-prefix")
         ru.clear_interrupted(self.repo, body["release_id"][:12])
         self.assertFalse(ru.inflight_path(self.repo).exists())
+
+    # ---- Astra review round 1
+
+    def test_unchanged_file_with_same_metadata_but_other_content_stops_before_any_write(self):
+        self.release(self.v2(), "v2")
+        path = self.target / "_internal/b.dat"
+        stat = path.stat()
+        path.write_bytes(b"SAME")                          # same size, old mtime put back: looks unchanged
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        self.commit("v3")
+        self.build(self.v2(_internal__a_dat=b"v3"), "v3")
+        body = self.plan()
+        self.assertEqual(next(f for f in body["files"] if f["path"] == "_internal/b.dat")["category"], "unchanged")
+        before, production = tree(self.target), self.production()
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "UNCHANGED_CONTENT_MISMATCH")
+        self.assert_untouched_after_failure(before, production)
+        body = self.plan()                                 # the contradicted manifest is never trusted again
+        self.assertFalse(body["production"]["manifest_trusted"])
+        self.assertTrue(any("contradicted" in r for r in body["production"]["trust_reasons"]))
+        self.assertIn("_internal/b.dat", self.category(body, "modified"))
+        self.execute(body)
+        self.assertEqual(path.read_bytes(), b"same")
+
+    def test_failure_while_building_the_manifest_undoes_and_clears_nothing_it_should_keep(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", _internal__n_dat=b"new",
+                                                App_exe=b"exe-v2")
+        with mock.patch.object(ru, "_manifest_body", side_effect=OSError("share went away")), \
+             self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "MANIFEST_WRITE")
+        self.assert_untouched_after_failure(before, production)
+
+    def test_unexpected_failure_after_apply_is_undone_and_the_marker_kept_if_undo_fails(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", App_exe=b"exe-v2")
+        with mock.patch.object(ru, "_undo_or_incomplete", side_effect=KeyError("bug")), \
+             mock.patch.object(ru, "_final_checks", side_effect=OSError("x")), self.assertRaises(KeyError):
+            self.execute(body)
+        self.assert_untouched_after_failure(before, production)     # the generic handler still undid it
+        body = self.plan()
+        with mock.patch.object(ru, "_final_checks", side_effect=OSError("x")), \
+             mock.patch.object(re_.Transaction, "undo", return_value=["App.exe: undo failed"]), \
+             self.assertRaises(re_.RollbackIncomplete):
+            self.execute(body)
+        self.assertTrue(ru.inflight_path(self.repo).exists())
+
+    @unittest.skipUnless(os.name == "nt", "share-mode semantics")
+    def test_the_launch_barrier_holds_through_final_verification_and_undo(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", App_exe=b"exe-v2")
+        seen = []
+
+        def can_start():
+            try:
+                open(self.target / "App.exe", "rb").close()
+                return True
+            except PermissionError:
+                return False
+
+        real_checks, real_undo = ru._final_checks, ru._undo_or_incomplete
+
+        def checks(*args, **kwargs):
+            seen.append(("verify", can_start()))
+            result, detail = real_checks(*args, **kwargs)
+            result["forced failure"] = False
+            return result, detail
+
+        def undo(*args, **kwargs):
+            try:
+                return real_undo(*args, **kwargs)
+            finally:
+                seen.append(("after undo", can_start()))
+
+        with mock.patch.object(ru, "_final_checks", checks), mock.patch.object(ru, "_undo_or_incomplete", undo), \
+             self.assertRaises(re_.ReleaseError):
+            self.execute(body)
+        self.assertEqual(seen, [("verify", False), ("after undo", False)])
+        self.assertTrue(can_start())                       # released once the update ended
+        self.assert_untouched_after_failure(before, production)
+
+    @unittest.skipUnless(os.name == "nt", "junctions")
+    def test_undo_never_writes_through_a_folder_swapped_for_a_junction(self):
+        import _winapi
+
+        body, before, production = self.planned(_internal__sub__c_dat=b"c-v2", App_exe=b"exe-v2")
+        user = self.target / SAVE / "c.dat"
+        write(user, b"user data")
+        junction = self.target / "_internal" / "sub"
+
+        def swap_folder_then_fail(change):
+            if change.rel == "App.exe":
+                os.rename(junction, self.target / "_internal" / "sub_moved")
+                _winapi.CreateJunction(str(self.target / SAVE), str(junction))
+                raise OSError("injected swap failure")
+
+        try:
+            with self.assertRaises(re_.RollbackIncomplete) as ctx:
+                self.execute(body, before_each=swap_folder_then_fail)
+            self.assertIn("reparse point", str(ctx.exception))
+            self.assertEqual(user.read_bytes(), b"user data")          # operational data never written
+            self.assertEqual([p.name for p in (self.target / SAVE).iterdir() if p.name.startswith("c.dat.")], [])
+            self.assertEqual(self.production(), production)
+        finally:
+            if junction.exists():
+                os.rmdir(junction)
+
+    def test_retention_listing_failure_after_commit_keeps_the_release_successful(self):
+        self.commit("v2")
+        self.build(self.v2(_internal__a_dat=b"changed"))
+        body = self.plan()
+        with mock.patch.object(re_, "engine_backups", side_effect=OSError("listing failed")):
+            result = self.execute(body)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["retention"]["errors"])
+        self.assertEqual(self.production()["commit"], body["provenance"]["base_head"])
+        self.assertEqual(self.last_release()["returncode"], 0)
 
     def test_new_file_changed_by_someone_is_not_removed_by_undo(self):
         body, before, production = self.planned(_internal__n_dat=b"new", App_exe=b"exe-v2")

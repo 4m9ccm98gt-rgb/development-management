@@ -367,38 +367,81 @@ class LockSet:
 
 
 class InUseGuard:
-    """Holds the in-use files (the EXE) open with FileShare none from the in-use check until just before
-    they are swapped, so no PC can start the application in between (its start fails instead of
-    loading a half-updated folder). `release()` is called right before the final swap."""
+    """Launch barrier: the in-use files (the EXE) are held open with FileShare none, so no PC can start the
+    application while the folder is mixed (its start fails instead). The content of a held file is hashed
+    through the held handle (`digest`), so it never has to be let go just to be verified. It is released
+    only for the instant of its own replacement and re-taken on the new file right after
+    (`Transaction` calls `release_for` / `retake`), and held through final verification and any undo."""
 
     def __init__(self, paths: list[Path]):
-        self.paths = paths
-        self._handles: list = []
+        self.paths = {self._key(p): p for p in paths}
+        self._handles: dict[str, object] = {}
+        self._digests: dict[str, str] = {}
+
+    @staticmethod
+    def _key(path: Path) -> str:
+        return str(path).lower()
+
+    def holds(self, path: Path) -> bool:
+        return self._key(path) in self._handles
+
+    def covers(self, path: Path) -> bool:
+        return self._key(path) in self.paths
 
     def acquire(self) -> None:
         busy = []
-        for path in self.paths:
-            if not path.exists():
-                continue
-            if os.name != "nt":
-                continue
-            import _winapi
-
+        for key, path in self.paths.items():
             try:
-                self._handles.append(_winapi.CreateFile(str(path), 0x80000000, 0, 0, 3, 0x80, 0))
+                self._take(key, path)
             except OSError:
                 busy.append(path.name)
         if busy:
             self.release()
             raise ReleaseError(f"still in use (close the app on every PC): {busy}", "IN_USE")
 
-    def release(self) -> None:
-        if os.name == "nt":
+    def _take(self, key: str, path: Path) -> None:
+        if os.name != "nt" or key in self._handles or not path.exists():
+            return
+        import _winapi
+
+        handle = _winapi.CreateFile(str(path), 0x80000000, 0, 0, 3, 0x80, 0)  # GENERIC_READ, share none
+        digest = hashlib.sha256()
+        try:
+            while True:
+                data, _ = _winapi.ReadFile(handle, 1 << 20)
+                if not data:
+                    break
+                digest.update(data)
+        except BaseException:
+            _winapi.CloseHandle(handle)
+            raise
+        self._handles[key] = handle
+        self._digests[key] = digest.hexdigest().upper()
+
+    def digest(self, path: Path) -> str | None:
+        """SHA-256 of a held file (read through the held handle), None when it is not held."""
+        return self._digests.get(self._key(path))
+
+    def release_for(self, path: Path) -> None:
+        key = self._key(path)
+        handle = self._handles.pop(key, None)
+        self._digests.pop(key, None)
+        if handle is not None:
             import _winapi
 
-            for handle in self._handles:
-                _winapi.CloseHandle(handle)
-        self._handles.clear()
+            _winapi.CloseHandle(handle)
+
+    def retake(self, path: Path) -> None:
+        key = self._key(path)
+        if key in self.paths:
+            try:
+                self._take(key, path)
+            except OSError as exc:
+                raise ReleaseError(f"{path.name} was opened by someone right after it was replaced", "IN_USE") from exc
+
+    def release(self) -> None:
+        for key in list(self._handles):
+            self.release_for(self.paths.get(key, Path(key)))
 
 
 # ------------------------------------------------------------------ progress
@@ -446,10 +489,33 @@ class Transaction:
     applied: list[Change] = field(default_factory=list)
     final: tuple[str, ...] = ()               # swapped after everything else, in this order (EXE last)
     created_dirs: list[Path] = field(default_factory=list)
+    guard: InUseGuard | None = None           # launch barrier kept across replace and undo
 
     def _emit(self, done, total, label):
         if self.progress:
             self.progress.count(done, total, label)
+
+    def _revalidate(self, change: Change) -> None:
+        """Immediately before a write: the paths still resolve to the planned locations and no component has
+        become a reparse point (e.g. a folder swapped for a junction into operational data since planning)."""
+        if safe_join(self.target_root, change.rel) != change.target:
+            raise ReleaseError(f"target path changed: {change.rel}", "PATH_CHANGED")
+        if change.saved is not None and safe_join(self.save_root, change.rel) != change.saved:
+            raise ReleaseError(f"backup path changed: {change.rel}", "PATH_CHANGED")
+
+    def _current(self, path: Path) -> str | None:
+        """Hash of the live file; a file held by the launch barrier is hashed through its held handle."""
+        if self.guard is not None and self.guard.holds(path):
+            return self.guard.digest(path)
+        return sha256(path) if path.exists() else None
+
+    def _swap(self, source: Path, target: Path) -> None:
+        """os.replace, letting go of the launch barrier only for the instant of the swap of that one file."""
+        if self.guard is not None:
+            self.guard.release_for(target)
+        os.replace(source, target)
+        if self.guard is not None and self.guard.covers(target):
+            self.guard.retake(target)
 
     def order(self, changes: list[Change]) -> list[Change]:
         final = [f.lower() for f in self.final]
@@ -514,24 +580,22 @@ class Transaction:
                 raise ReleaseError(f"staged copy hash mismatch: {change.rel}", "STAGE_HASH_MISMATCH")
             self._emit(number, len(changes), "staged")
 
-    def apply(self, changes: list[Change], *, before_each=None, before_touch=None) -> None:
-        """Replace targets (final-swap files last). Any failure undoes exactly what was applied, then raises.
-        `before_touch(change)` runs before the target is first read (e.g. to let go of an in-use guard)."""
+    def apply(self, changes: list[Change], *, before_each=None) -> None:
+        """Replace targets (final-swap files last). Any failure undoes exactly what was applied, then raises."""
         ordered = self.order(changes)
         try:
             for number, change in enumerate(ordered, 1):
                 self.protected.assert_writable(change.rel)
-                if before_touch:
-                    before_touch(change)
-                if change.before_sha and (not change.target.exists() or sha256(change.target) != change.before_sha):
+                self._revalidate(change)
+                if change.before_sha and self._current(change.target) != change.before_sha:
                     raise ReleaseError(f"target changed after planning: {change.rel}", "TARGET_DRIFT")
                 if not change.before_sha and change.target.exists():
                     raise ReleaseError(f"a file appeared where a new one was planned: {change.rel}", "TARGET_DRIFT")
                 if before_each:
                     before_each(change)
                 self.applied.append(change)
-                os.replace(change.staged, change.target)
-                if sha256(change.target) != change.expected_sha:
+                self._swap(change.staged, change.target)
+                if self._current(change.target) != change.expected_sha:
                     raise ReleaseError(f"target hash mismatch after replace: {change.rel}", "TARGET_HASH_MISMATCH")
                 self._emit(number, len(ordered), "applied")
         except BaseException as failure:
@@ -549,8 +613,9 @@ class Transaction:
         for change in reversed(self.applied):
             try:
                 self.protected.assert_writable(change.rel)
+                self._revalidate(change)
                 if change.before_sha:
-                    if change.target.exists() and sha256(change.target) == change.before_sha:
+                    if self._current(change.target) == change.before_sha:
                         continue
                     restore = change.target.with_name(f"{change.target.name}.{uuid.uuid4().hex[:12]}.dcc-undo")
                     with open(change.saved, "rb") as src, open(restore, "wb") as dst:
@@ -559,11 +624,13 @@ class Transaction:
                     if sha256(restore) != change.before_sha:
                         restore.unlink(missing_ok=True)
                         raise ReleaseError("undo copy hash mismatch")
-                    os.replace(restore, change.target)
+                    self._swap(restore, change.target)
                 elif change.target.exists():
                     # only a file this transaction created, and only while it is still exactly what was written
-                    if sha256(change.target) != change.expected_sha:
+                    if self._current(change.target) != change.expected_sha:
                         raise ReleaseError("a new file was changed by someone else after it was written; not removed")
+                    if self.guard is not None:
+                        self.guard.release_for(change.target)
                     change.target.unlink()
             except Exception as exc:  # noqa: BLE001 - collect every failure, keep undoing the rest
                 errors.append(f"{change.rel}: {exc}")
@@ -699,8 +766,12 @@ def remove_tree(path: Path) -> None:
 
 def prune_backups(target: Path, config: dict, repo_name: str, keep_path: Path | None = None) -> dict:
     """Keep the newest `backup_retention` engine backups (always including `keep_path`). Only folders
-    listed by engine_backups can be removed; failures are reported, never raised."""
-    backups = engine_backups(target, config, repo_name)
+    listed by engine_backups can be removed; failures (also of the listing itself) are reported, never raised:
+    retention runs after the release is committed and must never turn it into a failure."""
+    try:
+        backups = engine_backups(target, config, repo_name)
+    except (OSError, ReleaseError, ValueError) as exc:
+        return {"kept": [], "removed": [], "errors": [f"backup listing failed: {exc}"]}
     keep = set(backups[-int(config.get("backup_retention", 5)):])
     if keep_path is not None:
         keep.add(keep_path)

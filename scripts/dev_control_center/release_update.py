@@ -63,6 +63,19 @@ def inflight_path(repo: Path) -> Path:
     return state_dir(repo) / "update-inflight.json"
 
 
+def distrust_path(repo: Path) -> Path:
+    return state_dir(repo) / "manifest-distrust.json"
+
+
+def distrust_manifest(repo: Path, manifest_sha: str | None, reason: str) -> None:
+    """A release manifest contradicted by live content is never used as a delta baseline again."""
+    if not manifest_sha:
+        return
+    data = _read_json(distrust_path(repo)) or {}
+    data[manifest_sha] = {"reason": reason, "at": datetime.now(timezone.utc).isoformat()}
+    write_json(distrust_path(repo), data)
+
+
 def plan_digest(body: dict) -> str:
     return hashlib.sha256(json.dumps({k: v for k, v in body.items() if k not in UNDIGESTED}, sort_keys=True,
                                      ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -206,6 +219,9 @@ def verify_production(repo: Path, target: Path, config: dict, repo_name: str) ->
                 reasons.append("manifest release id != DCC production record")
             if str(record.get("manifest_sha256", "")).upper() != manifest_sha:
                 reasons.append("manifest file hash != the one recorded at release (edited or replaced)")
+        distrusted = (_read_json(distrust_path(repo)) or {}).get(manifest_sha)
+        if distrusted:
+            reasons.append(f"manifest contradicted by live content earlier: {distrusted.get('reason')}")
         for rel in dict.fromkeys([*config["final_swap"], *([config["build_info"]] if config.get("build_info") else [])]):
             entry, path = entries.get(rel.lower()), safe_join(target, rel)
             if entry is None:
@@ -258,7 +274,8 @@ def compute_delta(target: Path, build: dict, production: dict, config: dict, pro
     files, hashed, hash_seconds, shortcut = [], 0, 0.0, 0
     for number, rel in enumerate(sorted(build), 1):
         item = {"path": rel, "size": build[rel]["size"], "build_sha256": build[rel]["sha256"],
-                "live_sha256": None, "live_stat": list(live[rel]) if live[rel] else None, "drift": False}
+                "live_sha256": None, "live_stat": list(live[rel]) if live[rel] else None, "drift": False,
+                "verified_by": None}
         prev = previous.get(prev_lower.get(rel.lower(), ""))
         if rel in colliding:
             item["category"] = "collision"  # a stop reason; never read or written
@@ -268,11 +285,13 @@ def compute_delta(target: Path, build: dict, production: dict, config: dict, pro
             if trusted and prev is None:
                 stop_reasons.append(f"PATH_COLLISION {rel}: an unmanaged file is where the build adds a new file")
             if trusted and prev and list(live[rel]) == [prev["size"], prev["mtime_ns"]]:
-                item["live_sha256"] = prev["sha256"]  # metadata equals the verified release: no read needed
+                item["live_sha256"] = prev["sha256"]  # metadata equals the verified release: not read at dry-run
+                item["verified_by"] = "metadata"      # (execute proves the content before any write)
                 shortcut += 1
             else:
                 started = time.monotonic()
                 item["live_sha256"] = sha256(safe_join(target, rel))
+                item["verified_by"] = "sha256"
                 hash_seconds += time.monotonic() - started
                 hashed += live[rel][0]
                 item["drift"] = bool(trusted and prev and item["live_sha256"] != prev["sha256"])
@@ -476,6 +495,18 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
         changes.append(Change(item["path"], safe_join(artifact, item["path"]), safe_join(target, item["path"]),
                               item["build_sha256"], item["live_sha256"] if item["category"] == "modified" else None))
     modified = [c for c in changes if c.before_sha]
+    # Files the dry-run judged unchanged from metadata alone (trusted manifest) are proved by content here,
+    # before anything is written: equal size + mtime is not proof that the bytes are the released ones.
+    # (modified files are proved by their verified backup copy in stage 4)
+    shortcut = [f for f in body["files"] if f.get("verified_by") == "metadata" and f["category"] == "unchanged"]
+    for number, item in enumerate(shortcut, 1):
+        if sha256(safe_join(target, item["path"])) != item["live_sha256"]:
+            distrust_manifest(repo, body["production"]["manifest_sha256"],
+                              f"{item['path']} differs from the manifest with equal size and mtime")
+            raise _stop(f"{item['path']} does not have the content the release manifest records although its size "
+                        "and mtime match. Nothing was changed. The manifest is no longer trusted: make a new dry-run "
+                        "(it verifies every managed file and repairs this one)", "UNCHANGED_CONTENT_MISMATCH")
+        progress.count(number, len(shortcut), "unchanged files verified (SHA-256)")
     listing = _scope(target, build, config)
     op_before = operational_snapshot(target, config, listing)
     critical_before = critical_hashes(target, op_before, config["critical"])
@@ -486,12 +517,10 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
     marker = {"release_id": body["release_id"], "plan_id": body["plan_id"], "target": str(target),
               "backup": str(save_root) if save_root else None, "started_at": datetime.now(timezone.utc).isoformat()}
     write_json(inflight_path(repo), marker)
+    guard = InUseGuard([safe_join(target, rel) for rel in config["in_use"]])
     # saved copies under files/ so no managed path can collide with the backup manifest itself
     transaction = Transaction(target, (save_root / "files") if save_root else target, protected,
-                              final=tuple(config["final_swap"]),
-                              progress=progress)
-    guard = InUseGuard([safe_join(target, rel) for rel in config["in_use"]])
-    in_use_names = {rel.lower() for rel in config["in_use"]}
+                              final=tuple(config["final_swap"]), progress=progress, guard=guard)
     try:
         progress.stage(4, f"{STAGES[3]}: {len(modified)} files -> {save_root or '(none)'}")
         if changes:
@@ -514,19 +543,18 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
         progress.stage(5, f"{STAGES[4]}: {len(changes)} files")
         transaction.stage(changes)
         try:
-            guard.acquire()  # from here until the final swap no PC can start the app
+            guard.acquire()  # launch barrier: held (except for the instant of its own swap) until the end
         except BaseException:
             transaction.cleanup(changes)
             transaction.remove_created_dirs()
             raise
         progress.stage(6, f"{STAGES[5]}: {len(changes)} files ({', '.join(config['final_swap'])} last)")
-        transaction.apply(changes, before_each=before_each,
-                          before_touch=lambda change: guard.release() if change.rel.lower() in in_use_names else None)
-        guard.release()
+        transaction.apply(changes, before_each=before_each)
 
         progress.stage(7, STAGES[6])
         try:
-            checks, detail = _final_checks(body, target, config, changes, listing, op_before, critical_before)
+            checks, detail = _final_checks(body, target, config, changes, listing, op_before, critical_before,
+                                           transaction._current)
         except Exception as exc:
             _undo_or_incomplete(transaction, save_root, f"final verification could not complete ({exc})")
             raise _stop(f"final verification could not complete ({exc}); the previous files were put back",
@@ -536,15 +564,14 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
         if not all(checks.values()):
             failed = [k for k, v in checks.items() if not v]
             _undo_or_incomplete(transaction, save_root, f"final verification failed ({failed})")
-            if any("operational" in k or "critical" in k for k in failed) and all(
-                    "operational" in k or "critical" in k for k in failed):
+            if all("operational" in k or "critical" in k for k in failed):
                 raise _stop("operational data changed during the update (not written by the engine; kept as it is). "
                             f"The application files were put back; nothing recorded: {detail['operational_diff']}",
                             "OPERATIONAL_CHANGED")
             raise _stop(f"final verification failed ({failed}); the previous files were put back", "VERIFY_FAILED")
 
-        manifest = _manifest_body(body, target, config, build)
         try:
+            manifest = _manifest_body(body, target, config, build)
             manifest_sha = write_manifest_atomic(target, config, manifest, body["repo_name"])
         except Exception as exc:
             _undo_or_incomplete(transaction, save_root, f"writing the release manifest failed ({exc})")
@@ -552,13 +579,20 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
                         "MANIFEST_WRITE") from exc
     except RollbackIncomplete:
         raise  # the inflight marker stays: the next plan stops until someone verified the target
-    except BaseException:
-        if not transaction.applied and save_root is not None and save_root.exists():
+    except BaseException as failure:
+        # Whatever failed after the first replace: undo again (idempotent: files already back are skipped).
+        # The marker is cleared only when nothing live is left changed.
+        if transaction.applied:
+            errors = transaction.undo()
+            if errors:
+                raise RollbackIncomplete(f"{failure}; ROLLBACK INCOMPLETE; recovery copies: {save_root}; "
+                                         + "; ".join(errors)) from failure
+        elif save_root is not None and save_root.exists():
             try:  # nothing live was changed: the partial backup holds only this update's copies
                 remove_tree(save_root)
             except (OSError, ReleaseError):
                 pass
-        inflight_path(repo).unlink(missing_ok=True)  # nothing applied, or everything applied was undone
+        inflight_path(repo).unlink(missing_ok=True)
         raise
     finally:
         guard.release()
@@ -573,7 +607,10 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
     if record:
         provenance.record_engine_release(repo, body, result, manifest)
     inflight_path(repo).unlink(missing_ok=True)
-    result["retention"] = prune_backups(target, config, body["repo_name"], keep_path=save_root)
+    try:  # committed: retention problems are warnings only
+        result["retention"] = prune_backups(target, config, body["repo_name"], keep_path=save_root)
+    except Exception as exc:  # noqa: BLE001
+        result["retention"] = {"kept": [], "removed": [], "errors": [str(exc)]}
     for error in result["retention"]["errors"]:
         progress.detail(f"NOTE backup retention: {error}")
     progress.detail(f"UPDATE complete: {len(changes)} files ({len(modified)} modified, "
@@ -587,14 +624,16 @@ def _undo_or_incomplete(transaction: Transaction, save_root, what: str) -> None:
         raise RollbackIncomplete(f"{what}; ROLLBACK INCOMPLETE; recovery copies: {save_root}; " + "; ".join(errors))
 
 
-def _final_checks(body, target, config, changes, listing_before, op_before, critical_before):
-    """Every post-update check; an exception here counts as a failed verification (the caller undoes)."""
+def _final_checks(body, target, config, changes, listing_before, op_before, critical_before, current=None):
+    """Every post-update check; an exception here counts as a failed verification (the caller undoes).
+    `current(path)` hashes a live file (through the launch barrier's handle when it holds that file)."""
+    current = current or sha256
     keys = config["build_info_keys"]
-    wrong = [c.rel for c in changes if not c.target.is_file() or sha256(c.target) != c.expected_sha]
+    wrong = [c.rel for c in changes if not c.target.is_file() or current(c.target) != c.expected_sha]
     unchanged = [f["path"] for f in body["files"] if f["category"] == "unchanged"]
     moved = [rel for rel, value in stat_files(target, unchanged).items()
              if (list(value) if value else None) != body["live_stats"].get(rel)]
-    final_ok = all(sha256(safe_join(target, rel)) == body["build_files"][_key(body["build_files"], rel)]["sha256"]
+    final_ok = all(current(safe_join(target, rel)) == body["build_files"][_key(body["build_files"], rel)]["sha256"]
                    for rel in config["final_swap"])
     checks = {"changed files equal the build (SHA-256)": not wrong,
               "unchanged files untouched": not moved,
@@ -604,7 +643,7 @@ def _final_checks(body, target, config, changes, listing_before, op_before, crit
         checks["live BUILD_INFO commit == new build"] = info.get(keys["commit"], "").lower() == body["provenance"]["base_head"]
         if keys.get("exe") and config["final_swap"]:
             checks["live EXE == BUILD_INFO EXE SHA-256"] = (
-                sha256(safe_join(target, config["final_swap"][-1])) == info.get(keys["exe"], "").upper())
+                current(safe_join(target, config["final_swap"][-1])) == info.get(keys["exe"], "").upper())
     listing = _scope(target, body["build_files"], config)
     after = operational_snapshot(target, config, listing)
     op_diff = metadata_diff(op_before, after)
