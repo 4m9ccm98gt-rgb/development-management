@@ -876,6 +876,146 @@ class TransactionTests(ReleaseCase):
         self.assertEqual(self.production()["commit"], body["provenance"]["base_head"])
         self.assertEqual(self.last_release()["returncode"], 0)
 
+    # ---- Astra review round 2
+
+    def test_hash_verified_unchanged_file_changed_after_the_dry_run_stops_before_any_write(self):
+        self.commit("v2")
+        self.build(self.v2(_internal__a_dat=b"changed"))
+        body = self.plan()                                 # no trusted manifest: b.dat was hashed at dry-run
+        item = next(f for f in body["files"] if f["path"] == "_internal/b.dat")
+        self.assertEqual((item["category"], item["verified_by"]), ("unchanged", "sha256"))
+        path = self.target / "_internal/b.dat"
+        stat = path.stat()
+        path.write_bytes(b"SAME")
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        before, production = tree(self.target), self.production()
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "UNCHANGED_CONTENT_MISMATCH")
+        self.assert_untouched_after_failure(before, production)
+
+    @unittest.skipUnless(os.name == "nt", "a real running image")
+    def test_a_really_running_exe_is_detected_and_can_not_start_while_held(self):
+        exe = self.target / "App.exe"
+        original = exe.read_bytes()
+        shutil.copyfile(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "PING.EXE", exe)
+        process = subprocess.Popen([str(exe), "-n", "30", "127.0.0.1"], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            time.sleep(0.5)
+            self.assertTrue(re_.in_use(exe))               # mapped image, no open handle: READ+WRITE probe sees it
+        finally:
+            process.kill()
+            process.wait()
+        self.assertFalse(re_.in_use(exe))
+        guard = re_.InUseGuard([exe])
+        guard.acquire()
+        try:
+            with self.assertRaises(OSError):               # the launch barrier really prevents a start
+                subprocess.Popen([str(exe), "-n", "1", "127.0.0.1"], stdout=subprocess.DEVNULL).wait()
+        finally:
+            guard.release()
+        exe.write_bytes(original)
+
+    @unittest.skipUnless(os.name == "nt", "share-mode semantics")
+    def test_failed_exe_swap_keeps_the_launch_barrier_during_undo(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", App_exe=b"exe-v2")
+        real_replace, real_undo = re_.os.replace, re_.Transaction.undo
+        seen = []
+
+        def replace(src, dst):
+            if Path(dst).name == "App.exe" and str(src).endswith(".dcc-stage"):
+                raise PermissionError("sharing violation during the swap")
+            return real_replace(src, dst)
+
+        def undo(self_):
+            try:
+                open(self.target / "App.exe", "rb").close()
+                seen.append("startable")
+            except PermissionError:
+                seen.append("held")
+            return real_undo(self_)
+
+        with mock.patch.object(re_.os, "replace", replace), mock.patch.object(re_.Transaction, "undo", undo), \
+             self.assertRaises(PermissionError):
+            self.execute(body)
+        self.assertEqual(seen[0], "held")
+        self.assert_untouched_after_failure(before, production)
+
+    @unittest.skipUnless(os.name == "nt", "share-mode semantics")
+    def test_app_started_right_after_the_swap_stops_the_rollback_instead_of_changing_files_under_it(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", App_exe=b"exe-v2")
+        real_replace = re_.os.replace
+        holder = {}
+
+        def replace(src, dst):
+            real_replace(src, dst)
+            if Path(dst).name == "App.exe" and str(src).endswith(".dcc-stage"):
+                holder["app"] = open(self.target / "App.exe", "rb")   # someone starts it in that instant
+
+        try:
+            with mock.patch.object(re_.os, "replace", replace), self.assertRaises(re_.RollbackIncomplete) as ctx:
+                self.execute(body)
+        finally:
+            holder["app"].close()
+        self.assertIn("launch barrier", str(ctx.exception))
+        self.assertTrue(ru.inflight_path(self.repo).exists())          # stays interrupted, explicitly
+        self.assertEqual(self.production(), production)
+
+    @unittest.skipUnless(os.name == "nt", "junctions")
+    def test_retention_never_deletes_through_a_backup_folder_swapped_for_a_junction(self):
+        import _winapi
+
+        backups = []
+        for number in range(2):
+            folder = self.target / "backup" / f"dcc_release_2026010{number}_000000_{number:012d}"
+            write(folder / "files" / "x", b"old")
+            write(folder / re_.BACKUP_MANIFEST, json.dumps({"kind": re_.BACKUP_KIND, "repo": "app",
+                                                            "complete": True}).encode())
+            backups.append(folder)
+        listed = re_.engine_backups(self.target, dict(self.config, backup_retention=1), "app")
+        shutil.rmtree(backups[0])                          # swapped after listing, before deletion
+        _winapi.CreateJunction(str(self.target / SAVE), str(backups[0]))
+        try:
+            with mock.patch.object(re_, "engine_backups", return_value=listed):
+                result = re_.prune_backups(self.target, dict(self.config, backup_retention=1), "app")
+            self.assertTrue(result["errors"])
+            self.assertEqual((self.target / SAVE / "20260927.json").read_bytes(), b"{day}")
+        finally:
+            os.rmdir(backups[0])
+
+    def test_candidate_record_failure_after_commit_keeps_the_release_and_is_retried(self):
+        self.commit("v2")
+        self.build(self.v2(_internal__a_dat=b"changed"))
+        head = git(self.repo, "rev-parse", "HEAD")
+        binding = {"expected_sha": head, "expected_branch": "main", "candidate_run_id": "run-1",
+                   "approval_at": "t", "run_dev_finished_at": "t"}
+        with mock.patch.object(provenance, "candidate_binding", return_value=binding), \
+             mock.patch.object(provenance, "_require_candidate_artifact"), \
+             mock.patch("scripts.dev_control_center.candidate.mark_deployed", side_effect=OSError("state locked")):
+            body = self.plan()
+            result = self.execute(body)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["warnings"])
+        self.assertEqual(self.last_release()["returncode"], 0)
+        self.assertEqual(self.production()["candidate_pending"]["run_id"], "run-1")
+        self.assertFalse(ru.inflight_path(self.repo).exists())
+        self.commit("v3")
+        self.build(self.v2(), "v3")
+        with mock.patch("scripts.dev_control_center.candidate.mark_deployed") as deployed:
+            self.plan()                                    # the next dry-run retries the follow-up
+        deployed.assert_called_once_with(self.repo.resolve(), head, "run-1", body["provenance"]["build_id"])
+        self.assertIsNone(self.production()["candidate_pending"])
+
+    def test_unreadable_revocation_state_fails_closed(self):
+        self.commit("v2")
+        self.build(self.v2())
+        write(provenance.revoked_path(self.repo), b"{not json")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.plan()
+        self.assertEqual(ctx.exception.code, "PROVENANCE")
+        self.assertIn("revoked.json", str(ctx.exception))
+
     def test_new_file_changed_by_someone_is_not_removed_by_undo(self):
         body, before, production = self.planned(_internal__n_dat=b"new", App_exe=b"exe-v2")
 

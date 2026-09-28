@@ -310,6 +310,22 @@ class ExecuteTests(RestoreCase):
         self.assertEqual(ctx.exception.code, "LOCKED")
         self.assertEqual(tree(self.target), before)
 
+    @unittest.skipUnless(os.name == "nt", "share-mode semantics")
+    def test_the_app_can_not_start_while_the_restore_replaces_files(self):
+        body = self.plan()
+        blocked = []
+
+        def try_to_start(change):
+            try:
+                open(self.target / "DinnerSystem.exe", "rb").close()
+                blocked.append(False)
+            except PermissionError:
+                blocked.append(True)
+
+        self.execute(body, before_each=try_to_start)
+        self.assertTrue(blocked and all(blocked))          # launch barrier held across every replacement
+        open(self.target / "DinnerSystem.exe", "rb").close()   # and released afterwards
+
     def assert_back_to_pre_restore(self, before):
         after = tree(self.target)
         for rel, (data, _) in before.items():

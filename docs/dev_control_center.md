@@ -87,7 +87,7 @@ next-day-setup: managed = `DinnerSystem.exe`・`_internal/**`・直下の `*.txt
 | [2/7] Production | DCCの `production.json` のcommit == 配布先の `BUILD_INFO`（違えば `PRODUCTION_MISMATCH` で停止）、配布先が失効SHAなら停止。release manifestの信頼判定（下記） |
 | [3/7] Delta | 管理対象だけを比較。unchanged / modified / new / 削除候補 / retained（管理対象外）/ protected に分類 |
 | [4/7] Backup | modifiedだけを `backup/dcc_release_<日時>_<release id>/files/` へ退避しSHA-256照合、同フォルダに `backup_manifest.json`（release id、source commit、置換前の本番commit、modified: 旧hash・新hash・backup hash、new: 新hash、日時）を記録。newは元が無いので退避不要 |
-| [5/7] Staging | 全変更を配布先の同じフォルダへstageしSHA-256照合。ここまでliveファイルは不変。その後、起動防止としてEXEを共有なしで開いて保持し（内容はその保持handle経由でhash）、どのPCからも起動できない状態にする（起動済みなら `IN_USE` で停止） |
+| [5/7] Staging | 全変更を配布先の同じフォルダへstageしSHA-256照合。ここまでliveファイルは不変。その後、起動防止としてEXEを読み書き・共有なしで開いて保持し（内容はその保持handle経由でhash）、どのPCからも起動できない状態にする。起動中のEXEはimageとしてmapされ共有制限付きhandleを持たないため、使用中確認も「読み書き・共有なし」で開けるかで判定します（読み取りだけでは実行中を検出できない。実プロセスでテスト済み）。起動済みなら `IN_USE` で停止 |
 | [6/7] Apply | EXE以外 → `BUILD_INFO.txt` → EXEの順に置換。起動防止はEXE自身を置き換える瞬間だけ外し、置換直後に新EXEで取り直して最終検証・巻き戻しの間も保持。各書き込みの直前にパスを再検証（途中でjunction等に差し替えられたフォルダへは書かない）。失敗時は今回置換したものだけを逆順に検証済み退避から戻し、今回追加したファイル（内容が書いた時のままのものだけ）と作ったフォルダを削除 |
 | [7/7] Final | 変更ファイルのSHA-256、unchangedファイルのstat不変、final-swapファイル、配布先BUILD_INFO == 新BUILD、EXE == BUILD_INFO、critical SHA-256不変、運用データのメタデータ不変、stage残骸なし、hook。失敗 → 巻き戻し（運用データの変化は `OPERATIONAL_CHANGED`: アプリファイルだけ戻しデータは残す） |
 
@@ -104,7 +104,7 @@ next-day-setup: managed = `DinnerSystem.exe`・`_internal/**`・直下の `*.txt
 - manifestファイル自体のSHA-256 == `production.json` の `manifest_sha256`（UPDATE成功時に記録。編集・差し替えを検出）
 - 配布先のEXEと `BUILD_INFO.txt` の実SHA-256 == manifest、EXE == `BUILD_INFO` のEXE SHA-256
 
-metadataだけで「変更なし」と判定したファイルも、executeでは書き込み前に実SHA-256で確認します（dry-runは速いまま、中身の保証はexecuteで取る）。size・mtimeを戻した改変が見つかれば何も書かずに `UNCHANGED_CONTENT_MISMATCH` で止め、そのmanifestを以後信頼しません（`manifest-distrust.json`。次のdry-runは全管理ファイルを検証して修復対象にする）。modifiedは退避時に実SHA-256で照合します（`SAVE_HASH_MISMATCH`）。manifestの組み立て・書き込みを含め、最初の置換以後のどんな失敗でも巻き戻し、完全に戻せた時だけ中断マーカーを消します。backup保持処理の失敗は、確定済みのreleaseを失敗にしない警告です。
+「変更なし」のファイルは、dry-runでの判定方法（metadata / hash）にかかわらず、executeで書き込み前に全て実SHA-256で確認します（dry-runは速いまま、中身の保証はexecuteで取る。新しいmanifestにはこのexecuteで確認した内容だけが載る）。size・mtimeを戻した改変が見つかれば何も書かずに `UNCHANGED_CONTENT_MISMATCH` で止め、metadataで判定していた場合はそのmanifestを以後信頼しません（`manifest-distrust.json`。次のdry-runは全管理ファイルを検証して修復対象にする）。起動防止は置換に失敗したEXEでも取り直し、巻き戻しは起動防止を取り直せた時だけ行います（取れなければ書かずに `ROLLBACK_INCOMPLETE`・中断状態）。restoreも同じ起動防止を使います。失効SHAの記録（`revoked.json`・candidate状態）が読めない・形式不正ならUPDATEを止めます（fail closed）。production.json確定後のcandidate記録の失敗はreleaseを失敗にせず、`candidate_pending` として次のdry-runで再試行します。古いbackupの削除は、削除直前にそのフォルダと親をreparse pointでないか再検証します。modifiedは退避時に実SHA-256で照合します（`SAVE_HASH_MISMATCH`）。manifestの組み立て・書き込みを含め、最初の置換以後のどんな失敗でも巻き戻し、完全に戻せた時だけ中断マーカーを消します。backup保持処理の失敗は、確定済みのreleaseを失敗にしない警告です。
 
 **削除候補**: 信頼済みmanifestで管理対象だったのに新BUILDに無く、配布先に残っているファイルだけ。dry-runは停止理由とし、削除は決してしません。DCCで「管理対象外として残す」を選ぶとdry-runをやり直し（`--acknowledge-orphans`）、以後は通常の管理対象外ファイルになります。配布先だけにある未知のファイル・運用データは一覧表示して残し、停止理由にしません。ただし信頼済みmanifestがあり、新BUILDが新規に置くパスに管理外のファイルがある、または管理対象パスにフォルダがある / 親がファイルの場合は `PATH_COLLISION` で停止します。前回の中断で残ったstageファイル（`.dcc-stage` / `.dcc-undo`）があれば停止します。
 

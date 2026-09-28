@@ -325,15 +325,20 @@ class ExclusiveLock:
         return False
 
 
+PROBE_ACCESS = 0x80000000 | 0x40000000  # GENERIC_READ | GENERIC_WRITE, opened with OPEN_EXISTING (never truncates)
+
+
 def in_use(path: Path) -> bool:
-    """True when some process (on any PC using the share) has `path` open, e.g. a running EXE."""
+    """True when some process (on any PC using the share) has `path` open or is running it. A running EXE is
+    mapped as an image and keeps no sharing-restricted handle, so an exclusive READ open would still succeed;
+    WRITE access is refused for a mapped image, so the probe asks for read + write with no sharing."""
     if not path.exists():
         return False
     if os.name == "nt":
         import _winapi
 
         try:
-            handle = _winapi.CreateFile(str(path), 0x80000000, 0, 0, 3, 0x80, 0)  # GENERIC_READ, share none
+            handle = _winapi.CreateFile(str(path), PROBE_ACCESS, 0, 0, 3, 0x80, 0)  # share none, OPEN_EXISTING
         except OSError:
             return True
         _winapi.CloseHandle(handle)
@@ -404,7 +409,7 @@ class InUseGuard:
             return
         import _winapi
 
-        handle = _winapi.CreateFile(str(path), 0x80000000, 0, 0, 3, 0x80, 0)  # GENERIC_READ, share none
+        handle = _winapi.CreateFile(str(path), PROBE_ACCESS, 0, 0, 3, 0x80, 0)  # see in_use(): detects a running image
         digest = hashlib.sha256()
         try:
             while True:
@@ -438,6 +443,14 @@ class InUseGuard:
                 self._take(key, path)
             except OSError as exc:
                 raise ReleaseError(f"{path.name} was opened by someone right after it was replaced", "IN_USE") from exc
+
+    def ensure(self) -> None:
+        """Every covered file that exists is held (again). Raises IN_USE when one can not be taken."""
+        for key, path in self.paths.items():
+            try:
+                self._take(key, path)
+            except OSError as exc:
+                raise ReleaseError(f"{path.name} is open or running on some PC", "IN_USE") from exc
 
     def release(self) -> None:
         for key in list(self._handles):
@@ -511,11 +524,15 @@ class Transaction:
 
     def _swap(self, source: Path, target: Path) -> None:
         """os.replace, letting go of the launch barrier only for the instant of the swap of that one file."""
-        if self.guard is not None:
-            self.guard.release_for(target)
-        os.replace(source, target)
-        if self.guard is not None and self.guard.covers(target):
-            self.guard.retake(target)
+        if self.guard is None:
+            os.replace(source, target)
+            return
+        self.guard.release_for(target)
+        try:
+            os.replace(source, target)
+        finally:  # the new file on success, the surviving old one when the replace failed
+            if self.guard.covers(target):
+                self.guard.retake(target)
 
     def order(self, changes: list[Change]) -> list[Change]:
         final = [f.lower() for f in self.final]
@@ -610,6 +627,12 @@ class Transaction:
 
     def undo(self) -> list[str]:
         errors = []
+        if self.applied and self.guard is not None:
+            try:  # no rollback write while the application could start (or is running) on some PC
+                self.guard.ensure()
+            except ReleaseError as exc:
+                return [f"launch barrier could not be re-established ({exc}); rollback stopped so that no file "
+                        "changes under a running application"]
         for change in reversed(self.applied):
             try:
                 self.protected.assert_writable(change.rel)
@@ -751,7 +774,9 @@ def engine_backups(target: Path, config: dict, repo_name: str) -> list[Path]:
 
 
 def remove_tree(path: Path) -> None:
-    """Delete one engine backup folder; refuses (before deleting anything) if it contains a reparse point."""
+    """Delete one engine backup folder; refuses (before deleting anything) if it is, or contains, a reparse point."""
+    if _is_reparse(path) or not path.is_dir():
+        raise ReleaseError(f"not a plain backup folder; not removed: {path}", "PATH_REPARSE")
     for folder, dirs, files in os.walk(path):
         for name in dirs + files:
             if _is_reparse(Path(folder) / name):
@@ -780,7 +805,9 @@ def prune_backups(target: Path, config: dict, repo_name: str, keep_path: Path | 
         if path in keep:
             continue
         try:
-            remove_tree(path)
+            # re-derived from the target immediately before deleting: root and every ancestor re-checked
+            fresh = safe_join(target, f"{config.get('backup_dir', 'backup')}/{path.name}")
+            remove_tree(fresh)
             removed.append(path.name)
         except (OSError, ReleaseError) as exc:
             errors.append(f"{path.name}: {exc}")

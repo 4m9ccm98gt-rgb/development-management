@@ -23,7 +23,7 @@ import sys
 import time
 
 from .release_engine import (
-    REGISTRY, Change, LockSet, Progress, ReleaseError, RollbackIncomplete, Transaction, critical_hashes, in_use,
+    REGISTRY, Change, InUseGuard, LockSet, Progress, ReleaseError, RollbackIncomplete, Transaction, critical_hashes, in_use,
     metadata_diff, now_stamp, operational_snapshot, protected_of, read_key_values, release_config, safe_join,
     sha256, stat_files, write_json,
 )
@@ -239,48 +239,59 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
 
         from_commit = (body.get("current_build_info") or {}).get("Git commit SHA", "unknown")[:12]
         save_root = safe_join(target, f"backup/rollback_before_{now_stamp()}_{from_commit}")
-        transaction = Transaction(target, save_root, protected, commit_file=exe, progress=progress)
-        progress.stage(3, f"Saving the {sum(1 for c in changes if c.before_sha)} current files -> {save_root}")
-        transaction.save(changes)
-        write_json(save_root / "rollback_manifest.json", {
-            "plan_id": body["plan_id"], "from_build_info": body.get("current_build_info"),
-            "to_commit": body["restore_commit"], "to_version": body["restore_version"], "created_at": now_stamp(),
-            "files": [{"path": c.rel, "saved_sha256": c.before_sha, "restored_sha256": c.expected_sha} for c in changes]})
-        progress.stage(4, "Staging verified copies from the backup")
-        transaction.stage(changes)
-        progress.stage(5, f"Replacing {len(changes)} files ({exe} last)")
-        transaction.apply(changes, before_each=before_each)
-
-        progress.stage(6, "Final verification")
+        guard = InUseGuard([safe_join(target, rel) for rel in config.get("in_use", [exe])])
+        transaction = Transaction(target, save_root, protected, commit_file=exe, progress=progress, guard=guard)
         try:
-            checks, info, mismatched, exe_sha, op_diff = _final_checks(target, body, config, candidates, before,
-                                                                       critical_before)
-        except Exception as exc:  # a verification that can not complete counts as failed: undo our changes
-            errors = transaction.undo()
-            if errors:
-                raise RollbackIncomplete(f"final verification could not complete ({exc}); ROLLBACK INCOMPLETE; "
-                                         f"recovery copies: {save_root}; " + "; ".join(errors)) from exc
-            raise ReleaseError(f"final verification could not complete ({exc}); the pre-restore files were put back",
-                               "VERIFY_FAILED") from exc
-        for name, ok in checks.items():
-            progress.detail(f"{'OK ' if ok else 'NG '} {name}")
-        result = {"ok": all(checks.values()), "checks": checks, "mismatched": mismatched, "operational_diff": op_diff,
-                  "saved": str(save_root), "exe_sha256": exe_sha, "deployed_commit": info.get("Git commit SHA")}
-        if not result["ok"]:
-            # Never leave a restore applied but unrecorded: whatever failed, put back exactly the application
-            # files this transaction replaced (operational data was never written and is left as it is now).
-            failed = [k for k, v in checks.items() if not v]
-            app_failed = [k for k in failed if "operational" not in k and "critical" not in k]
-            errors = transaction.undo()
-            if errors:
-                raise RollbackIncomplete(f"final verification failed ({failed}); ROLLBACK INCOMPLETE; "
-                                         f"recovery copies: {save_root}; " + "; ".join(errors))
-            if app_failed:
-                raise ReleaseError(f"final verification failed ({app_failed}); the pre-restore files were put back",
-                                   "VERIFY_FAILED")
-            raise ReleaseError("operational data changed during the restore (not written by this tool; it is kept as "
-                               f"it is). The application files were put back; nothing recorded: {failed} {op_diff}",
-                               "OPERATIONAL_CHANGED")
+            progress.stage(3, f"Saving the {sum(1 for c in changes if c.before_sha)} current files -> {save_root}")
+            transaction.save(changes)
+            write_json(save_root / "rollback_manifest.json", {
+                "plan_id": body["plan_id"], "from_build_info": body.get("current_build_info"),
+                "to_commit": body["restore_commit"], "to_version": body["restore_version"], "created_at": now_stamp(),
+                "files": [{"path": c.rel, "saved_sha256": c.before_sha, "restored_sha256": c.expected_sha} for c in changes]})
+            progress.stage(4, "Staging verified copies from the backup")
+            transaction.stage(changes)
+            try:
+                guard.acquire()  # launch barrier until the restore is verified (or undone)
+            except BaseException:
+                transaction.cleanup(changes)
+                transaction.remove_created_dirs()
+                raise
+            progress.stage(5, f"Replacing {len(changes)} files ({exe} last)")
+            transaction.apply(changes, before_each=before_each)
+
+            progress.stage(6, "Final verification")
+            try:
+                checks, info, mismatched, exe_sha, op_diff = _final_checks(target, body, config, candidates, before,
+                                                                           critical_before, transaction._current)
+            except Exception as exc:  # a verification that can not complete counts as failed: undo our changes
+                errors = transaction.undo()
+                if errors:
+                    raise RollbackIncomplete(f"final verification could not complete ({exc}); ROLLBACK INCOMPLETE; "
+                                             f"recovery copies: {save_root}; " + "; ".join(errors)) from exc
+                raise ReleaseError(f"final verification could not complete ({exc}); the pre-restore files were put back",
+                                   "VERIFY_FAILED") from exc
+            for name, ok in checks.items():
+                progress.detail(f"{'OK ' if ok else 'NG '} {name}")
+            result = {"ok": all(checks.values()), "checks": checks, "mismatched": mismatched, "operational_diff": op_diff,
+                      "saved": str(save_root), "exe_sha256": exe_sha, "deployed_commit": info.get("Git commit SHA")}
+            if not result["ok"]:
+                # Never leave a restore applied but unrecorded: whatever failed, put back exactly the application
+                # files this transaction replaced (operational data was never written and is left as it is now).
+                failed = [k for k, v in checks.items() if not v]
+                app_failed = [k for k in failed if "operational" not in k and "critical" not in k]
+                errors = transaction.undo()
+                if errors:
+                    raise RollbackIncomplete(f"final verification failed ({failed}); ROLLBACK INCOMPLETE; "
+                                             f"recovery copies: {save_root}; " + "; ".join(errors))
+                if app_failed:
+                    raise ReleaseError(f"final verification failed ({app_failed}); the pre-restore files were put back",
+                                       "VERIFY_FAILED")
+                raise ReleaseError("operational data changed during the restore (not written by this tool; it is kept as "
+                                   f"it is). The application files were put back; nothing recorded: {failed} {op_diff}",
+                                   "OPERATIONAL_CHANGED")
+
+        finally:
+            guard.release()
 
     progress.stage(7, "Recording the deployed state in DCC")
     if dcc_repo is not None:
@@ -289,15 +300,18 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
     return result
 
 
-def _final_checks(target: Path, body: dict, config: dict, candidates: set, before: dict, critical_before: dict):
-    """Every post-restore check; any exception here is treated by the caller as a failed verification."""
+def _final_checks(target: Path, body: dict, config: dict, candidates: set, before: dict, critical_before: dict,
+                  current=None):
+    """Every post-restore check; any exception here is treated by the caller as a failed verification.
+    `current(path)` hashes a live file (through the launch barrier's handle when it holds that file)."""
+    current = current or sha256
     exe = config["commit_file"]
     mismatched = sorted(rel for rel, h in body["expected"]["all_candidates"].items()
-                        if not safe_join(target, rel).is_file() or sha256(safe_join(target, rel)) != h)
+                        if not safe_join(target, rel).is_file() or current(safe_join(target, rel)) != h)
     info = read_key_values(target / config.get("build_info", "BUILD_INFO.txt"))
     manifest = json.loads((target / config.get("deploy_manifest", "DEPLOY_MANIFEST.json")).read_text(encoding="utf-8-sig"))
     manifest_exe = next((e["sha256"].upper() for e in manifest["files"] if e["path"] == exe), None)
-    exe_sha = sha256(safe_join(target, exe))
+    exe_sha = current(safe_join(target, exe))
     after = {r: v for r, v in operational_snapshot(target, config).items() if r not in candidates}
     op_diff = metadata_diff(before, after)
     critical_after = _critical(target, after, config.get("critical", []))

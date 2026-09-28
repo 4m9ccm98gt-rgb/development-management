@@ -115,17 +115,39 @@ def record_engine_release(repo: Path, body: dict, result: dict, manifest: dict) 
     write_json(folder / f"release-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{record['build_id'][:8]}.json", record)
     write_json(folder / "releases" / f"{body['release_id']}.manifest.json", manifest)
     write_json(release_record_path(repo), record)
-    write_json(production_record_path(repo), {
+    binding = body["provenance"].get("binding") or {}
+    production = {
         "schema": 1, "commit": record["base_head"], "version": record["version"], "build_id": record["build_id"],
         "how": "DCC UPDATE（共通engine・差分）", "target": body["target"], "at": record["finished_at"],
         "release_id": body["release_id"], "manifest_sha256": result["manifest_sha256"],
-        "exe_sha256": (manifest.get("artifact") or {}).get("exe_sha256")})
-    binding = body["provenance"].get("binding") or {}
-    if binding:
+        "exe_sha256": (manifest.get("artifact") or {}).get("exe_sha256"),
+        "candidate_pending": ({"sha": binding["expected_sha"], "run_id": binding["candidate_run_id"],
+                               "build_id": record["build_id"]} if binding else None)}
+    write_json(production_record_path(repo), production)  # the commit point of the DCC records
+    record["warnings"] = reconcile_candidate(repo)
+    return record
+
+
+def reconcile_candidate(repo: Path) -> list[str]:
+    """Idempotent follow-up of a committed release: end the deployed candidate's lifecycle. A failure here
+    never un-commits the release; it stays pending in production.json and is retried by the next dry-run."""
+    path = production_record_path(repo)
+    try:
+        production = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    pending = production.get("candidate_pending")
+    if not pending:
+        return []
+    try:
         from . import candidate as candidate_flow
 
-        candidate_flow.mark_deployed(repo, binding["expected_sha"], binding["candidate_run_id"], record["build_id"])
-    return record
+        candidate_flow.mark_deployed(repo, pending["sha"], pending["run_id"], pending["build_id"])
+        production["candidate_pending"] = None
+        write_json(path, production)
+        return []
+    except Exception as exc:  # noqa: BLE001 - reported, retried later
+        return [f"candidate state not yet marked deployed (retried by the next dry-run): {exc}"]
 
 
 def _migrate_confirmed_production(repo: Path) -> None:

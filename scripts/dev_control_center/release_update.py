@@ -332,6 +332,8 @@ def plan(repo: Path, target: Path, *, branch: str = "main", repo_name: str | Non
         raise _stop(f"a previous UPDATE did not finish (release {str(marker.get('release_id', '?'))[:12]}, target "
                     f"{marker.get('target')}, recovery copies {marker.get('backup')}). Verify the target, restore it "
                     "if needed, then clear the marker (release_update clear-interrupted)", "INTERRUPTED")
+    for warning in provenance.reconcile_candidate(repo):  # retry the follow-up of an earlier committed release
+        progress.detail(f"NOTE {warning}")
 
     t = time.monotonic()
     progress.stage(1, STAGES[0])
@@ -495,18 +497,20 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
         changes.append(Change(item["path"], safe_join(artifact, item["path"]), safe_join(target, item["path"]),
                               item["build_sha256"], item["live_sha256"] if item["category"] == "modified" else None))
     modified = [c for c in changes if c.before_sha]
-    # Files the dry-run judged unchanged from metadata alone (trusted manifest) are proved by content here,
-    # before anything is written: equal size + mtime is not proof that the bytes are the released ones.
+    # Every file planned as unchanged is proved by content here, before anything is written, however the
+    # dry-run judged it (metadata shortcut, or a hash that may be old by now: equal size + mtime is not proof
+    # of the bytes). The new manifest then records only content verified in this execute.
     # (modified files are proved by their verified backup copy in stage 4)
-    shortcut = [f for f in body["files"] if f.get("verified_by") == "metadata" and f["category"] == "unchanged"]
-    for number, item in enumerate(shortcut, 1):
+    unchanged = [f for f in body["files"] if f["category"] == "unchanged"]
+    for number, item in enumerate(unchanged, 1):
         if sha256(safe_join(target, item["path"])) != item["live_sha256"]:
-            distrust_manifest(repo, body["production"]["manifest_sha256"],
-                              f"{item['path']} differs from the manifest with equal size and mtime")
-            raise _stop(f"{item['path']} does not have the content the release manifest records although its size "
-                        "and mtime match. Nothing was changed. The manifest is no longer trusted: make a new dry-run "
-                        "(it verifies every managed file and repairs this one)", "UNCHANGED_CONTENT_MISMATCH")
-        progress.count(number, len(shortcut), "unchanged files verified (SHA-256)")
+            if item.get("verified_by") == "metadata":
+                distrust_manifest(repo, body["production"]["manifest_sha256"],
+                                  f"{item['path']} differs from the manifest with equal size and mtime")
+            raise _stop(f"{item['path']} does not have the content the dry-run found although its size and mtime "
+                        "match. Nothing was changed. Make a new dry-run (a contradicted manifest is no longer trusted; "
+                        "every managed file is then verified and this one repaired)", "UNCHANGED_CONTENT_MISMATCH")
+        progress.count(number, len(unchanged), "unchanged files verified (SHA-256)")
     listing = _scope(target, build, config)
     op_before = operational_snapshot(target, config, listing)
     critical_before = critical_hashes(target, op_before, config["critical"])
@@ -605,7 +609,16 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
               "operational_diff": detail["operational_diff"], "version": manifest["version"],
               "seconds": round(time.monotonic() - started, 1)}
     if record:
-        provenance.record_engine_release(repo, body, result, manifest)
+        try:
+            result["warnings"] = provenance.record_engine_release(repo, body, result, manifest).get("warnings", [])
+        except Exception as exc:  # before production.json was written: nothing is confirmed, the marker stays
+            if (_read_json(provenance.production_record_path(repo)) or {}).get("release_id") != body["release_id"]:
+                raise _stop(f"the update was applied and verified (release {body['release_id'][:12]}) but DCC could "
+                            f"not record it ({exc}); the interrupted marker stays until someone reconciles it",
+                            "RECORD_FAILED") from exc
+            result["warnings"] = [f"DCC follow-up record failed after the release was committed: {exc}"]
+        for warning in result["warnings"]:
+            progress.detail(f"NOTE {warning}")
     inflight_path(repo).unlink(missing_ok=True)
     try:  # committed: retention problems are warnings only
         result["retention"] = prune_backups(target, config, body["repo_name"], keep_path=save_root)

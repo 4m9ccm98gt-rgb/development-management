@@ -262,14 +262,24 @@ def revoked_shas(repo: Path) -> set[str]:
     states plus the revoked list written by every rollback (independent of the latest release attempt)."""
     from .provenance import revoked_path
 
+    # Fails closed: a state file that exists but can not be read or has the wrong shape is never taken as
+    # "nothing revoked" (only a file that does not exist is).
     result = set()
     folder = dcc_root() / "candidates" / _repo_key(Path(repo).resolve())
     for path in folder.glob("*.json") if folder.is_dir() else []:
-        data = _read_json(path) or {}
+        data = _read_json(path)
+        if data is None:
+            raise CandidateError(f"candidate state unreadable: {path}（失効SHAを確認できないため停止）", "STATE_UNREADABLE")
         if data.get("rolled_back") and data.get("candidate_sha"):
             result.add(str(data["candidate_sha"]).lower())
-    for item in (_read_json(revoked_path(Path(repo).resolve())) or {}).get("revoked", []):
-        result.add(str(item.get("sha", "")).lower())
+    path = revoked_path(Path(repo).resolve())
+    if path.exists():
+        data = _read_json(path)
+        items = data.get("revoked") if data is not None else None
+        if not isinstance(items, list) or not all(isinstance(i, dict) and isinstance(i.get("sha"), str) for i in items):
+            raise CandidateError(f"revoked.json unreadable or invalid: {path}（失効SHAを確認できないため停止）",
+                                 "STATE_UNREADABLE")
+        result.update(i["sha"].lower() for i in items)
     result.discard("")
     return result
 
