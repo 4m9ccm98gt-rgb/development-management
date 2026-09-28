@@ -1016,6 +1016,59 @@ class TransactionTests(ReleaseCase):
         self.assertEqual(ctx.exception.code, "PROVENANCE")
         self.assertIn("revoked.json", str(ctx.exception))
 
+    # ---- Astra review round 3
+
+    @unittest.skipUnless(os.name == "nt", "junctions")
+    def test_failure_cleanup_never_deletes_through_a_replaced_backup_root(self):
+        import _winapi
+
+        body, before, production = self.planned(_internal__a_dat=b"changed")
+        outside = self.root / "outside"
+        real_stage = re_.Transaction._stage
+
+        def swap_root_then_fail(self_, changes):
+            generation = Path(self_.save_root).parent.name
+            write(outside / generation / "precious.txt", b"not the engine's")
+            os.rename(self.target / "backup", self.target / "backup_moved")
+            _winapi.CreateJunction(str(outside), str(self.target / "backup"))
+            raise OSError("disk full while staging")
+
+        try:
+            with mock.patch.object(re_.Transaction, "_stage", swap_root_then_fail), self.assertRaises(OSError):
+                self.execute(body)
+            generation = next(outside.iterdir()).name
+            self.assertEqual((outside / generation / "precious.txt").read_bytes(), b"not the engine's")
+        finally:
+            if (self.target / "backup").exists():
+                os.rmdir(self.target / "backup")
+        self.assertEqual(real_stage, re_.Transaction._stage)
+
+    @unittest.skipUnless(os.name == "nt", "share-mode semantics")
+    def test_rollback_stops_when_the_barrier_is_lost_during_the_exe_undo(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", App_exe=b"exe-v2")
+        real_replace, real_checks = re_.os.replace, ru._final_checks
+        holder = {}
+
+        def replace(src, dst):
+            real_replace(src, dst)
+            if Path(dst).name == "App.exe" and str(src).endswith(".dcc-undo"):
+                holder["app"] = open(self.target / "App.exe", "rb")   # started right after the EXE was put back
+
+        def failing_checks(*args, **kwargs):
+            checks, detail = real_checks(*args, **kwargs)
+            return dict(checks, **{"forced failure": False}), detail
+
+        try:
+            with mock.patch.object(re_.os, "replace", replace), mock.patch.object(ru, "_final_checks", failing_checks), \
+                 self.assertRaises(re_.RollbackIncomplete) as ctx:
+                self.execute(body)
+        finally:
+            holder["app"].close()
+        self.assertIn("launch barrier", str(ctx.exception))
+        self.assertEqual((self.target / "_internal/a.dat").read_bytes(), b"changed")   # not changed under the app
+        self.assertTrue(ru.inflight_path(self.repo).exists())
+        self.assertEqual(self.production(), production)
+
     def test_new_file_changed_by_someone_is_not_removed_by_undo(self):
         body, before, production = self.planned(_internal__n_dat=b"new", App_exe=b"exe-v2")
 

@@ -627,13 +627,14 @@ class Transaction:
 
     def undo(self) -> list[str]:
         errors = []
-        if self.applied and self.guard is not None:
-            try:  # no rollback write while the application could start (or is running) on some PC
-                self.guard.ensure()
-            except ReleaseError as exc:
-                return [f"launch barrier could not be re-established ({exc}); rollback stopped so that no file "
-                        "changes under a running application"]
         for change in reversed(self.applied):
+            if self.guard is not None:
+                try:  # before EVERY rollback write: no file changes while the application could run on some PC
+                    self.guard.ensure()
+                except ReleaseError as exc:
+                    errors.append(f"launch barrier could not be re-established ({exc}); rollback stopped at "
+                                  f"{change.rel} so that no file changes under a running application")
+                    break
             try:
                 self.protected.assert_writable(change.rel)
                 self._revalidate(change)
@@ -655,6 +656,12 @@ class Transaction:
                     if self.guard is not None:
                         self.guard.release_for(change.target)
                     change.target.unlink()
+            except ReleaseError as exc:
+                errors.append(f"{change.rel}: {exc}")
+                if exc.code == "IN_USE":  # the barrier was lost at this very swap: stop, change nothing more
+                    errors.append("launch barrier lost during rollback; rollback stopped so that no file changes "
+                                  "under a running application")
+                    break
             except Exception as exc:  # noqa: BLE001 - collect every failure, keep undoing the rest
                 errors.append(f"{change.rel}: {exc}")
         if not errors:
@@ -789,6 +796,14 @@ def remove_tree(path: Path) -> None:
     os.rmdir(path)
 
 
+def remove_backup(target: Path, config: dict, name: str) -> None:
+    """The only way the engine deletes a backup generation: the path is re-derived from the target immediately
+    before deleting (backup root and every ancestor re-checked for reparse points), never taken from a cache."""
+    if not name.startswith(BACKUP_PREFIX) or "/" in name or "\\" in name:
+        raise ReleaseError(f"not an engine backup: {name}", "PATH_INVALID")
+    remove_tree(safe_join(target, f"{config.get('backup_dir', 'backup')}/{name}"))
+
+
 def prune_backups(target: Path, config: dict, repo_name: str, keep_path: Path | None = None) -> dict:
     """Keep the newest `backup_retention` engine backups (always including `keep_path`). Only folders
     listed by engine_backups can be removed; failures (also of the listing itself) are reported, never raised:
@@ -805,9 +820,7 @@ def prune_backups(target: Path, config: dict, repo_name: str, keep_path: Path | 
         if path in keep:
             continue
         try:
-            # re-derived from the target immediately before deleting: root and every ancestor re-checked
-            fresh = safe_join(target, f"{config.get('backup_dir', 'backup')}/{path.name}")
-            remove_tree(fresh)
+            remove_backup(target, config, path.name)
             removed.append(path.name)
         except (OSError, ReleaseError) as exc:
             errors.append(f"{path.name}: {exc}")

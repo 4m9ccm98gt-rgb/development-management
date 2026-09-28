@@ -326,6 +326,45 @@ class ExecuteTests(RestoreCase):
         self.assertTrue(blocked and all(blocked))          # launch barrier held across every replacement
         open(self.target / "DinnerSystem.exe", "rb").close()   # and released afterwards
 
+    def rollback_record_inputs(self, from_commit, to_commit):
+        body = {"target": str(self.target), "restore_commit": to_commit, "restore_version": "v1.4.0",
+                "backup": str(self.backup), "plan_id": "p" * 64,
+                "current_build_info": {"Git commit SHA": from_commit}}
+        return body, {"exe_sha256": sha(b"exe-v140"), "saved": "saved"}
+
+    def test_a_failed_revoked_json_write_never_makes_the_restored_away_sha_deployable(self):
+        from scripts.dev_control_center import candidate, provenance
+
+        repo = self.root / "repo"
+        with tempfile.TemporaryDirectory() as state, mock.patch.object(provenance, "state_root", return_value=Path(state)):
+            real_write = rr.write_json
+
+            def failing(path, value):
+                if Path(path).name == "revoked.json":
+                    raise OSError("disk full")
+                return real_write(path, value)
+
+            with mock.patch.object(rr, "write_json", failing), self.assertRaises(OSError):
+                REAL_RECORD_ROLLBACK(repo, *self.rollback_record_inputs(NEW, OLD))
+            self.assertFalse(provenance.production_record_path(repo).exists())   # nothing confirmed after it
+            # a later attempt replaces last_release.json: the durable rollback history still revokes NEW
+            provenance.write_json(provenance.release_record_path(repo), {"kind": "update", "returncode": 1})
+            self.assertIn(NEW, candidate.revoked_shas(repo))
+
+    def test_restoring_the_already_live_commit_revokes_nothing(self):
+        from scripts.dev_control_center import candidate, provenance
+
+        repo = self.root / "repo"
+        with tempfile.TemporaryDirectory() as state, mock.patch.object(provenance, "state_root", return_value=Path(state)), \
+             mock.patch.object(candidate, "mark_rolled_back") as ended:
+            REAL_RECORD_ROLLBACK(repo, *self.rollback_record_inputs(OLD, OLD.upper()))
+            self.assertEqual(candidate.revoked_shas(repo), set())
+            self.assertFalse(provenance.revoked_path(repo).exists())
+            self.assertIn("修復", json.loads(provenance.production_record_path(repo).read_text(encoding="utf-8"))["how"])
+            ended.assert_not_called()
+            REAL_RECORD_ROLLBACK(repo, *self.rollback_record_inputs(NEW, OLD))     # a real rollback still revokes
+            self.assertEqual(candidate.revoked_shas(repo), {NEW})
+
     def assert_back_to_pre_restore(self, before):
         after = tree(self.target)
         for rel, (data, _) in before.items():

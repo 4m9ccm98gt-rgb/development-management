@@ -280,6 +280,16 @@ def revoked_shas(repo: Path) -> set[str]:
             raise CandidateError(f"revoked.json unreadable or invalid: {path}（失効SHAを確認できないため停止）",
                                  "STATE_UNREADABLE")
         result.update(i["sha"].lower() for i in items)
+    # The immutable rollback history is a second, independent source: a revocation survives even when writing
+    # revoked.json failed after the restore (it is written first, before any other record).
+    from .restore_release import changes_commit
+
+    for path in sorted(revoked_path(Path(repo).resolve()).parent.glob("release-*-rollback.json")):
+        data = _read_json(path)
+        if data is None:
+            raise CandidateError(f"rollback history unreadable: {path}（失効SHAを確認できないため停止）", "STATE_UNREADABLE")
+        if changes_commit(data):
+            result.add(str(data["rolled_back_from"]).lower())
     result.discard("")
     return result
 

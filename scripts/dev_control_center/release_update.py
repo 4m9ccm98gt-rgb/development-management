@@ -29,7 +29,7 @@ from .release_engine import (
     BACKUP_KIND, BACKUP_MANIFEST, ENGINE_VERSION, HOOKS, MANIFEST_KIND, MANIFEST_SCHEMA, Change, InUseGuard,
     LockSet, Progress, ReleaseError, RollbackIncomplete, Transaction, backup_folder, config_digest,
     critical_hashes, glob_match, in_use, managed, metadata_diff, now_stamp, operational_snapshot, protected_of,
-    prune_backups, read_key_values, read_manifest, release_config, remove_tree, safe_join, scan, scan_scope, sha256,
+    prune_backups, read_key_values, read_manifest, release_config, remove_backup, safe_join, scan, scan_scope, sha256,
     stat_files, valid_relative, write_json, write_manifest_atomic,
 )
 
@@ -593,7 +593,7 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
                                          + "; ".join(errors)) from failure
         elif save_root is not None and save_root.exists():
             try:  # nothing live was changed: the partial backup holds only this update's copies
-                remove_tree(save_root)
+                remove_backup(target, config, save_root.name)
             except (OSError, ReleaseError):
                 pass
         inflight_path(repo).unlink(missing_ok=True)

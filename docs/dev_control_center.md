@@ -64,7 +64,7 @@ next-day-setupのように設定・保存データをコード横のgit管理外
 | `release-<日時>-<build id>.json` | UPDATE試行ごとの履歴（上書きされない） |
 | `release-<日時>-rollback.json` | rollback記録の不変コピー（復旧元backup、退避先 `saved_before_restore`、plan id、rollback元SHA）。以後のUPDATE試行で失われない |
 | `release-superseded-<日時>.json` | rollback時点で `last_release.json` だった記録（置き換えられた配布） |
-| `revoked.json` | **失効SHA**（rollbackで本番から外したSHA、置換先、plan id）。rollbackごとに追記 |
+| `revoked.json` | **失効SHA**（rollbackで本番から外したSHA、置換先、plan id）。rollbackごとに追記。rollback記録は「不変の履歴 → `revoked.json` → `last_release.json` → `production.json`」の順に書き、失効は `revoked.json` と不変の履歴（`release-*-rollback.json`）の両方から読むため、途中で書き込みに失敗しても失効が失われない。読めない・形式不正なら停止（fail closed）。既に本番のcommitへのrestore（同一commitの修復）は何も失効させない |
 
 - DCC画面の「Orchestrator candidate フロー」の先頭に `production (DCC記録)` として確定した本番（commit・version・経緯）を表示します。確定していない（失敗した試行しかない）場合は表示しません。
 - **失効SHAのBUILDはUPDATEできません。** 失効SHAは `revoked.json`、`rolled_back` のcandidate状態、rollbackである `last_release.json` の和集合で、BUILD記録の `base_head` がこれに含まれると、candidateルート・作業ツリールートを問わず `read_receipt` の段階でUPDATEを停止します（同じSHAを新たにBUILDし直しても同様）。後続のUPDATE試行で `last_release.json` が置き換わっても失効は残ります。

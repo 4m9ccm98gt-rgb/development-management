@@ -445,7 +445,10 @@ def read_receipt(repo: Path) -> dict:
 
     revoked = revoked_shas(repo)
     if release.get("kind") == "rollback":
-        revoked.add(str(release.get("rolled_back_from") or "").lower())
+        from .restore_release import changes_commit
+
+        if changes_commit(release):  # a same-commit repair revokes nothing
+            revoked.add(str(release.get("rolled_back_from") or "").lower())
     if built and built in revoked:
         raise ValueError(f"この成果物（{built[:12]}）は本番からrollback済みのSHAのBUILDです。再配布しません。"
                          "新しいBUILDが必要です")

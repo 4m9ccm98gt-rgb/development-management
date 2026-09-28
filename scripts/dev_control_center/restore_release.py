@@ -336,9 +336,10 @@ def record_rollback(repo: Path, body: dict, result: dict) -> None:
     from . import candidate as candidate_flow
     from .provenance import release_record_path
 
+    # Order matters: the safety facts first. The immutable rollback history is itself a durable source of the
+    # revocation (candidate.revoked_shas reads it), then revoked.json, and only then the attempt / production
+    # records. A failure part-way therefore never leaves a restored-away SHA deployable.
     path = release_record_path(repo)
-    if path.exists():
-        path.replace(path.with_name(f"release-superseded-{now_stamp()}.json"))
     from_commit = (body.get("current_build_info") or {}).get("Git commit SHA", "")
     record = {
         "schema": 1, "kind": "rollback", "repo": str(repo), "target": body["target"], "returncode": 0,
@@ -347,24 +348,45 @@ def record_rollback(repo: Path, body: dict, result: dict) -> None:
         "saved_before_restore": result["saved"], "plan_id": body["plan_id"], "finished_at": now_stamp(),
         "build_id": None, "candidate_sha": None}
     write_json(path.with_name(f"release-{record['finished_at']}-rollback.json"), record)  # immutable history
-    write_json(path, record)
-    record_confirmed_rollback(repo, record)
-    candidate_flow.mark_rolled_back(repo, from_commit, body["restore_commit"])
+    record_confirmed_rollback(repo, record, supersede=path)
+    if changes_commit(record):
+        candidate_flow.mark_rolled_back(repo, from_commit, body["restore_commit"])
 
 
-def record_confirmed_rollback(repo: Path, record: dict) -> None:
-    """production.json + revoked.json from a verified rollback record (also used to backfill older states)."""
-    from .provenance import production_record_path, revoked_path
+def changes_commit(record: dict) -> bool:
+    """A restore to a different commit takes `rolled_back_from` out of production (revoked). Restoring the commit
+    that is already live is a repair: nothing is revoked and no candidate is ended."""
+    source = str(record.get("rolled_back_from") or "").strip().lower()
+    return bool(source) and source != str(record.get("deployed_commit") or "").strip().lower()
 
+
+def record_confirmed_rollback(repo: Path, record: dict, supersede: Path | None = None) -> None:
+    """revoked.json, then the attempt record, then production.json from a verified rollback record (also used to
+    backfill older states)."""
+    from .candidate import CandidateError
+    from .provenance import production_record_path, release_record_path, revoked_path
+
+    if changes_commit(record):
+        path = revoked_path(repo)
+        revoked = {"revoked": []}
+        if path.exists():
+            try:
+                revoked = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise CandidateError(f"revoked.json unreadable: {exc}", "STATE_UNREADABLE") from exc
+        if all(str(r.get("sha", "")).lower() != record["rolled_back_from"].lower() for r in revoked["revoked"]):
+            revoked["revoked"].append({"sha": record["rolled_back_from"], "replaced_by": record["deployed_commit"],
+                                       "plan_id": record.get("plan_id"), "at": record.get("finished_at")})
+        write_json(path, revoked)
+    if supersede is not None:
+        if supersede.exists():
+            supersede.replace(supersede.with_name(f"release-superseded-{now_stamp()}.json"))
+        write_json(release_record_path(repo), record)
+    how = (f"rollback（{str(record.get('rolled_back_from') or '')[:12]} から復旧）" if changes_commit(record)
+           else "restore（同一commitの修復。失効なし）")
     write_json(production_record_path(repo), {
         "schema": 1, "commit": record["deployed_commit"], "version": record.get("app_version") or "",
-        "how": f"rollback（{str(record.get('rolled_back_from') or '')[:12]} から復旧）", "target": record["target"],
-        "exe_sha256": record.get("exe_sha256"), "at": record.get("finished_at")})
-    revoked = json.loads(revoked_path(repo).read_text(encoding="utf-8")) if revoked_path(repo).exists() else {"revoked": []}
-    if record.get("rolled_back_from") and all(r.get("sha") != record["rolled_back_from"] for r in revoked["revoked"]):
-        revoked["revoked"].append({"sha": record["rolled_back_from"], "replaced_by": record["deployed_commit"],
-                                   "plan_id": record.get("plan_id"), "at": record.get("finished_at")})
-    write_json(revoked_path(repo), revoked)
+        "how": how, "target": record["target"], "exe_sha256": record.get("exe_sha256"), "at": record.get("finished_at")})
 
 
 def main(argv: list[str] | None = None) -> int:
