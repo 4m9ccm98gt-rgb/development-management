@@ -360,8 +360,9 @@ class ExecuteTests(RestoreCase):
         self.assertEqual(ctx.exception.code, "STAGE_HASH_MISMATCH")
         self.assert_back_to_pre_restore(before)
 
-    def test_operational_change_during_restore_is_reported_not_recorded(self):
+    def test_operational_change_during_restore_undoes_the_app_and_keeps_the_data(self):
         body = self.plan()
+        before = tree(self.target)
 
         def user_saves(change):
             if change.rel == "DinnerSystem.exe":
@@ -370,8 +371,14 @@ class ExecuteTests(RestoreCase):
         with self.assertRaises(re_.ReleaseError) as ctx:
             self.execute(body, before_each=user_saves)
         self.assertEqual(ctx.exception.code, "OPERATIONAL_CHANGED")
-        self.assertEqual((self.target / SAVE / "20260928.json").read_bytes(), b"{new day}")  # never reverted
-        self.record.assert_not_called()
+        self.assertEqual((self.target / SAVE / "20260928.json").read_bytes(), b"{new day}")  # user data kept
+        after = tree(self.target)
+        for rel, (data, _) in before.items():                                  # never applied-but-unrecorded
+            if not rel.startswith("backup/"):
+                self.assertEqual(after[rel][0], data, rel)
+        self.assertEqual((self.target / "DinnerSystem.exe").read_bytes(), b"exe-v130")
+        self.assertFalse(list(self.target.rglob("*.dcc-stage")))
+        self.record.assert_not_called()                                        # DCC records stay consistent
 
 
 class PrimitiveTests(unittest.TestCase):

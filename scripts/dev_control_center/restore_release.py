@@ -292,17 +292,20 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
         result = {"ok": all(checks.values()), "checks": checks, "mismatched": mismatched, "operational_diff": op_diff,
                   "saved": str(save_root), "exe_sha256": exe_sha, "deployed_commit": info.get("Git commit SHA")}
         if not result["ok"]:
+            # Never leave a restore applied but unrecorded: whatever failed, put back exactly the application
+            # files this transaction replaced (operational data was never written and is left as it is now).
             failed = [k for k, v in checks.items() if not v]
             app_failed = [k for k in failed if "operational" not in k and "critical" not in k]
-            if app_failed:  # our own result is wrong: put the pre-restore files back
-                errors = transaction.undo()
-                if errors:
-                    raise RollbackIncomplete(f"final verification failed ({app_failed}); ROLLBACK INCOMPLETE; "
-                                             f"recovery copies: {save_root}; " + "; ".join(errors))
+            errors = transaction.undo()
+            if errors:
+                raise RollbackIncomplete(f"final verification failed ({failed}); ROLLBACK INCOMPLETE; "
+                                         f"recovery copies: {save_root}; " + "; ".join(errors))
+            if app_failed:
                 raise ReleaseError(f"final verification failed ({app_failed}); the pre-restore files were put back",
                                    "VERIFY_FAILED")
-            raise ReleaseError("operational data changed during the restore (not written by this tool; nothing undone, "
-                               f"restore NOT recorded as successful): {failed} {op_diff}", "OPERATIONAL_CHANGED")
+            raise ReleaseError("operational data changed during the restore (not written by this tool; it is kept as "
+                               f"it is). The application files were put back; nothing recorded: {failed} {op_diff}",
+                               "OPERATIONAL_CHANGED")
 
     progress.stage(7, "Recording the deployed state in DCC")
     if dcc_repo is not None:
