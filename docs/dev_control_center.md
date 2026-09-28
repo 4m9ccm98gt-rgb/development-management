@@ -29,20 +29,20 @@ UPDATEの成果物hash計算はUI外のworkerで行います。UPDATEはBUILD記
 
 ## Orchestrator candidateフロー
 
-`scripts/dev_control_center/candidate.py`。Orchestratorの最新 `completed / OK` runの `run.json` がcandidate（SHA / branch / base）の唯一の正です。DCCは `%LOCALAPPDATA%/ShizenDev/DCC/candidates/<repo-key>/<run-id>.json` にそのcandidateのRUN_DEV結果・承認・pushだけを保存し（run id単位なので新しいrunは古い承認を引き継がない）、BUILD / UPDATEの事実はBUILD記録（`candidate_sha` / `candidate_run_id`）と `last_release.json` から導きます。
+`scripts/dev_control_center/candidate.py`。Orchestratorの最新 `completed / OK` runの `run.json` がcandidate（SHA / branch / base）の唯一の正です。DCCは `%LOCALAPPDATA%/ShizenDev/DCC/candidates/<repo-key>/<run-id>.json` にそのcandidateのRUN_DEV結果・承認・push・終了状態（`deployed` / `rolled_back` / `discarded`）だけを保存し（run id単位なので新しいrunは古い承認を引き継がない）、BUILDの事実はBUILD記録（`candidate_sha` / `candidate_run_id` / `build_info_sha`）から、本番の事実は下記「本番状態・rollback・失効SHA」の記録から導きます。
 
 | 段階 | 対象SHAと条件 |
 |---|---|
 | Orchestrator candidate | run.jsonのcandidate_sha。commit消失・candidate branch移動・baseの子孫でない場合は停止 |
 | RUN_DEV | `%LOCALAPPDATA%/ShizenDev/DCC/run-worktrees/<run-id>/<repo名>`（candidate SHAのdetached worktree。Orchestratorのworktreeが残っていればそれ）。source repoの `.venv` のPython、cwdはworktree。開始前・終了後のHEADを確認し、run id・repo・SHA・branch・target・entrypoint・command・開始 / 終了・終了コードをログと状態へ記録。candidate RUNはvenv作成・pip installをせず、不足なら停止。`[run.<repo>].seed` のランタイムデータを起動前にコピー（下記） |
-| Human approval | 最新RUN_DEVがPASS（rc 0かつHEAD不変）の同一SHAだけ。確認ダイアログでSHAを表示 |
+| Human approval | 最新RUN_DEVがPASSの同一SHAだけ。PASS = rc 0、HEAD不変、Git管理ファイルが開始前・終了後ともclean。RUN開始前に試行を `RUNNING` として記録し承認を無効化するため、停止・異常終了したRUNは承認できない。再RUNで承認は無効。確認ダイアログでSHAを表示 |
 | push | 承認済みSHAだけ。管理branch・clean・進行中操作なし、local / originがbaseまたはcandidate。`merge --ff-only` と `git push origin <sha>:refs/heads/<branch>`（forceなし）後、`ls-remote` とfetchでorigin == SHAを確認 |
 | BUILD | 承認 == push == local HEAD == origin（ls-remote）かつclean。BUILD workerも起動直前と終了後にHEAD == SHAを再確認 |
-| UPDATE / DEPLOY | BUILD記録の `base_head` / `candidate_sha` == 承認・push済みSHA、dirtyでない、local HEAD == origin == SHA。確認時と実行直前の両方で検証 |
+| UPDATE / DEPLOY | BUILD記録の `base_head` / `candidate_sha` / `build_info_sha` == 承認・push済みSHA、dirtyでない、local HEAD == origin == SHA。candidateの束縛（run id・SHA・承認とRUNの識別・ルート）を確認時とUPDATE worker内の実行直前の両方で算出し、変化があれば停止。成功時はcandidateを `deployed` にする |
 
-メイン画面のRUNは、有効なcandidateがあれば「RUN_DEV <SHA>」になり、そのSHAを実行します。candidateが無い・UPDATE完了・「candidateを破棄」後は従来どおり作業ツリーの通常ルートです。GitHubのbranch HEAD / open PR表示とSYNC基準SHAは観測・手動SYNC用で、Orchestrator candidateの代わりにはなりません。
+メイン画面のRUNは、有効なcandidateがあれば「RUN_DEV <SHA>」になり、そのSHAを実行します。candidateが無い、または終了状態（`deployed` / `rolled_back` / `discarded`）のcandidateは従来どおり作業ツリーの通常ルートです。終了状態はcandidateの検証（commit・branch）より先に読まれ、branchが後から動いても終了済みcandidateが再びactiveになることはありません。GitHubのbranch HEAD / open PR表示とSYNC基準SHAは観測・手動SYNC用で、Orchestrator candidateの代わりにはなりません。
 
-RUNの処理本体は `dev_control_center_repos.toml` の `[run.<repo>]`（cwd / entry または module / probe / env）で管理します（repo側の `dcc_entrypoints.json` が優先）。entryはRUN対象（source repoまたはcandidate worktree）基準で解決し、存在しなければ起動前に停止します。next-day-setupは `RUN_DEV.cmd` と同じ `.venv\Scripts\python.exe dinner_system\hotel_app.py` です。
+RUNの処理本体は `dev_control_center_repos.toml` の `[run.<repo>]`（cwd / entry または module / probe / env）で管理します（repo側の `dcc_entrypoints.json` が優先）。entryはRUN対象（source repoまたはcandidate worktree）基準で解決し、存在しなければ起動前に停止します。next-day-setupはv1.4.1以降、`RUN_DEV.cmd` と同じ `.venv\Scripts\python.exe dinner_system\hotel_app_entry.py`（`hotel_app.HotelApp` を拡張する正式entry。`build_exe.py` のBUILD対象も同じ）です。
 
 ### RUN_DEVのランタイムデータ（seed）
 
@@ -52,6 +52,24 @@ next-day-setupのように設定・保存データをコード横のgit管理外
 - 各パスはsourceでgit ignored、かつcandidateでGit管理されていないことが必須です（candidateのコードを上書きしない）。repo外・絶対パス・`..`・リンク（symlink / junction）を含むものは起動前に停止。sourceに無いパスはskipしてログに残します。
 - 対象は作業ツリーの通常RUNには関係しません（通常RUNはsourceのデータをそのまま使う）。
 - next-day-setup: `master_settings.json` / `ui_prefs.json` / `closing_tasks.json` / `monthly_tasks.json` / `config/print_preparation.json` / `保存データ/`（いずれも `dinner_system/` 配下）。`print_work` / `outputs` / ログ / `shared_folder_path.txt` は対象外。コピーされた設定のままアプリが動くため、印刷等の外部動作は通常RUNと同様に実環境へ出ます。
+
+## 本番状態・rollback・失効SHA
+
+**本番（production）とmainは別の状態です。** mainは「次に配布できるコード」、productionは「DCCが配布を確認済みの配布物」です。rollback直後のように両者が異なっていてもDCCはどちらかで他方を推測しません。記録はすべて `%LOCALAPPDATA%/ShizenDev/DCC/builds/<repo-key>/` にあります（共有フォルダには書きません）。
+
+| ファイル | 内容・書かれる時 |
+|---|---|
+| `production.json` | **確定した本番**。UPDATEがrc 0で成功した時（commit = BUILDの `base_head`）と、検証済みrollbackの時（commit = 復旧先、version・EXE SHA付き）だけ書かれる。失敗したUPDATEでは変わらない |
+| `last_release.json` | **直近の試行**（UPDATEの成否を問わず、またはrollback）。本番の根拠にはしない。`production.json` が無い旧状態では、rc 0の場合に限り本番として読む。試行が上書きする前に、`production.json` の無い旧状態の成功記録は `production.json` へ昇格される（`release-migrated-<日時>.json` に保存） |
+| `release-<日時>-<build id>.json` | UPDATE試行ごとの履歴（上書きされない） |
+| `release-<日時>-rollback.json` | rollback記録の不変コピー（復旧元backup、退避先 `saved_before_restore`、plan id、rollback元SHA）。以後のUPDATE試行で失われない |
+| `release-superseded-<日時>.json` | rollback時点で `last_release.json` だった記録（置き換えられた配布） |
+| `revoked.json` | **失効SHA**（rollbackで本番から外したSHA、置換先、plan id）。rollbackごとに追記 |
+
+- DCC画面の「Orchestrator candidate フロー」の先頭に `production (DCC記録)` として確定した本番（commit・version・経緯）を表示します。確定していない（失敗した試行しかない）場合は表示しません。
+- **失効SHAのBUILDはUPDATEできません。** 失効SHAは `revoked.json`、`rolled_back` のcandidate状態、rollbackである `last_release.json` の和集合で、BUILD記録の `base_head` がこれに含まれると、candidateルート・作業ツリールートを問わず `read_receipt` の段階でUPDATEを停止します（同じSHAを新たにBUILDし直しても同様）。後続のUPDATE試行で `last_release.json` が置き換わっても失効は残ります。
+- **rollback後のcandidate**: 本番から外したSHAのOrchestrator candidateは `rolled_back`（日時・復旧先）になり、非active・RUN_DEV / 承認 / pushとも `CANDIDATE_ROLLED_BACK` で拒否され、再利用されません。フローのUPDATE段階は「配布後に本番からrollback済み（本番は <SHA>）」と表示します。以後の新しいcandidateは別のrun idの状態として最初から始まります。
+- rollbackは `python -m scripts.dev_control_center.restore_release plan ...`（読み取り専用のdry-run。live配布物の管理対象ファイルと保護データ、復旧元backupの必要ファイルだけを対象にし、共有フォルダ全体や他のbackup世代は走査しない）→ plan確認 → `execute --plan ... --confirm <plan id先頭12文字以上>`。executeはplan内容のdigest（repo・target・backup・復旧先commit / version・置換前のBUILD_INFO・対象ファイル・期待hash・全管理ファイルのstat）を再計算し、live側の変化があれば何も書かずに停止します。最終検証が失敗・完了不能なら置換したアプリファイルだけを戻し（運用データはそのまま）、戻しきれなければ `ROLLBACK_INCOMPLETE` と退避先を表示します。上記の記録はすべて検証成功後にだけ書かれます。
 
 ## 既存entrypointとの接続
 

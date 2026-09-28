@@ -19,6 +19,7 @@ from scripts.dev_control_center import release_engine as re_
 from scripts.dev_control_center import restore_release as rr
 
 OLD, NEW = "1a03178deb31fe8c3592bf57c957565b00f43bdc", "910d29de78d45b6497a97e79786da94ca506483c"
+REAL_RECORD_ROLLBACK = rr.record_rollback  # captured before the tests replace it with a mock
 SAVE = "保存データ"
 
 
@@ -379,6 +380,48 @@ class ExecuteTests(RestoreCase):
         self.assertEqual((self.target / "DinnerSystem.exe").read_bytes(), b"exe-v130")
         self.assertFalse(list(self.target.rglob("*.dcc-stage")))
         self.record.assert_not_called()                                        # DCC records stay consistent
+
+
+    def test_failed_verification_with_a_failing_undo_is_rollback_incomplete(self):
+        body = self.plan()
+        real_replace = os.replace
+
+        def user_saves(change):  # makes the final verification fail (operational data changed)
+            if change.rel == "DinnerSystem.exe":
+                self.write(self.target / SAVE / "20260928.json", b"{new day}")
+
+        def replace(src, dst, *a, **k):  # the undo's own replacements fail (e.g. the share drops)
+            if ".dcc-undo" in Path(src).name:
+                raise PermissionError("share disconnected during undo")
+            return real_replace(src, dst, *a, **k)
+
+        with mock.patch.object(re_.os, "replace", side_effect=replace), \
+             self.assertRaises(re_.RollbackIncomplete) as ctx:
+            self.execute(body, before_each=user_saves)
+        self.assertEqual(ctx.exception.code, "ROLLBACK_INCOMPLETE")
+        message = str(ctx.exception)
+        self.assertIn("ROLLBACK INCOMPLETE", message)
+        saved = next((self.target / "backup").glob("rollback_before_*"))       # recovery copies are kept ...
+        self.assertIn(str(saved), message)                                     # ... and named in the error
+        manifest = json.loads((saved / "rollback_manifest.json").read_text(encoding="utf-8"))
+        for item in manifest["files"]:
+            self.assertEqual(re_.sha256(saved / item["path"]), item["saved_sha256"], item["path"])
+        self.assertEqual((self.target / SAVE / "20260928.json").read_bytes(), b"{new day}")  # user data kept
+        self.record.assert_not_called()          # never recorded as a successful rollback / production change
+
+    def test_rollback_incomplete_never_touches_dcc_records(self):
+        from scripts.dev_control_center import provenance
+
+        body = self.plan()
+        with tempfile.TemporaryDirectory() as state, mock.patch.object(provenance, "state_root", return_value=Path(state)),              mock.patch.object(rr, "record_rollback", REAL_RECORD_ROLLBACK):   # the real recorder, if it were reached
+            with mock.patch.object(re_.Transaction, "undo", return_value=["DinnerSystem.exe: undo failed"]), \
+                 mock.patch.object(rr, "_final_checks", side_effect=OSError("verification read failed")), \
+                 self.assertRaises(re_.RollbackIncomplete):
+                self.execute(body)
+            repo = self.root / "repo"
+            for path in (provenance.release_record_path(repo), provenance.production_record_path(repo),
+                         provenance.revoked_path(repo)):
+                self.assertFalse(path.exists(), path.name)
 
 
 class PrimitiveTests(unittest.TestCase):
