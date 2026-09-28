@@ -249,13 +249,16 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
         guard = InUseGuard([safe_join(target, rel) for rel in config.get("in_use", [exe])])
         transaction = Transaction(target, save_root, protected, commit_file=exe, progress=progress, guard=guard)
         if intent is not None:  # durable before the first write to the share (revokes the source while pending)
-            write_json(intent, {"plan_id": body["plan_id"], "target": body["target"],
+            write_json(intent, {"plan_id": body["plan_id"], "target": body["target"], "repo_name": body["repo"],
+                                "restore_version": body["restore_version"], "backup": body["backup"],
+                                "saved_before_restore": str(save_root),
                                 "rolled_back_from": (body.get("current_build_info") or {}).get("Git commit SHA", ""),
                                 "deployed_commit": body["restore_commit"], "at": now_stamp()})
         try:
             progress.stage(3, f"Saving the {sum(1 for c in changes if c.before_sha)} current files -> {save_root}")
             transaction.save(changes)
-            write_json(save_root / "rollback_manifest.json", {
+            # re-derived after the (long) save: never written through a backup ancestor swapped meanwhile
+            write_json(safe_join(target, f"backup/{save_root.name}/rollback_manifest.json", ancestors=True), {
                 "plan_id": body["plan_id"], "from_build_info": body.get("current_build_info"),
                 "to_commit": body["restore_commit"], "to_version": body["restore_version"], "created_at": now_stamp(),
                 "files": [{"path": c.rel, "saved_sha256": c.before_sha, "restored_sha256": c.expected_sha} for c in changes]})
@@ -323,10 +326,13 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
 
 
 def clear_interrupted(dcc_repo: Path, confirm: str) -> dict:
-    """After someone verified the target: close an unfinished restore record conservatively. The SHA the restore
-    was taking out of production is revoked (never harmful: it was being removed), then the intent is dropped."""
-    from .candidate import CandidateError
-    from .provenance import restore_intent_path, revoked_path
+    """Close an unfinished restore from what is live now (read from the target, never assumed):
+      the restore's destination is live and self-consistent -> record the restore as a verified rollback would
+        (history, revocation, attempt, production, candidate ended);
+      the source commit is still live -> the restore is not in effect: only the intent is dropped;
+      anything else -> refused (repair the deployment first)."""
+    from . import candidate as candidate_flow
+    from .provenance import release_record_path, restore_intent_path
 
     path = restore_intent_path(dcc_repo)
     try:
@@ -335,19 +341,32 @@ def clear_interrupted(dcc_repo: Path, confirm: str) -> dict:
         raise ReleaseError(f"no readable restore intent: {path} ({exc})", "NOTHING_TO_CLEAR") from exc
     if not confirm or len(confirm) < 12 or not str(intent.get("plan_id", "")).startswith(confirm):
         raise ReleaseError("confirm with the first 12+ characters of the restore plan id", "NOT_CONFIRMED")
-    if changes_commit(intent):
-        revoked = {"revoked": []}
-        if revoked_path(dcc_repo).exists():
-            try:
-                revoked = json.loads(revoked_path(dcc_repo).read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                raise CandidateError(f"revoked.json unreadable: {exc}", "STATE_UNREADABLE") from exc
-        if all(str(r.get("sha", "")).lower() != intent["rolled_back_from"].lower() for r in revoked["revoked"]):
-            revoked["revoked"].append({"sha": intent["rolled_back_from"], "replaced_by": intent["deployed_commit"],
-                                       "plan_id": intent["plan_id"], "at": now_stamp(), "note": "unfinished restore"})
-        write_json(revoked_path(dcc_repo), revoked)
+    config = release_config(intent["repo_name"])
+    target = Path(intent["target"])
+    info = read_key_values(safe_join(target, config.get("build_info", "BUILD_INFO.txt")))
+    live = info.get("Git commit SHA", "").strip().lower()
+    exe_sha = sha256(safe_join(target, config["commit_file"]))
+    consistent = exe_sha == info.get("EXE SHA-256", "").upper()
+    if live == str(intent["deployed_commit"]).lower() and consistent:
+        record = {
+            "schema": 1, "kind": "rollback", "repo": str(dcc_repo), "target": intent["target"], "returncode": 0,
+            "deployed_commit": intent["deployed_commit"], "app_version": intent.get("restore_version", ""),
+            "exe_sha256": exe_sha, "rolled_back_from": intent["rolled_back_from"], "restored_from": intent.get("backup"),
+            "saved_before_restore": intent.get("saved_before_restore"), "plan_id": intent["plan_id"],
+            "finished_at": now_stamp(), "build_id": None, "candidate_sha": None,
+            "note": "recorded by clear-interrupted from the verified live state"}
+        write_json(release_record_path(dcc_repo).with_name(f"release-{record['finished_at']}-rollback.json"), record)
+        record_confirmed_rollback(dcc_repo, record, supersede=release_record_path(dcc_repo))
+        if changes_commit(record):
+            candidate_flow.mark_rolled_back(dcc_repo, record["rolled_back_from"], record["deployed_commit"])
+        outcome = "restore recorded"
+    elif live == str(intent["rolled_back_from"]).lower() and consistent:
+        outcome = "restore not in effect; nothing recorded"
+    else:
+        raise ReleaseError(f"the live deployment ({live[:12] or '?'}, EXE consistent: {consistent}) is neither the "
+                           "restore's source nor its destination; repair it before clearing", "UNKNOWN_STATE")
     path.unlink()
-    return intent
+    return dict(intent, outcome=outcome)
 
 
 def _final_checks(target: Path, body: dict, config: dict, candidates: set, before: dict, critical_before: dict,

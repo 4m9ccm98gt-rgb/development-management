@@ -547,7 +547,9 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
                 if entry["backup_sha256"] != change.before_sha:
                     raise _stop(f"backup hash mismatch: {change.rel}", "SAVE_HASH_MISMATCH")
             backup["complete"] = True
-            write_json(save_root / BACKUP_MANIFEST, backup)
+            # re-derived after the (long) save: never written through a backup ancestor swapped meanwhile
+            write_json(safe_join(target, f"{config['backup_dir']}/{save_root.name}/{BACKUP_MANIFEST}", ancestors=True),
+                       backup)
         progress.stage(5, f"{STAGES[4]}: {len(changes)} files")
         transaction.stage(changes)
         try:

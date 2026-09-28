@@ -390,11 +390,34 @@ class ExecuteTests(RestoreCase):
         self.assertEqual(ctx.exception.code, "INTERRUPTED")
         with self.assertRaises(re_.ReleaseError):
             rr.clear_interrupted(repo, "wrong")
-        rr.clear_interrupted(repo, body["plan_id"][:12])
+        cleared = rr.clear_interrupted(repo, body["plan_id"][:12])   # the restore is live: record it
+        self.assertEqual(cleared["outcome"], "restore recorded")
         self.assertFalse(intent.exists())
         revoked = json.loads(provenance.revoked_path(repo).read_text(encoding="utf-8"))["revoked"]
         self.assertEqual([r["sha"] for r in revoked], [NEW])          # the revocation is made durable
         self.assertEqual(candidate.revoked_shas(repo), {NEW})
+        production = json.loads(provenance.production_record_path(repo).read_text(encoding="utf-8"))
+        self.assertEqual(production["commit"], OLD)                   # production follows the verified live state
+
+    def test_clearing_an_intent_whose_restore_is_not_in_effect_revokes_nothing(self):
+        from scripts.dev_control_center import candidate, provenance
+
+        repo = self.root / "repo"
+        intent = provenance.restore_intent_path(repo)
+        provenance.write_json(intent, {"plan_id": "q" * 64, "target": str(self.target), "repo_name": "next-day-setup",
+                                       "rolled_back_from": NEW, "deployed_commit": OLD, "restore_version": "v1.4.0"})
+        self.assertIn(NEW, candidate.revoked_shas(repo))              # pending: counts as revoked
+        cleared = rr.clear_interrupted(repo, "q" * 12)                # the live folder is still NEW
+        self.assertEqual(cleared["outcome"], "restore not in effect; nothing recorded")
+        self.assertEqual(candidate.revoked_shas(repo), set())
+        self.assertFalse(provenance.production_record_path(repo).exists())
+        provenance.write_json(intent, {"plan_id": "q" * 64, "target": str(self.target), "repo_name": "next-day-setup",
+                                       "rolled_back_from": NEW, "deployed_commit": OLD})
+        (self.target / "DinnerSystem.exe").write_bytes(b"half updated")
+        with self.assertRaises(re_.ReleaseError) as ctx:               # neither source nor destination: refused
+            rr.clear_interrupted(repo, "q" * 12)
+        self.assertEqual(ctx.exception.code, "UNKNOWN_STATE")
+        self.assertTrue(intent.exists())
 
     def test_a_failed_restore_that_was_undone_leaves_no_intent(self):
         from scripts.dev_control_center import provenance
