@@ -245,6 +245,45 @@ class ExecuteTests(RestoreCase):
         self.assertEqual(ctx.exception.code, "NOT_CONFIRMED")
         self.assertEqual((self.target / "DinnerSystem.exe").read_bytes(), b"exe-v130")
 
+    def test_edited_plan_is_refused_even_with_the_original_id(self):
+        body = self.plan()
+        before = tree(self.target)
+        for field, value in (("target", str(self.root / "elsewhere")), ("files", body["files"][:1]),
+                             ("restore_version", "v9")):
+            with self.subTest(field=field):
+                edited = dict(body, **{field: value})
+                self.plan_path.write_text(json.dumps(edited), encoding="utf-8")
+                with self.assertRaises(re_.ReleaseError) as ctx:
+                    rr.execute(self.plan_path, body["plan_id"][:12], emit=lambda t: None)
+                self.assertEqual(ctx.exception.code, "PLAN_TAMPERED")
+        self.assertEqual(tree(self.target), before)
+
+    def test_an_unchanged_managed_file_changing_after_the_plan_stops_before_any_change(self):
+        body = self.plan()
+        (self.target / "DEPLOY_MANIFEST.json").unlink()   # not a restore target, but relied on by verification
+        before = tree(self.target)
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "PLAN_DRIFT")
+        self.assertEqual(tree(self.target), before)
+
+    def test_verification_that_can_not_complete_undoes_the_restore(self):
+        body = self.plan()
+        before = tree(self.target)
+
+        def break_manifest(change):
+            if change.rel == "DinnerSystem.exe":
+                (self.target / "DEPLOY_MANIFEST.json").write_text("{broken", encoding="utf-8")
+
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body, before_each=break_manifest)
+        self.assertEqual(ctx.exception.code, "VERIFY_FAILED")
+        after = tree(self.target)
+        for rel, (data, _) in before.items():
+            if not rel.startswith("backup/") and rel != "DEPLOY_MANIFEST.json":
+                self.assertEqual(after[rel][0], data, rel)                  # every restored file put back
+        self.record.assert_not_called()
+
     def test_drift_after_the_dry_run_stops_before_any_change(self):
         body = self.plan()
         self.write(self.target / "_internal/ucrtbase.dll", b"someone else")

@@ -94,6 +94,15 @@ def _identity(backup: Path, commit: str, version: str, config: dict) -> tuple[di
     return info, manifest
 
 
+PLAN_FIELDS = ("repo", "target", "backup", "restore_commit", "restore_version", "files", "expected", "live_stats")
+
+
+def plan_digest(body: dict) -> str:
+    """Canonical digest of everything execution depends on; recomputed at execute time."""
+    return hashlib.sha256(json.dumps({k: body.get(k) for k in PLAN_FIELDS}, sort_keys=True,
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def plan(target: Path, backup: Path, repo_name: str, commit: str, version: str, out: Path,
          expect_count: int | None = None, emit=print) -> dict:
     """Read-only dry run over a bounded scope:
@@ -189,6 +198,7 @@ def plan(target: Path, backup: Path, repo_name: str, commit: str, version: str, 
         "restore_commit": commit, "restore_version": version,
         "current_build_info": read_key_values(target / config.get("build_info", "BUILD_INFO.txt")),
         "files": files, "expected": expected,
+        "live_stats": {rel: list(value) if value else None for rel, value in sorted(guard_after["live"].items())},
         "scope": {"live_release_files_stat_and_hashed": len(candidates),
                   "backup_files_stat_and_hashed": len(candidates),
                   "protected_files_stat": len(guard_before["protected"]),
@@ -200,8 +210,7 @@ def plan(target: Path, backup: Path, repo_name: str, commit: str, version: str, 
         "timing_seconds": {k: round(v, 1) for k, v in timing.items()},
         "estimated_execute_seconds": round(estimate), "created_at": now_stamp(),
     }
-    body["plan_id"] = hashlib.sha256(json.dumps(
-        {k: body[k] for k in ("target", "backup", "restore_commit", "files", "expected")}, sort_keys=True).encode()).hexdigest()
+    body["plan_id"] = plan_digest(body)
     write_json(out, body)
     progress.detail(f"plan {body['plan_id'][:12]} -> {out}")
     return body
@@ -211,6 +220,9 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
     body = json.loads(Path(plan_path).read_text(encoding="utf-8"))
     if not confirm or not body["plan_id"].startswith(confirm) or len(confirm) < 12:
         raise ReleaseError("the plan id was not confirmed (pass --confirm <first 12+ chars of plan_id>)", "NOT_CONFIRMED")
+    if "live_stats" not in body or plan_digest(body) != body["plan_id"]:
+        raise ReleaseError("the plan content does not match its plan id (edited or from an older format); "
+                           "make a new dry-run plan", "PLAN_TAMPERED")
     config = release_config(body["repo"])
     protected = protected_of(config)
     target, backup = Path(body["target"]), Path(body["backup"])
@@ -238,6 +250,11 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
             changes.append(Change(item["path"], source, live, item["expected_sha256"], item["current_sha256"]))
             progress.count(number, len(body["files"]), "re-verified")
         candidates = set(body["expected"]["all_candidates"]) | {f["path"] for f in body["files"]}
+        now_stats = stat_files(target, candidates)
+        drifted = sorted(rel for rel in candidates
+                         if (list(now_stats[rel]) if now_stats.get(rel) else None) != body["live_stats"].get(rel))
+        if drifted:  # every managed file the plan relies on, including the unchanged ones
+            raise ReleaseError(f"deployment changed since the plan: {drifted[:10]}", "PLAN_DRIFT")
         before = {r: v for r, v in operational_snapshot(target, config).items() if r not in candidates}
         critical_before = _critical(target, before, config.get("critical", []))
 
@@ -256,26 +273,16 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
         transaction.apply(changes, before_each=before_each)
 
         progress.stage(6, "Final verification")
-        mismatched = sorted(rel for rel, h in body["expected"]["all_candidates"].items()
-                            if not safe_join(target, rel).is_file() or sha256(safe_join(target, rel)) != h)
-        info = read_key_values(target / config.get("build_info", "BUILD_INFO.txt"))
-        manifest = json.loads((target / config.get("deploy_manifest", "DEPLOY_MANIFEST.json")).read_text(encoding="utf-8-sig"))
-        manifest_exe = next((e["sha256"].upper() for e in manifest["files"] if e["path"] == exe), None)
-        exe_sha = sha256(safe_join(target, exe))
-        after = {r: v for r, v in operational_snapshot(target, config).items() if r not in candidates}
-        op_diff = metadata_diff(before, after)
-        critical_after = _critical(target, after, config.get("critical", []))
-        checks = {
-            "all updater-owned files equal the backup": not mismatched,
-            "BUILD_INFO commit": info.get("Git commit SHA", "").lower() == body["restore_commit"].lower(),
-            "BUILD_INFO version": info.get("App version") == body["restore_version"],
-            "DEPLOY_MANIFEST commit": str(manifest.get("build_commit", "")).lower() == body["restore_commit"].lower(),
-            "EXE == BUILD_INFO == DEPLOY_MANIFEST": exe_sha == info.get("EXE SHA-256", "").upper() == manifest_exe,
-            "EXE.previous restored": sha256(safe_join(target, f"{exe}.previous")) == body["expected"]["previous_sha256"]
-            if body["expected"]["previous_sha256"] else True,
-            "critical files unchanged (SHA-256)": critical_after == critical_before,
-            "operational metadata unchanged": not any(op_diff.values()),
-        }
+        try:
+            checks, info, mismatched, exe_sha, op_diff = _final_checks(target, body, config, candidates, before,
+                                                                       critical_before)
+        except Exception as exc:  # a verification that can not complete counts as failed: undo our changes
+            errors = transaction.undo()
+            if errors:
+                raise RollbackIncomplete(f"final verification could not complete ({exc}); ROLLBACK INCOMPLETE; "
+                                         f"recovery copies: {save_root}; " + "; ".join(errors)) from exc
+            raise ReleaseError(f"final verification could not complete ({exc}); the pre-restore files were put back",
+                               "VERIFY_FAILED") from exc
         for name, ok in checks.items():
             progress.detail(f"{'OK ' if ok else 'NG '} {name}")
         result = {"ok": all(checks.values()), "checks": checks, "mismatched": mismatched, "operational_diff": op_diff,
@@ -300,8 +307,36 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
     return result
 
 
+def _final_checks(target: Path, body: dict, config: dict, candidates: set, before: dict, critical_before: dict):
+    """Every post-restore check; any exception here is treated by the caller as a failed verification."""
+    exe = config["commit_file"]
+    mismatched = sorted(rel for rel, h in body["expected"]["all_candidates"].items()
+                        if not safe_join(target, rel).is_file() or sha256(safe_join(target, rel)) != h)
+    info = read_key_values(target / config.get("build_info", "BUILD_INFO.txt"))
+    manifest = json.loads((target / config.get("deploy_manifest", "DEPLOY_MANIFEST.json")).read_text(encoding="utf-8-sig"))
+    manifest_exe = next((e["sha256"].upper() for e in manifest["files"] if e["path"] == exe), None)
+    exe_sha = sha256(safe_join(target, exe))
+    after = {r: v for r, v in operational_snapshot(target, config).items() if r not in candidates}
+    op_diff = metadata_diff(before, after)
+    critical_after = _critical(target, after, config.get("critical", []))
+    checks = {
+        "all updater-owned files equal the backup": not mismatched,
+        "BUILD_INFO commit": info.get("Git commit SHA", "").lower() == body["restore_commit"].lower(),
+        "BUILD_INFO version": info.get("App version") == body["restore_version"],
+        "DEPLOY_MANIFEST commit": str(manifest.get("build_commit", "")).lower() == body["restore_commit"].lower(),
+        "EXE == BUILD_INFO == DEPLOY_MANIFEST": exe_sha == info.get("EXE SHA-256", "").upper() == manifest_exe,
+        "EXE.previous restored": sha256(safe_join(target, f"{exe}.previous")) == body["expected"]["previous_sha256"]
+        if body["expected"]["previous_sha256"] else True,
+        "critical files unchanged (SHA-256)": critical_after == critical_before,
+        "operational metadata unchanged": not any(op_diff.values()),
+    }
+    return checks, info, mismatched, exe_sha, op_diff
+
+
 def record_rollback(repo: Path, body: dict, result: dict) -> None:
-    """Only after a verified restore: DCC's last release now names what is really deployed."""
+    """Only after a verified restore. Three durable facts, each independent of later UPDATE attempts:
+    the attempt history (last_release + superseded copy), the confirmed production state, and the
+    revoked SHA that must never be released again. The rolled-back candidate is ended."""
     from . import candidate as candidate_flow
     from .provenance import release_record_path
 
@@ -309,13 +344,30 @@ def record_rollback(repo: Path, body: dict, result: dict) -> None:
     if path.exists():
         path.replace(path.with_name(f"release-superseded-{now_stamp()}.json"))
     from_commit = (body.get("current_build_info") or {}).get("Git commit SHA", "")
-    write_json(path, {
+    record = {
         "schema": 1, "kind": "rollback", "repo": str(repo), "target": body["target"], "returncode": 0,
         "deployed_commit": body["restore_commit"], "app_version": body["restore_version"],
         "exe_sha256": result["exe_sha256"], "rolled_back_from": from_commit, "restored_from": body["backup"],
         "saved_before_restore": result["saved"], "plan_id": body["plan_id"], "finished_at": now_stamp(),
-        "build_id": None, "candidate_sha": None})
+        "build_id": None, "candidate_sha": None}
+    write_json(path, record)
+    record_confirmed_rollback(repo, record)
     candidate_flow.mark_rolled_back(repo, from_commit, body["restore_commit"])
+
+
+def record_confirmed_rollback(repo: Path, record: dict) -> None:
+    """production.json + revoked.json from a verified rollback record (also used to backfill older states)."""
+    from .provenance import production_record_path, revoked_path
+
+    write_json(production_record_path(repo), {
+        "schema": 1, "commit": record["deployed_commit"], "version": record.get("app_version") or "",
+        "how": f"rollback（{str(record.get('rolled_back_from') or '')[:12]} から復旧）", "target": record["target"],
+        "exe_sha256": record.get("exe_sha256"), "at": record.get("finished_at")})
+    revoked = json.loads(revoked_path(repo).read_text(encoding="utf-8")) if revoked_path(repo).exists() else {"revoked": []}
+    if record.get("rolled_back_from") and all(r.get("sha") != record["rolled_back_from"] for r in revoked["revoked"]):
+        revoked["revoked"].append({"sha": record["rolled_back_from"], "replaced_by": record["deployed_commit"],
+                                   "plan_id": record.get("plan_id"), "at": record.get("finished_at")})
+    write_json(revoked_path(repo), revoked)
 
 
 def main(argv: list[str] | None = None) -> int:

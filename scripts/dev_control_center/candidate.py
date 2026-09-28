@@ -164,7 +164,7 @@ def load_state(candidate: Candidate) -> dict:
         data = {}  # never reuse RUN / approval / push of another candidate
     base = {"schema": 1, "repo": str(candidate.repo), "run_id": candidate.run_id, "candidate_sha": candidate.sha,
             "candidate_branch": candidate.branch, "base_sha": candidate.base_sha, "run_dev": [], "approval": None,
-            "push": None, "discarded": None, "rolled_back": None}
+            "push": None, "discarded": None, "rolled_back": None, "deployed": None}
     base.update({k: v for k, v in data.items() if k in base})
     return base
 
@@ -188,6 +188,25 @@ def record_run(candidate: Candidate, entry: dict) -> dict:
     """Append one RUN_DEV result. A new RUN always clears the approval (approve what you last ran)."""
     state = load_state(candidate)
     state["run_dev"].append(entry)
+    state["approval"] = None
+    save_state(candidate, state)
+    return state
+
+
+def start_run(candidate: Candidate, entry: dict) -> dict:
+    """Persist the attempt BEFORE the app starts: the approval is gone and, until this attempt completes
+    successfully, nothing is approvable (a stopped / crashed RUN stays RUNNING, i.e. not PASS)."""
+    return record_run(candidate, dict(entry, result="RUNNING"))
+
+
+def finish_run(candidate: Candidate, started_at: str, updates: dict) -> dict:
+    state = load_state(candidate)
+    for entry in reversed(state["run_dev"]):
+        if entry.get("started_at") == started_at and entry.get("result") == "RUNNING":
+            entry.update(updates)
+            break
+    else:
+        state["run_dev"].append(updates)
     state["approval"] = None
     save_state(candidate, state)
     return state
@@ -226,6 +245,35 @@ def mark_rolled_back(repo: Path, sha: str, to_commit: str) -> bool:
     return True
 
 
+def mark_deployed(repo: Path, sha: str, run_id: str, build_id: str) -> bool:
+    """A successful UPDATE of exactly this candidate ends its lifecycle for good (a later ordinary BUILD
+    replacing the latest receipt must not revive it)."""
+    candidate = latest_candidate(Path(repo).resolve())
+    if candidate is None or candidate.sha != sha or candidate.run_id != run_id:
+        return False
+    state = load_state(candidate)
+    state["deployed"] = {"at": now(), "build_id": build_id}
+    save_state(candidate, state)
+    return True
+
+
+def revoked_shas(repo: Path) -> set[str]:
+    """SHAs taken back out of production: never to be released again. Durable: rolled-back candidate
+    states plus the revoked list written by every rollback (independent of the latest release attempt)."""
+    from .provenance import revoked_path
+
+    result = set()
+    folder = dcc_root() / "candidates" / _repo_key(Path(repo).resolve())
+    for path in folder.glob("*.json") if folder.is_dir() else []:
+        data = _read_json(path) or {}
+        if data.get("rolled_back") and data.get("candidate_sha"):
+            result.add(str(data["candidate_sha"]).lower())
+    for item in (_read_json(revoked_path(Path(repo).resolve())) or {}).get("revoked", []):
+        result.add(str(item.get("sha", "")).lower())
+    result.discard("")
+    return result
+
+
 def discard(candidate: Candidate) -> dict:
     """Explicitly leave the candidate route (back to the working-tree route). History is kept."""
     state = load_state(candidate)
@@ -250,7 +298,14 @@ def release_record(repo: Path) -> dict | None:
 
 
 def production_state(repo: Path) -> dict | None:
-    """What DCC last recorded as deployed (a DCC UPDATE or a verified rollback)."""
+    """What is confirmed deployed: production.json (written only by a successful UPDATE or a verified
+    rollback). Failed attempts never change it. Older states without it fall back to the last record."""
+    from .provenance import production_record_path
+
+    confirmed = _read_json(production_record_path(Path(repo).resolve()))
+    if confirmed:
+        return {"commit": str(confirmed.get("commit") or ""), "version": confirmed.get("version") or "",
+                "how": confirmed.get("how") or "", "ok": True}
     record = release_record(repo)
     if not record:
         return None
@@ -280,13 +335,18 @@ def snapshot(repo: Path, expected_branch: str) -> dict:
     if candidate is None:
         return result
     result["candidate"] = candidate
+    state = load_state(candidate)
+    terminal = next((k for k in ("rolled_back", "deployed", "discarded") if state.get(k)), None)
     try:
         verify(candidate, expected_branch)
     except CandidateError as exc:
+        if terminal:  # history only: a finished candidate never blocks or re-enters the flow
+            result.update(state=state, stages=[("Orchestrator candidate", candidate.sha,
+                                                f"{terminal}（終了済み）／参考: {exc}")])
+            return result
         result.update(active=True, error=str(exc))
         result["stages"] = [("Orchestrator candidate", candidate.sha, f"停止: {exc}")]
         return result
-    state = load_state(candidate)
     result["state"] = state
     origin = rev(repo, f"refs/remotes/origin/{expected_branch}")
     integrated = bool(origin) and is_ancestor(repo, candidate.sha, origin)
@@ -295,7 +355,7 @@ def snapshot(repo: Path, expected_branch: str) -> dict:
     release = release_record(repo) or {}
     release_bound = build_bound and release.get("build_id") == build.get("build_id") \
         and release.get("candidate_sha") == candidate.sha
-    deployed = release_bound and release.get("returncode") == 0
+    deployed = bool(state.get("deployed")) or (release_bound and release.get("returncode") == 0)
     run = last_run(state)
     approved = approval_valid(candidate, state)
     pushed = bool(state.get("push")) and state["push"].get("sha") == candidate.sha
@@ -468,6 +528,9 @@ def run_dev(repo: Path, expected_branch: str, expected_sha: str, *, runner=None)
     head_before = _worktree_head(target)
     if head_before != candidate.sha:
         raise CandidateError("RUN対象のHEADがcandidateと一致しません", "RUN_TARGET_MISMATCH")
+    if tracked_dirty(target):
+        raise CandidateError("RUN対象worktreeのGit管理ファイルが変更されています（candidateそのものではない）",
+                             "RUN_TARGET_DIRTY")
     seeds = list(entrypoints.run_specs().get(name, {}).get("seed", []))
     source_before = seed_stamp(candidate.repo, seeds)
     seeded = seed_runtime_data(candidate, target, seeds)
@@ -479,17 +542,24 @@ def run_dev(repo: Path, expected_branch: str, expected_sha: str, *, runner=None)
     for item in seeded:
         detail = f"{item['files']} files / {item['bytes']:,} bytes" if item["status"] == "copied" else "sourceに無いためskip"
         print(f"[RUN_DEV] seed (source → candidate、一方向): {item['path']}  {detail}", flush=True)
+    attempt = {"sha": candidate.sha, "run_id": candidate.run_id, "target": str(target), "cwd": cwd,
+               "entrypoint": entry, "command": command, "head_before": head_before, "seeded": seeded,
+               "started_at": started}
+    start_run(candidate, attempt)  # interrupted from here on = not approvable
     rc = (runner or _run_entrypoint)(target, name, candidate.repo)
     head_after = _worktree_head(target)
+    clean_after = not tracked_dirty(target)
     finished = now()
     source_after = seed_stamp(candidate.repo, seeds)
     source_changed = sorted(k for k in set(source_before) | set(source_after) if source_before.get(k) != source_after.get(k))
-    result = "PASS" if rc == 0 and head_after == candidate.sha else "FAIL"
-    record_run(candidate, {"sha": candidate.sha, "run_id": candidate.run_id, "result": result, "returncode": rc,
-                           "target": str(target), "cwd": cwd, "entrypoint": entry, "command": command,
-                           "head_before": head_before, "head_after": head_after, "seeded": seeded,
-                           "source_seed_changed": source_changed, "started_at": started, "finished_at": finished})
+    result = "PASS" if rc == 0 and head_after == candidate.sha and clean_after else "FAIL"
+    finish_run(candidate, started, dict(attempt, result=result, returncode=rc, head_after=head_after,
+                                        tracked_clean_after=clean_after, source_seed_changed=source_changed,
+                                        finished_at=finished))
     print(f"[RUN_DEV] stop: {finished}  exit code: {rc}  executed SHA: {head_after}  result: {result}", flush=True)
+    if not clean_after:
+        print("[RUN_DEV] STOP: RUN中にGit管理ファイルが変更されました（検証したコードがcandidateと一致しない）。承認できません",
+              flush=True)
     if source_changed:
         print("[RUN_DEV] 注意: RUN中にsource側のランタイムデータが変わりました（DCCは書き戻していません。"
               f"source側で別途アプリ等が動いていた可能性）: {', '.join(source_changed[:10])}", flush=True)

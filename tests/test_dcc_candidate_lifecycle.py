@@ -242,6 +242,50 @@ class ApprovalTests(LifecycleCase):
         self.assertFalse(cf.snapshot(self.repo, "main")["can_push"])
 
 
+class RunDevIntegrityTests(LifecycleCase):
+    """Astra review: an interrupted or modified RUN_DEV must never be approvable."""
+
+    def test_interrupted_rerun_revokes_the_previous_pass_and_approval(self):
+        self.make_venv()
+        self.run_dev()
+        self.approve()
+        seen = []
+
+        def crash(target, name, venv_root):
+            seen.append(cf.last_run(cf.load_state(self.candidate()))["result"])  # persisted before the app starts
+            raise RuntimeError("DCC closed / worker killed")
+
+        with mock.patch("builtins.print"), self.assertRaises(RuntimeError):
+            cf.run_dev(self.repo, "main", self.sha, runner=crash)
+        self.assertEqual(seen, ["RUNNING"])
+        state = cf.load_state(self.candidate())
+        self.assertEqual((cf.last_run(state)["result"], state["approval"]), ("RUNNING", None))
+        self.assertFalse(cf.approval_valid(self.candidate(), state))
+        snap = cf.snapshot(self.repo, "main")
+        self.assertFalse(snap["can_approve"] or snap["can_push"])
+        with self.assertRaises(cf.CandidateError) as ctx:
+            self.approve()
+        self.assertEqual(ctx.exception.code, "RUN_DEV_NOT_PASSED")
+
+    def test_tracked_change_in_the_worktree_is_never_a_pass(self):
+        self.make_venv()
+
+        def edit_code(target, name, venv_root):
+            (target / "marker.txt").write_text("edited during verification\n", encoding="utf-8")
+            return 0
+
+        with mock.patch("builtins.print"):
+            self.assertNotEqual(cf.run_dev(self.repo, "main", self.sha, runner=edit_code), 0)
+        run = cf.last_run(cf.load_state(self.candidate()))
+        self.assertEqual((run["result"], run["tracked_clean_after"]), ("FAIL", False))
+        with self.assertRaises(cf.CandidateError):
+            self.approve()
+        # and a worktree that is already modified is refused before starting
+        with mock.patch("builtins.print"), self.assertRaises(cf.CandidateError) as ctx:
+            cf.run_dev(self.repo, "main", self.sha, runner=self.in_process_runner())
+        self.assertIn(ctx.exception.code, ("RUN_TARGET_DIRTY", "RUN_TARGET_MISMATCH"))
+
+
 class PushTests(LifecycleCase):
     def approved(self):
         self.make_venv()
@@ -348,6 +392,52 @@ class BuildAndReleaseGateTests(LifecycleCase):
         self.assertIsNone(cf.release_expectation(self.repo, "main"))
         self.assertFalse(cf.snapshot(self.repo, "main")["active"])
 
+    def release_fixture(self):
+        artifact = self.tmp / "artifact"
+        artifact.mkdir(exist_ok=True)
+        (artifact / "App.exe").write_bytes(b"x")
+        entry = self.tmp / "update.ps1"
+        entry.write_text("# updater", encoding="utf-8")
+        target = self.tmp / "deploy"
+        target.mkdir(exist_ok=True)
+        receipt = {"repo": str(self.repo.resolve()), "status": "ready", "build_id": "b-c", "base_head": self.sha,
+                   "candidate_sha": self.sha, "candidate_run_id": self.candidate().run_id, "dirty": False,
+                   "artifact": str(artifact), "artifact_hash": "h"}
+        patches = [mock.patch.object(provenance, "read_receipt", return_value=receipt),
+                   mock.patch.object(provenance, "release_command", return_value=(["updater"], entry))]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return target, receipt
+
+    def test_update_rechecks_the_candidate_inside_the_worker(self):
+        self.pushed()
+        target, _ = self.release_fixture()
+        request = provenance.release_snapshot(self.repo, target, branch="main")
+        self.assertEqual((request["binding"]["expected_sha"], request["binding"]["candidate_run_id"]),
+                         (self.sha, self.candidate().run_id))
+        self.run_dev()  # the approval becomes invalid after the confirmation dialog
+        with mock.patch.object(provenance.processes, "stream", return_value=0) as launch, self.assertRaises(ValueError):
+            provenance.release(self.repo, request)
+        launch.assert_not_called()
+
+    def test_update_of_a_confirmed_candidate_ends_its_lifecycle_for_good(self):
+        self.pushed()
+        target, receipt = self.release_fixture()
+        request = provenance.release_snapshot(self.repo, target, branch="main")
+        with mock.patch.object(provenance.processes, "stream", return_value=0) as launch:
+            self.assertEqual(provenance.release(self.repo, request), 0)
+        launch.assert_called_once()
+        self.assertEqual(cf.production_state(self.repo)["commit"], self.sha)
+        self.assertTrue(cf.load_state(self.candidate())["deployed"])
+        # the next ordinary BUILD replaces the latest receipt: the deployed candidate must not come back
+        provenance.write_json(provenance.receipt_path(self.repo), dict(receipt, build_id="plain", candidate_sha=None,
+                                                                       candidate_run_id=None))
+        snap = cf.snapshot(self.repo, "main")
+        self.assertFalse(snap["active"])
+        self.assertIsNone(cf.build_gate(self.repo, "main"))
+        self.assertIsNone(cf.release_expectation(self.repo, "main"))
+
     def test_update_refuses_an_artifact_of_another_sha(self):
         self.pushed()
         good = {"candidate_sha": self.sha, "base_head": self.sha, "dirty": False}
@@ -440,6 +530,37 @@ class BuildAndReleaseGateTests(LifecycleCase):
         with self.assertRaises(ValueError) as ctx:
             provenance.read_receipt(self.repo)
         self.assertIn("rollback済み", str(ctx.exception))
+
+    def receipt(self, sha, build_id, candidate=False):
+        return {"repo": str(self.repo.resolve()), "status": "ready", "build_id": build_id, "base_head": sha,
+                "candidate_sha": sha if candidate else None, "candidate_run_id": None, "dirty": False,
+                "artifact_hash": "h", "artifact": str(self.tmp / "artifact")}
+
+    def test_later_update_attempts_never_erase_the_rollback(self):
+        self.rolled_back()
+        other = git(self.repo, "rev-parse", "HEAD")
+        started = "2026-09-29T00:00:00"
+        provenance.record_release_result(self.repo, {"receipt": self.receipt(other, "failed1"), "target": "T"}, 1, started)
+        self.assertEqual(cf.production_state(self.repo)["commit"], self.base)     # a failed attempt changes nothing
+        provenance.write_json(provenance.receipt_path(self.repo), self.receipt(self.sha, "rebuild-910"))
+        with self.assertRaises(ValueError):                                       # revoked SHA still refused
+            provenance.read_receipt(self.repo)
+        new = self.make_candidate("v1.4.1", run_id="20260929-000000-000009")
+        provenance.record_release_result(self.repo, {"receipt": self.receipt(new, "ok1"), "target": "T"}, 0, started)
+        self.assertEqual(cf.production_state(self.repo)["commit"], new)          # confirmed only on success
+        provenance.write_json(provenance.receipt_path(self.repo), self.receipt(self.sha, "rebuild-910b"))
+        with self.assertRaises(ValueError):                                       # ... and still refused afterwards
+            provenance.read_receipt(self.repo)
+        self.assertEqual(len(list(provenance.release_record_path(self.repo).parent.glob("release-2*.json"))), 2)
+
+    def test_rolled_back_candidate_with_a_moved_branch_stays_inactive(self):
+        self.rolled_back()
+        git(self.repo, "branch", "-f", self.candidate().branch, self.base)       # verification would now fail
+        snap = cf.snapshot(self.repo, "main")
+        self.assertFalse(snap["active"])
+        self.assertEqual(snap["error"], "")
+        self.assertIsNone(cf.build_gate(self.repo, "main"))
+        self.assertIn("rolled_back", dcc_app.flow_text(snap))
 
     def test_a_new_candidate_after_the_rollback_starts_fresh(self):
         self.rolled_back()

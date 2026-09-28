@@ -44,8 +44,56 @@ def receipt_path(repo: Path) -> Path:
 
 
 def release_record_path(repo: Path) -> Path:
-    """Result of the last DCC UPDATE of this repo, bound to the build id and the SHA it was built from."""
+    """Result of the last DCC UPDATE attempt (or rollback) of this repo, bound to the build id and SHA."""
     return state_root() / repo_key(repo) / "last_release.json"
+
+
+def production_record_path(repo: Path) -> Path:
+    """Confirmed deployed state: written only by a successful UPDATE or a verified rollback."""
+    return state_root() / repo_key(repo) / "production.json"
+
+
+def revoked_path(repo: Path) -> Path:
+    """SHAs taken back out of production by a rollback; never released again."""
+    return state_root() / repo_key(repo) / "revoked.json"
+
+
+def record_release_result(repo: Path, request: dict, rc: int, started: str) -> dict:
+    """Keep every attempt (history + last), change the confirmed production state only on success,
+    and end the candidate lifecycle when exactly its bound artifact was deployed."""
+    receipt = request["receipt"]
+    binding = request.get("binding") or {}
+    record = {"schema": 1, "kind": "update", "repo": receipt["repo"], "build_id": receipt["build_id"],
+              "base_head": receipt["base_head"], "candidate_sha": receipt.get("candidate_sha"),
+              "candidate_run_id": receipt.get("candidate_run_id"), "artifact_hash": receipt["artifact_hash"],
+              "target": request["target"], "returncode": rc, "started_at": started,
+              "finished_at": datetime.now(timezone.utc).isoformat()}
+    folder = release_record_path(repo).parent
+    write_json(folder / f"release-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{receipt['build_id'][:8]}.json", record)
+    write_json(release_record_path(repo), record)
+    if rc == 0:
+        write_json(production_record_path(repo), {
+            "schema": 1, "commit": receipt["base_head"], "version": "", "build_id": receipt["build_id"],
+            "how": "DCC UPDATE", "target": request["target"], "at": record["finished_at"]})
+        if binding:
+            from . import candidate as candidate_flow
+
+            candidate_flow.mark_deployed(repo, binding["expected_sha"], binding["candidate_run_id"], receipt["build_id"])
+    return record
+
+
+def candidate_binding(repo: Path, branch: str | None) -> dict | None:
+    """The candidate an UPDATE is bound to, with the identity of its approval and RUN (None: working-tree route)."""
+    if not branch:
+        return None
+    from . import candidate as candidate_flow
+
+    expected = candidate_flow.release_expectation(repo, branch)
+    if expected is None:
+        return None
+    state = candidate_flow.load_state(expected)
+    return {"expected_sha": expected.sha, "expected_branch": branch, "candidate_run_id": expected.run_id,
+            "approval_at": state["approval"]["at"], "run_dev_finished_at": state["approval"]["run_dev_finished_at"]}
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -302,9 +350,14 @@ def read_receipt(repo: Path) -> dict:
     except (OSError, ValueError):
         release = {}
     built = str(record.get("base_head") or "").lower()
-    if release.get("kind") == "rollback" and built and built == str(release.get("rolled_back_from") or "").lower():
-        raise ValueError(f"この成果物（{built[:12]}）は本番からrollback済みのSHAのBUILDです。再配布しません"
-                         f"（本番は {str(release.get('deployed_commit'))[:12]}）。新しいBUILDが必要です")
+    from .candidate import revoked_shas
+
+    revoked = revoked_shas(repo)
+    if release.get("kind") == "rollback":
+        revoked.add(str(release.get("rolled_back_from") or "").lower())
+    if built and built in revoked:
+        raise ValueError(f"この成果物（{built[:12]}）は本番からrollback済みのSHAのBUILDです。再配布しません。"
+                         "新しいBUILDが必要です")
     artifact = Path(record["artifact"])
     if tree_hash(artifact) != record.get("artifact_hash"):
         raise ValueError("BUILD後に成果物が変わりました。UPDATEを停止します")
@@ -354,13 +407,16 @@ def _require_candidate_artifact(repo: Path, record: dict, expected_sha: str, exp
 
 
 def release_snapshot(repo: Path, target: Path, *, expected_sha: str | None = None,
-                     expected_branch: str | None = None) -> dict:
+                     expected_branch: str | None = None, branch: str | None = None) -> dict:
     # Links are rejected on the path as given (resolve() would silently follow them); everything
     # recorded below then derives from one canonical target, so an 8.3 short path and its long
     # form (same entity) compare equal while a genuinely different target still does not.
     no_links(target)
     target = target.resolve()
     record = read_receipt(repo)
+    binding = candidate_binding(repo, branch)  # recomputed at confirmation AND again inside the worker
+    if binding:
+        expected_sha, expected_branch = binding["expected_sha"], binding["expected_branch"]
     if expected_sha:
         _require_candidate_artifact(repo, record, expected_sha, expected_branch or "main")
     artifact = Path(record["artifact"])
@@ -383,23 +439,23 @@ def release_snapshot(repo: Path, target: Path, *, expected_sha: str | None = Non
     return {"receipt": record, "target": str(target.resolve()), "command": command,
             "entry_hash": digest(entry), "target_identity": [stat.st_dev, stat.st_ino],
             "destination_detail": detail, "adapter_hash": digest(Path(entrypoints.__file__)),
-            "expected_sha": expected_sha or None, "expected_branch": expected_branch or None}
+            "expected_sha": expected_sha or None, "expected_branch": expected_branch or None,
+            "branch": branch, "binding": binding}
 
 
 def release(repo: Path, request: dict) -> int:
     with output_lock(Path(request["receipt"]["artifact"])):
-        current = release_snapshot(repo, Path(request["target"]), expected_sha=request.get("expected_sha"),
-                                   expected_branch=request.get("expected_branch"))
+        # Candidate eligibility (run id, SHA, approval / RUN identity, route) is recomputed here, in the
+        # worker, immediately before execution; any change since the confirmation stops the UPDATE.
+        branch = request.get("branch")
+        current = release_snapshot(repo, Path(request["target"]),
+                                   expected_sha=None if branch else request.get("expected_sha"),
+                                   expected_branch=None if branch else request.get("expected_branch"), branch=branch)
         if current != request:
             raise ValueError("確認後に配布条件が変わりました。UPDATEを停止します")
-        receipt = request["receipt"]
         started = datetime.now(timezone.utc).isoformat()
         rc = processes.stream(request["command"], cwd=Path(__file__).resolve().parents[2], emit=processes.forward)
-        write_json(release_record_path(repo), {
-            "schema": 1, "repo": receipt["repo"], "build_id": receipt["build_id"], "base_head": receipt["base_head"],
-            "candidate_sha": receipt.get("candidate_sha"), "candidate_run_id": receipt.get("candidate_run_id"),
-            "artifact_hash": receipt["artifact_hash"], "target": request["target"], "returncode": rc,
-            "started_at": started, "finished_at": datetime.now(timezone.utc).isoformat()})
+        record_release_result(repo, request, rc, started)
         return rc
 
 

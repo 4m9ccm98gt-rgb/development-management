@@ -1231,8 +1231,9 @@ class App(ttk.Frame):
             if self.current != definition or App._repo_busy(self):
                 return
             record = snapshot["receipt"]
-            bound = (f"Orchestrator candidate: {snapshot['expected_sha']}（承認・push・BUILDと一致）\n"
-                     if snapshot.get("expected_sha") else "")
+            binding = snapshot.get("binding") or {}
+            bound = (f"Orchestrator candidate: {binding['expected_sha']}（run {binding['candidate_run_id']}、"
+                     "承認・push・BUILDと一致）\n" if binding else "")
             details = (bound + f"repo: {repo_root}\nBUILD: {record['build_id']}\nbase HEAD: {record['base_head']}\n"
                        f"dirty: {record['dirty']}\n成果物: {record['artifact']}\nSHA256: {record['artifact_hash']}\n"
                        f"配布先: {snapshot.get('destination_detail', snapshot['target'])}\n\nこの成果物を実機確認済みで、UPDATEを実行しますか？")
@@ -1248,9 +1249,7 @@ class App(ttk.Frame):
             self._start_lifecycle(command, definition.name, "release")
 
         def snapshot():
-            expected = candidate_flow.release_expectation(repo_root, definition.branch)
-            return provenance.release_snapshot(repo_root, target, expected_sha=expected.sha if expected else None,
-                                               expected_branch=definition.branch if expected else None)
+            return provenance.release_snapshot(repo_root, target, branch=definition.branch)
 
         self._prepare_operation(definition.name, "release", snapshot, ready)
 
