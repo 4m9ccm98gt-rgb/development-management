@@ -21,26 +21,14 @@ import os
 from pathlib import Path
 import sys
 import time
-import tomllib
 
 from .release_engine import (
-    Change, ExclusiveLock, Progress, Protected, ReleaseError, RollbackIncomplete, Transaction, in_use,
-    metadata_diff, now_stamp, read_key_values, safe_join, scan_scope, sha256, stat_files, write_json,
+    REGISTRY, Change, LockSet, Progress, ReleaseError, RollbackIncomplete, Transaction, critical_hashes, in_use,
+    metadata_diff, now_stamp, operational_snapshot, protected_of, read_key_values, release_config, safe_join,
+    sha256, stat_files, write_json,
 )
 
-REGISTRY = Path(__file__).resolve().parents[1] / "dev_control_center_repos.toml"
-
-
-def release_config(repo_name: str, registry: Path = REGISTRY) -> dict:
-    with registry.open("rb") as handle:
-        config = tomllib.load(handle).get("release", {}).get(repo_name)
-    if not config:
-        raise ReleaseError(f"[release.{repo_name}] is not configured", "CONFIG_MISSING")
-    return dict(config)
-
-
-def protected_of(config: dict) -> Protected:
-    return Protected(tuple(config.get("protected", [])), tuple(config.get("protected_names", [])))
+_critical = critical_hashes
 
 
 def _hash_files(root: Path, rels, progress: Progress, label: str) -> dict[str, str | None]:
@@ -50,19 +38,6 @@ def _hash_files(root: Path, rels, progress: Progress, label: str) -> dict[str, s
         result[rel] = sha256(path) if path.is_file() else None
         progress.count(number, len(rels), label)
     return result
-
-
-def _critical(root: Path, listing: dict, names) -> dict[str, str]:
-    wanted = {n.lower() for n in names}
-    return {rel: sha256(safe_join(root, rel)) for rel in sorted(listing) if Path(rel).name.lower() in wanted}
-
-
-def operational_snapshot(target: Path, config: dict) -> dict[str, tuple[int, int]]:
-    """Protected operational data of the live deployment: top-level files plus the configured
-    `operational_roots` only. The backup root (every generation) and unrelated folders are never entered."""
-    protected = protected_of(config)
-    listing = scan_scope(target, config.get("operational_roots", []))
-    return {rel: value for rel, value in listing.items() if protected(rel) and not rel.lower().startswith("backup/")}
 
 
 def _changed_protected_hashes(target: Path, before: dict, after: dict) -> dict[str, str | None]:
@@ -231,7 +206,7 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
     progress = Progress(7, emit)
 
     progress.stage(1, "Lock and in-use check")
-    with ExclusiveLock(safe_join(target, config.get("lock", ".dcc-release.lock"))):
+    with LockSet(target, config):
         busy = [rel for rel in config.get("in_use", [exe]) if in_use(safe_join(target, rel))]
         if busy:
             raise ReleaseError(f"still in use (close the app on every PC): {busy}", "IN_USE")

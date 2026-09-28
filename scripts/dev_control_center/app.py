@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import queue
 import subprocess
@@ -31,7 +32,7 @@ from .core import (
     short_sha,
     unmanaged_github_repositories,
 )
-from . import candidate as candidate_flow, provenance, processes, entrypoints as machine_entries
+from . import candidate as candidate_flow, provenance, processes, entrypoints as machine_entries, release_update
 from .loader import Coordinator, NoticeKind
 from .selection import (
     DEV_MANAGEMENT,
@@ -204,6 +205,7 @@ class App(ttk.Frame):
         self.lifecycle_events: queue.Queue = queue.Queue(maxsize=2048)
         self.lifecycle_jobs: dict[str, object] = {}
         self.lifecycle_cancellations: dict[str, threading.Event] = {}
+        self.lifecycle_after: dict[str, object] = {}  # repo -> callback(rc) after its current job (UPDATE dry-run)
         # Orchestrator drafts (Task / Tests per repo) and the running-run badge. The Orchestrator itself
         # is not an operation of this window: its runs live in their own worker processes.
         self.ai_drafts: dict[str, object] = {}
@@ -1069,7 +1071,8 @@ class App(ttk.Frame):
             if not state.safe_for_development(definition):
                 raise ValueError("正式repo / originを確認できません")
             choice = getattr(entries, action)
-            if not choice.ready or not choice.path:
+            engine = action == "release" and release_update.engine_repo(definition.name)
+            if not engine and (not choice.ready or not choice.path):
                 raise ValueError(f"{action.upper()}の正式入口を一意に特定できません")
             if action in {"run", "build"} and not machine_entries.supported(repo_root, action):
                 raise ValueError("非対話entrypoint未登録です。dcc_entrypoints.jsonで本体を指定してください")
@@ -1125,6 +1128,13 @@ class App(ttk.Frame):
                     self._log(f"{definition.name}: BUILD 対象 = 承認・push済みcandidate {flow.sha}（local / origin 一致を確認済み）")
                 self._start_lifecycle(command, definition.name, action)
                 return
+            if release_update.engine_repo(definition.name):
+                production = candidate_flow._read_json(provenance.production_record_path(repo_root.resolve())) or {}
+                folder = filedialog.askdirectory(title="配布先フォルダを選択（共通UPDATE engine: まずdry-run）",
+                                                 initialdir=production.get("target") or None, parent=self.master)
+                if folder:
+                    self._start_engine_dry_run(repo_root, definition, Path(folder))
+                return
             folder = filedialog.askdirectory(title="配布先フォルダを選択（HDD更新はドライブ直下）", parent=self.master)
             if folder:
                 self._prepare_release(repo_root, definition, Path(folder))
@@ -1146,10 +1156,10 @@ class App(ttk.Frame):
         threading.Thread(target=inspect, daemon=True).start()
         self._set_button_states()
 
-    def _start_lifecycle(self, command: list[str], repo_name: str, action: str) -> None:
+    def _start_lifecycle(self, command: list[str], repo_name: str, action: str) -> bool:
         if any(name == repo_name for name, _ in ACTIVE_OPERATIONS.values()):
             self._log(f"{repo_name}: 競合する操作があるため開始しません")
-            return
+            return False
         token = object()
         self.lifecycle_jobs[repo_name] = token
         cancel = threading.Event()
@@ -1169,12 +1179,19 @@ class App(ttk.Frame):
 
         threading.Thread(target=execute, daemon=True).start()
         self._set_button_states()
+        return True
 
     def stop_lifecycle(self) -> None:
         if not self.current:
             return
         name = self.current.name
         cancel = self.lifecycle_cancellations.get(name)
+        job = self.lifecycle_jobs.get(name)
+        if job is not None and ACTIVE_OPERATIONS.get(id(job), (None, None))[1] == "release" \
+                and release_update.engine_repo(name):
+            messagebox.showinfo("UPDATE実行中", "共通UPDATE engineの実行中は停止できません。途中で止めると配布先が中断状態になります。"
+                                "\n失敗時はengineが自動で元に戻します。完了までお待ちください。", parent=self.master)
+            return
         if cancel is not None and messagebox.askyesno("実行停止", f"{name}の実行と子processを停止しますか？\nBUILD中の成果物はUPDATE可能と扱いません。", parent=self.master):
             cancel.set()
             self._log(f"{name}: 明示的な停止を要求しました")
@@ -1221,7 +1238,59 @@ class App(ttk.Frame):
                 self.selection.post_action_notice[repo] = text
                 self.banner_var.set(text)
                 self._reload_after(repo)
+                after = self.lifecycle_after.pop(repo, None)
+                if after is not None and not (cancellation and cancellation.is_set()):
+                    try:
+                        after(rc)
+                    except Exception as exc:
+                        self._log(f"{repo}: {action.upper()}後の処理を停止 — {exc}")
         self._set_button_states()
+
+    def _start_engine_dry_run(self, repo_root: Path, definition: RepoDefinition, target: Path,
+                              acknowledge_orphans: bool = False) -> None:
+        """Common UPDATE engine, step 1: a read-only dry-run in a worker; its plan is then shown for confirmation."""
+        if self.current != definition or App._repo_busy(self):
+            return
+        plan_path = release_update.plans_dir(repo_root.resolve()) / f"plan-{time.strftime('%Y%m%d_%H%M%S')}.json"
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.release_update", "plan",
+                   "--repo", str(repo_root), "--target", str(target), "--branch", definition.branch,
+                   "--out", str(plan_path)] + (["--acknowledge-orphans"] if acknowledge_orphans else [])
+        if self._start_lifecycle(command, definition.name, "update-dry-run"):
+            self.lifecycle_after[definition.name] = lambda rc: self._confirm_engine_plan(
+                repo_root, definition, target, plan_path, rc)
+
+    def _confirm_engine_plan(self, repo_root: Path, definition: RepoDefinition, target: Path, plan_path: Path,
+                             rc: int) -> None:
+        """Step 2: show the dry-run result; only an explicit yes starts step 3 (execute of exactly this plan)."""
+        if self.current != definition:
+            self._log(f"{definition.name}: 選択が変わったためUPDATE確認を中止しました（dry-runのみ実施）")
+            return
+        if not plan_path.is_file():
+            self.banner_var.set(f"{definition.name}: UPDATE dry-run停止 rc={rc}（ログを確認してください）")
+            return
+        body = json.loads(plan_path.read_text(encoding="utf-8"))
+        if body["stop_reasons"]:
+            deletions = all(r.startswith("DELETION_CANDIDATES") for r in body["stop_reasons"])
+            names = "\n".join(f"  {d['path']}" for d in body["deletions"][:20])
+            if deletions and not body["acknowledge_orphans"] and messagebox.askyesno(
+                    "UPDATE停止: 削除候補",
+                    f"前回のDCC releaseで管理していたが新BUILDに無いファイルがあります:\n{names}\n\n"
+                    "engineは削除しません。これらを管理対象外として配布先に残したまま、dry-runをやり直しますか？",
+                    parent=self.master):
+                self._start_engine_dry_run(repo_root, definition, target, acknowledge_orphans=True)
+                return
+            messagebox.showwarning("UPDATE停止", "dry-runで停止理由が見つかりました:\n\n" + "\n".join(body["stop_reasons"]),
+                                   parent=self.master)
+            self.banner_var.set(f"{definition.name}: UPDATE停止 — " + body["stop_reasons"][0][:120])
+            return
+        if not messagebox.askyesno("UPDATE確認（dry-run結果）", engine_plan_text(body), parent=self.master):
+            self.banner_var.set("UPDATEをキャンセルしました（dry-runのみ。配布先は未変更）")
+            return
+        if self.current != definition or App._repo_busy(self):
+            return
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.release_update", "execute",
+                   "--plan", str(plan_path), "--confirm", body["plan_id"][:16]]
+        self._start_lifecycle(command, definition.name, "release")
 
     def _prepare_release(self, repo_root: Path, definition: RepoDefinition, target: Path) -> None:
         if self.current != definition or App._repo_busy(self):
@@ -1369,6 +1438,29 @@ def flow_text(flow: dict | None) -> str:
         lines.append("■ baseが移動: fast-forwardできません。再Orchestratorまたは人間の判断が必要です")
     if not flow.get("active") and not flow.get("error"):
         lines.append("（このcandidateは完了・破棄済み、または既にoriginに含まれます。通常ルート）")
+    return "\n".join(lines)
+
+
+def engine_plan_text(body: dict) -> str:
+    """The dry-run result of the common UPDATE engine, as shown before the explicit UPDATE confirmation."""
+    s, prov, production = body["summary"], body["provenance"], body["production"]
+    trust = ("信頼済み（size / mtimeが一致するファイルは読まずに比較）" if production["manifest_trusted"]
+             else "未信頼 → 管理対象の全ファイルをSHA-256で検証済み（" + "; ".join(production["trust_reasons"])[:160] + "）")
+    lines = [
+        f"本番: {production['live_commit'][:12] or '(不明)'} → 新BUILD: {prov['base_head'][:12]}"
+        f"（BUILD {prov['build_id'][:8]}、{'candidate' if prov['route'] == 'candidate' else 'main'}、local HEAD = origin）",
+        f"配布先: {body['target']}",
+        f"管理対象 {s['managed']}: 変更なし {s['unchanged']} / 更新 {s['modified']} / 新規 {s['new']}"
+        + (f"（配布先の差異を修復 {s['drift_repaired']}）" if s["drift_repaired"] else ""),
+        f"削除候補 {s['deletion_candidates']}（削除しません） / 管理対象外（残す） {s['retained']} / "
+        f"運用データ（触れない） {s['protected_live']}",
+        f"バックアップ: 更新する {s['backup_files']} files / {s['backup_bytes']:,} bytes（変更分のみ）",
+        f"コピー: {s['copied_bytes']:,} bytes / 推定 {body['estimated_execute_seconds']} 秒",
+        f"release manifest: {trust}",
+    ]
+    if body.get("in_use_now"):
+        lines.append(f"■ 使用中: {', '.join(body['in_use_now'])} — 全PCでアプリを閉じてから実行してください")
+    lines += [f"plan: {body['plan_id'][:12]}", "", "この内容でUPDATEを実行しますか？（失敗時は変更分だけ自動で元に戻します）"]
     return "\n".join(lines)
 
 

@@ -59,7 +59,7 @@ next-day-setupのように設定・保存データをコード横のgit管理外
 
 | ファイル | 内容・書かれる時 |
 |---|---|
-| `production.json` | **確定した本番**。UPDATEがrc 0で成功した時（commit = BUILDの `base_head`）と、検証済みrollbackの時（commit = 復旧先、version・EXE SHA付き）だけ書かれる。失敗したUPDATEでは変わらない |
+| `production.json` | **確定した本番**。UPDATEがrc 0で成功した時（commit = BUILDの `base_head`。共通engineでは最終検証後に、version・`release_id`・release manifestの `manifest_sha256`・EXE SHA付き）と、検証済みrollbackの時（commit = 復旧先、version・EXE SHA付き）だけ書かれる。失敗したUPDATEでは変わらない |
 | `last_release.json` | **直近の試行**（UPDATEの成否を問わず、またはrollback）。本番の根拠にはしない。`production.json` が無い旧状態では、rc 0の場合に限り本番として読む。試行が上書きする前に、`production.json` の無い旧状態の成功記録は `production.json` へ昇格される（`release-migrated-<日時>.json` に保存） |
 | `release-<日時>-<build id>.json` | UPDATE試行ごとの履歴（上書きされない） |
 | `release-<日時>-rollback.json` | rollback記録の不変コピー（復旧元backup、退避先 `saved_before_restore`、plan id、rollback元SHA）。以後のUPDATE試行で失われない |
@@ -71,13 +71,56 @@ next-day-setupのように設定・保存データをコード横のgit管理外
 - **rollback後のcandidate**: 本番から外したSHAのOrchestrator candidateは `rolled_back`（日時・復旧先）になり、非active・RUN_DEV / 承認 / pushとも `CANDIDATE_ROLLED_BACK` で拒否され、再利用されません。フローのUPDATE段階は「配布後に本番からrollback済み（本番は <SHA>）」と表示します。以後の新しいcandidateは別のrun idの状態として最初から始まります。
 - rollbackは `python -m scripts.dev_control_center.restore_release plan ...`（読み取り専用のdry-run。live配布物の管理対象ファイルと保護データ、復旧元backupの必要ファイルだけを対象にし、共有フォルダ全体や他のbackup世代は走査しない）→ plan確認 → `execute --plan ... --confirm <plan id先頭12文字以上>`。executeはplan内容のdigest（repo・target・backup・復旧先commit / version・置換前のBUILD_INFO・対象ファイル・期待hash・全管理ファイルのstat）を再計算し、live側の変化があれば何も書かずに停止します。最終検証が失敗・完了不能なら置換したアプリファイルだけを戻し（運用データはそのまま）、戻しきれなければ `ROLLBACK_INCOMPLETE` と退避先を表示します。上記の記録はすべて検証成功後にだけ書かれます。
 
+## 共通UPDATE engine（差分UPDATE）
+
+`scripts/dev_control_center/release_update.py`（パイプライン）と `release_engine.py`（安全プリミティブ。`restore_release` と共用: lock、in-use確認、safe path、reparse point拒否、保護guard、検証済み退避、staging、置換、undo、`ROLLBACK_INCOMPLETE`）。`[release.<repo>]` に `engine = "dcc"` があるrepoは、DCCのUPDATEボタンがこのengineを使います（現在next-day-setup）。アプリrepoはUPDATEロジックを持たず、`[release.<repo>]` の設定だけを持ちます。repo固有処理は `release_engine.HOOKS` に登録された読み取り専用の検証hookを名前で許可する場合だけです（設定からのimportはしない。現在なし）。
+
+**設定（`[release.<repo>]`）**: `artifact` / `child_target`、`managed`（管理対象。`*` は1階層、`**` は任意階層）、`protected` / `protected_names`（運用データ。managedに一致しても除外）、`critical`（前後SHA-256）、`operational_roots`（運用データを探す唯一のフォルダ）、`final_swap`（最後に置換する順。EXEが最後）、`in_use`、`manifest`、`lock` / `legacy_locks`、`backup_dir` / `backup_retention`（既定5）、`build_info` / `build_info_keys`、`hooks`。読み込み時に全パスを検証し、保護対象のmanifest・lock、管理対象外のfinal_swap、未登録hookは `CONFIG_INVALID`。
+
+next-day-setup: managed = `DinnerSystem.exe`・`_internal/**`・直下の `*.txt` / `*.bat` / `*.vbs`（`update_delta.ps1` の配布対象と同じ）。protected = `update_shared_folder.ps1` / `update_delta.ps1` の保護（`保存データ` / `print_work` / `logs` / `log` / `backup` の各階層、`*.log`、`_internal/outputs`、`SumatraPDF-settings.txt`、`closing_tasks.json` / `master_settings.json` / `ui_prefs.json`）に加え、稼働中アプリが自分で書く直下の `config/`（`app_dir()/config` の印刷設定。どの更新も配布していない）と直下の `outputs/`。成果物内の `_internal/master_settings.json` 等（同梱の既定値）は保護対象として配布しません。lockは `.dcc-release.lock` と旧updaterの `.nds-update.lock` を同時に保持します。
+
+**流れ**（DCC: 配布先を選ぶ → dry-run → 結果を確認ダイアログで表示 → 「はい」だけでexecute。実行中は画面から停止できません）:
+
+| 段階 | 内容 |
+|---|---|
+| [1/7] Provenance | BUILD記録が `ready`、失効SHAでない、成果物・入力がBUILD後に不変、dirtyでない、BUILDしたSHA == local HEAD == origin/<branch>（ls-remote）、candidateルートは承認 == push == BUILD SHA、成果物の `BUILD_INFO` のSHA == BUILD SHA、成果物EXE == `BUILD_INFO` のEXE SHA-256 |
+| [2/7] Production | DCCの `production.json` のcommit == 配布先の `BUILD_INFO`（違えば `PRODUCTION_MISMATCH` で停止）、配布先が失効SHAなら停止。release manifestの信頼判定（下記） |
+| [3/7] Delta | 管理対象だけを比較。unchanged / modified / new / 削除候補 / retained（管理対象外）/ protected に分類 |
+| [4/7] Backup | modifiedだけを `backup/dcc_release_<日時>_<release id>/files/` へ退避しSHA-256照合、同フォルダに `backup_manifest.json`（release id、source commit、置換前の本番commit、modified: 旧hash・新hash・backup hash、new: 新hash、日時）を記録。newは元が無いので退避不要 |
+| [5/7] Staging | 全変更を配布先の同じフォルダへstageしSHA-256照合。ここまでliveファイルは不変。その後、EXEを共有なしで開いて保持し、どのPCからも起動できない状態にする（起動済みなら `IN_USE` で停止） |
+| [6/7] Apply | EXE以外 → `BUILD_INFO.txt` → EXEの順に置換（EXEの直前に保持を解放）。失敗時は今回置換したものだけを逆順に検証済み退避から戻し、今回追加したファイル（内容が書いた時のままのものだけ）と作ったフォルダを削除 |
+| [7/7] Final | 変更ファイルのSHA-256、unchangedファイルのstat不変、final-swapファイル、配布先BUILD_INFO == 新BUILD、EXE == BUILD_INFO、critical SHA-256不変、運用データのメタデータ不変、stage残骸なし、hook。失敗 → 巻き戻し（運用データの変化は `OPERATIONAL_CHANGED`: アプリファイルだけ戻しデータは残す） |
+
+最終検証の成功後にだけ、配布先のrelease manifest（`DCC_RELEASE_MANIFEST.json`）をatomicに置き換え、続いてDCC記録（`production.json` / `last_release.json` / 履歴 / `releases/<release id>.manifest.json`、candidateなら `deployed`）を書き、最後に保持世代を超えた古いengine backupだけを削除します。失敗・停止した試行は `last_release.json` と履歴に `returncode 1` と `code` で残り、`production.json` は変わりません。
+
+**dry-run**: 配布先へは一切書きません（lockも作らない）。走査するのは直下のファイル、管理対象のフォルダ（`_internal`）、`operational_roots` だけで、`backup/` や無関係なフォルダには入りません。表示: 本番SHA、新BUILD SHA、各分類の件数、backup対象と容量、コピー容量、推定時間、manifestの信頼可否と理由、使用中のEXE。planはローカル（`%LOCALAPPDATA%/ShizenDev/DCC/builds/<repo-key>/update-plans/`）に保存し、plan id（本文のdigest）の先頭12文字以上の確認がexecuteに必要です。executeはplan digest・設定digestを検証し、provenance（BUILD / candidate / origin）、成果物、production記録、配布先BUILD_INFO、manifest、planが見た全管理ファイルのstatを再計算して、dry-run後に変化があれば何も書かずに `PLAN_DRIFT` で停止します。
+
+**release manifest v2**（`DCC_RELEASE_MANIFEST.json`）: `schema_version: 2`、`release_id`、`repo`、`deployed_commit`、`version`、`build_id`、`artifact`（tree SHA-256・EXE SHA-256・BUILD_INFO）、`provenance`（route・branch・HEAD・origin・candidate）、`build_timestamp`、`released_at`、`engine_version`、`previous_release_id` / `previous_commit`、`files`（path・size・SHA-256・配布後のmtime）。旧NDSの `DEPLOY_MANIFEST.json` は使いません（残置。restoreが旧full backupを戻す時だけ使う）。
+
+**manifestの信頼**: 次の全部が成り立つ時だけ差分の基準にし、size + mtimeが記録と一致するファイルは読まずに比較します。1つでも欠ければ「未信頼」として管理対象の全ファイルをSHA-256で検証し、削除候補も出しません。
+
+- 構造が正しい（全entryが管理対象の正しいパス、重複なし、size / SHA-256 / mtimeあり）
+- `deployed_commit` == 配布先 `BUILD_INFO` == `production.json` のcommit、`release_id` == `production.json`
+- manifestファイル自体のSHA-256 == `production.json` の `manifest_sha256`（UPDATE成功時に記録。編集・差し替えを検出）
+- 配布先のEXEと `BUILD_INFO.txt` の実SHA-256 == manifest、EXE == `BUILD_INFO` のEXE SHA-256
+
+metadataが一致しても中身が違うファイル（size・mtimeを戻した改変）は、modifiedの退避時に実SHA-256で照合され `SAVE_HASH_MISMATCH` で止まります（liveは不変）。
+
+**削除候補**: 信頼済みmanifestで管理対象だったのに新BUILDに無く、配布先に残っているファイルだけ。dry-runは停止理由とし、削除は決してしません。DCCで「管理対象外として残す」を選ぶとdry-runをやり直し（`--acknowledge-orphans`）、以後は通常の管理対象外ファイルになります。配布先だけにある未知のファイル・運用データは一覧表示して残し、停止理由にしません。ただし信頼済みmanifestがあり、新BUILDが新規に置くパスに管理外のファイルがある、または管理対象パスにフォルダがある / 親がファイルの場合は `PATH_COLLISION` で停止します。前回の中断で残ったstageファイル（`.dcc-stage` / `.dcc-undo`）があれば停止します。
+
+**中断**: 配布先へ最初に書く前にローカルへ `update-inflight.json` を置き、成功または完全な巻き戻しの後に消します。`ROLLBACK_INCOMPLETE`（退避先を表示）やプロセス停止で残った場合、次のdry-run / executeは `INTERRUPTED` で停止します。配布先を確認・復旧した後、`python -m scripts.dev_control_center.release_update clear-interrupted --repo <repo> --confirm <release id先頭12文字以上>` で解除します。
+
+**backup保持**: `backup_dir` 直下の `dcc_release_*` で、同じrepoの完全な `backup_manifest.json` を持つものだけが対象です。新しい順に `backup_retention` 世代（今回分は必ず）を残し、それより古いものを削除します（中にreparse pointがあれば削除しない）。旧updaterの `update_before_*`、restoreの `rollback_before_*`、他repo・不完全なbackupには触れません。
+
+**CLI**: `python -m scripts.dev_control_center.release_update plan --repo <repo> --target <配布先> [--branch main] [--acknowledge-orphans]`（rc 0: 実行可能、2: 停止理由あり）→ `execute --plan <plan.json> --confirm <plan id先頭12文字以上>`（rc 3: `ROLLBACK_INCOMPLETE`）。
+
 ## 既存entrypointとの接続
 
 正式CMDの存在検査は維持しますが、DCCは手動CMDを実行しません。RUN / BUILDは `entrypoints.py` からPython / PowerShell / dotnetの処理本体へ接続します。UPDATEは確認済みの配布元・配布先を明示します。元のCMD / PowerShellとダブルクリック時のpauseは変更しません。
 
 | repo | 成果物 | UPDATE接続 |
 |---|---|---|
-| next-day-setup | dist/DinnerSystem | update_shared_folder.ps1 のSourcePath / TargetPath |
+| next-day-setup | dist/DinnerSystem | 共通UPDATE engine（`[release.next-day-setup]`、上記）。update_shared_folder.ps1 はDCCから実行しない |
 | beverage-inventory-ordering-system | python_app/dist/在庫発注管理アプリ | 既存更新PS1のSourcePath / TargetPath |
 | menu-sheet-generator | publish | UPDATE.cmdと同じ4ファイルを非対話adapterでコピー |
 | food-cost-calculation-system | Development/releases | 既存更新PS1のSourceRoot / HddRoot。HddRoot配下のFoodCostCalculationへ更新 |

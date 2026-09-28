@@ -83,6 +83,51 @@ def record_release_result(repo: Path, request: dict, rc: int, started: str) -> d
     return record
 
 
+def _engine_record(body: dict, returncode: int, **extra) -> dict:
+    prov = body["provenance"]
+    binding = prov.get("binding") or {}
+    return dict({"schema": 1, "kind": "update", "engine": "dcc-release-engine", "repo": body["repo"],
+                 "build_id": prov["build_id"], "base_head": prov["base_head"],
+                 "candidate_sha": binding.get("expected_sha"), "candidate_run_id": binding.get("candidate_run_id"),
+                 "artifact_hash": prov["artifact_hash"], "target": body["target"], "returncode": returncode,
+                 "release_id": body["release_id"], "plan_id": body["plan_id"],
+                 "finished_at": datetime.now(timezone.utc).isoformat()}, **extra)
+
+
+def record_engine_attempt(repo: Path, body: dict, code: str, message: str) -> dict:
+    """A common-engine UPDATE that stopped or failed: history + last attempt only, never production."""
+    record = _engine_record(body, 1, code=code, message=message[:2000])
+    folder = release_record_path(repo).parent
+    _migrate_confirmed_production(repo)
+    write_json(folder / f"release-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{record['build_id'][:8]}.json", record)
+    write_json(release_record_path(repo), record)
+    return record
+
+
+def record_engine_release(repo: Path, body: dict, result: dict, manifest: dict) -> dict:
+    """Only after a verified common-engine UPDATE whose release manifest v2 is already in the target:
+    attempt history, production.json (bound to the manifest by its SHA-256: the next UPDATE trusts that
+    manifest only while this still matches) and the end of the candidate lifecycle."""
+    record = _engine_record(body, 0, version=manifest.get("version", ""), manifest_sha256=result["manifest_sha256"],
+                            backup=result.get("backup"), changed=result.get("changed"))
+    folder = release_record_path(repo).parent
+    _migrate_confirmed_production(repo)
+    write_json(folder / f"release-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{record['build_id'][:8]}.json", record)
+    write_json(folder / "releases" / f"{body['release_id']}.manifest.json", manifest)
+    write_json(release_record_path(repo), record)
+    write_json(production_record_path(repo), {
+        "schema": 1, "commit": record["base_head"], "version": record["version"], "build_id": record["build_id"],
+        "how": "DCC UPDATE（共通engine・差分）", "target": body["target"], "at": record["finished_at"],
+        "release_id": body["release_id"], "manifest_sha256": result["manifest_sha256"],
+        "exe_sha256": (manifest.get("artifact") or {}).get("exe_sha256")})
+    binding = body["provenance"].get("binding") or {}
+    if binding:
+        from . import candidate as candidate_flow
+
+        candidate_flow.mark_deployed(repo, binding["expected_sha"], binding["candidate_run_id"], record["build_id"])
+    return record
+
+
 def _migrate_confirmed_production(repo: Path) -> None:
     """States written before production.json existed: promote their last successful record once."""
     if production_record_path(repo).exists():
@@ -391,6 +436,10 @@ def read_receipt(repo: Path) -> dict:
 
 
 def release_command(repo: Path, artifact: Path, target: Path) -> tuple[list[str] | str, Path]:
+    from .release_update import engine_repo
+
+    if engine_repo(repo.name):  # one route only: the legacy updater would bypass the engine's records and backups
+        raise ValueError("このrepoのUPDATEは共通UPDATE engine（release_update）だけで行います")
     profile = PROFILES.get(repo.name)
     if profile is None:
         raise ValueError("このrepoの配布引数は未登録です。正式entrypointとの接続確認が必要です")

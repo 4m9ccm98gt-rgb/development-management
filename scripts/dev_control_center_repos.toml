@@ -66,31 +66,52 @@ cwd = "."
 script = "build_exe.py"
 build_info = { file = "BUILD_INFO.txt", sha_key = "Git commit SHA", tree_key = "Git working tree" }
 
-# DCC release / restore settings (release_engine / restore_release). The engine is common; a repo only
-# declares what belongs to it. protected / protected_names: operational data the engine never writes
-# (checked when planning and in every write). critical: SHA-256 before/after; all other operational data
-# is compared by path / presence / size / mtime. records: updater-owned files outside the build.
-# commit_file is replaced last. lock: shared with the legacy PowerShell updater (FileShare none).
+# DCC release settings: the common UPDATE engine (release_update) and the restore tool (restore_release).
+# The engine is common; a repo only declares what belongs to it (docs/dev_control_center.md「共通UPDATE engine」).
+#   engine = "dcc"   DCC's UPDATE button uses the common engine (dry-run -> confirm -> execute) for this repo
+#   artifact / child_target   BUILD output folder / sub-folder of a chosen target that holds the app
+#   managed          files the release owns (segment-aware globs: `*` one level, `**` any depth); everything
+#                    else in the target is unmanaged and never written
+#   protected / protected_names   operational data never written (checked when planning and in every write),
+#                    excluded from `managed` even when a pattern matches
+#   critical         SHA-256 before/after; other operational data: path / presence / size / mtime
+#   operational_roots   the only folders searched for protected data (plus the top-level files)
+#   final_swap       replaced after everything else, in this order (the EXE last); commit_file: restore's last file
+#   in_use           must not be open on any PC (exclusive open); held closed until the final swap
+#   manifest         DCC release manifest v2 in the target (written only after a verified UPDATE)
+#   lock / legacy_locks   the common lock plus the legacy PowerShell updater's lock (all FileShare none)
+#   backup_dir / backup_retention   changed-only backups (`dcc_release_*`) kept per repo; other backups untouched
+#   records / deploy_manifest / retain   legacy updater files (restore of full backups only)
 [release.next-day-setup]
+engine = "dcc"
 artifact = "dist/DinnerSystem"
 child_target = "DinnerSystem"
+managed = ["DinnerSystem.exe", "_internal/**", "*.txt", "*.bat", "*.vbs"]
+final_swap = ["BUILD_INFO.txt", "DinnerSystem.exe"]
 commit_file = "DinnerSystem.exe"
 in_use = ["DinnerSystem.exe"]
 records = ["DinnerSystem.exe.previous", "DEPLOY_MANIFEST.json"]
 build_info = "BUILD_INFO.txt"
 deploy_manifest = "DEPLOY_MANIFEST.json"
-lock = ".nds-update.lock"
+manifest = "DCC_RELEASE_MANIFEST.json"
+lock = ".dcc-release.lock"
+legacy_locks = [".nds-update.lock"]
+backup_dir = "backup"
+backup_retention = 5
+# update_shared_folder.ps1 / update_delta.ps1 protection, plus the app's own print settings (config/, written
+# by the running app via app_dir()/config) and outputs/ at the top level, which no updater ever deployed.
 protected = [
     "保存データ/*", "*/保存データ/*",
     "print_work/*", "*/print_work/*",
     "logs/*", "*/logs/*", "log/*", "*/log/*", "*.log",
-    "backup/*",
+    "backup/*", "*/backup/*",
     "_internal/outputs/*",
     "_internal/tools/SumatraPDF-settings.txt",
+    "config/*",
+    "outputs/*",
 ]
 protected_names = ["closing_tasks.json", "master_settings.json", "ui_prefs.json"]
 critical = ["closing_tasks.json", "master_settings.json", "ui_prefs.json"]
-# the only folders searched for protected data (plus the top-level files); backup/ and unrelated folders never
 operational_roots = ["_internal", "保存データ", "print_work", "logs", "log"]
 retain = ["README.txt"]
 

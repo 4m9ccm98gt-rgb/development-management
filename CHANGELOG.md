@@ -1,5 +1,9 @@
 # 変更履歴
 
+## 2026-09-28 — DCC共通UPDATE engine（差分UPDATE）
+
+全アプリ共通の `release_update`（dry-run → plan確認 → execute）を追加し、next-day-setupのDCC UPDATEをこれに切り替え（`[release.next-day-setup] engine = "dcc"`。`update_shared_folder.ps1` / `update_delta.ps1` はDCCから使わない）。管理対象ファイルだけの差分（size / mtime → 必要な分だけSHA-256）、変更ファイルだけのbackup（manifest付き・既定5世代保持、旧 `update_before_*` は削除しない）、stage後のSHA-256照合、EXEを最後にした置換、失敗時の逆順undo / `ROLLBACK_INCOMPLETE`、release manifest v2（`production.json` にSHA-256を記録し、整合しなければfull検証へfallback）、dry-run後の変化検出（plan digest）、EXEを共有なしで保持して置換中の起動を防止、中断マーカー、7段階の進捗表示。安全プリミティブは `restore_release` と共用（lockは `.dcc-release.lock` + 旧 `.nds-update.lock`）。`update_delta.ps1` の6テストの考え方と30項目を含む回帰テストを追加。BUILD / UPDATE / DEPLOYなし。本番（v1.4.0 / 1a03178）は不変。
+
 ## 2026-09-28 — NDS本番rollbackとv1.4.1統合準備
 
 `restore_release`（dry-run必須・plan確認・共通 `release_engine` の検証済み退避 / staging / EXE最後の置換 / 失敗時の限定巻き戻し）で、9/28 UPDATEにより910d29de（v1.3.0）へ意図せず下がったNDS本番を、変更された46ファイルだけ1a03178（v1.4.0）へ復旧（rc 0、運用データ・重要ファイル不変）。DCCは本番（最終配布記録）とmainを区別して表示し、rollbackされたcandidateはRUN_DEV / 承認 / push不可・非activeのまま、rollbackされたSHAのBUILDは再配布不可。`[run.next-day-setup]` のentryをv1.4.1の `dinner_system/hotel_app_entry.py` に変更（next-day-setupの `integration/v1.4.1` と対応）。自動テスト全438件成功。merge / push / BUILD / UPDATEなし。

@@ -28,9 +28,9 @@ def sha(data: bytes) -> str:
 
 
 def tree(root: Path) -> dict:
-    """Every file with bytes and mtime; the lock file (created on first use, present on production) is ignored."""
+    """Every file with bytes and mtime; the lock files (created on first use, present on production) are ignored."""
     return {p.relative_to(root).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
-            for p in sorted(root.rglob("*")) if p.is_file() and p.name != ".nds-update.lock"}
+            for p in sorted(root.rglob("*")) if p.is_file() and p.name not in (".nds-update.lock", ".dcc-release.lock")}
 
 
 class RestoreCase(unittest.TestCase):
