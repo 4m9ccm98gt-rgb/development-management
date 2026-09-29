@@ -14,8 +14,14 @@ the diff is truncated). Do not judge from prose alone.
 ## TaskSpec
 {{TASK}}
 
-## Acceptance conditions
-{{ACCEPTANCE}}
+## Purpose of this application
+{{PURPOSE}}
+
+## Fixed criteria (decided BEFORE implementation; they do not change during the run)
+{{CRITERIA}}
+
+## Previous blocking findings (re-review only)
+{{PREVIOUS_FINDINGS}}
 
 ## Base
 {{BASE}}
@@ -47,8 +53,21 @@ the diff is truncated). Do not judge from prose alone.
 ## Repository instructions
 {{REPO_INSTRUCTIONS}}
 
+## How to judge (important)
+- Judge against the fixed criteria above, the safety contract, and defects in the changed code.
+- Report EVERY blocking finding in this one review. Do not hold findings back for a later round.
+- Every blocking finding (severity blocker / major) must set `"criterion"` to the id of the fixed
+  criterion it violates (for example "C2"). The only exception is a concrete defect in the change
+  (category bug / regression / safety) that comes with evidence (the code, the diff or the Tests
+  output). A wish, a style preference, an improvement idea or a new requirement is NOT blocking:
+  report it as severity minor or note. Findings that break this rule are downgraded by the
+  Orchestrator and cannot fail the run.
+- Re-review: first check each previous blocking finding and say whether it is fixed. Add a new
+  blocking finding only if the latest repair introduced it (a regression) or the previous review
+  could not have seen it. Do not restart the review from scratch and do not add new criteria.
+
 ## What to check
-The TaskSpec is fully met; no missing requirement; no obvious bug; no regression; no
+The fixed criteria are fully met; no missing requirement; no obvious bug; no regression; no
 unnecessary change; no violation of the safety contract (no commit / push / deploy,
 no secrets, no business-data changes); Tests are sufficient for the change; error
 handling; consistency with the existing design; the change scope is not excessive.
@@ -65,6 +84,7 @@ Reply with ONE JSON object only (no prose outside it):
   "root_cause": "failure-analysis mode: the root cause, else empty",
   "findings": [
     {"severity": "blocker|major|minor|note",
+     "criterion": "C1 | null (only for evidenced bug / regression / safety defects)",
      "category": "requirement_gap|bug|regression|unneeded_change|safety|tests|error_handling|design|scope",
      "file": "path or null",
      "problem": "what is wrong",

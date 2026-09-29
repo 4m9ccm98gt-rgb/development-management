@@ -11,8 +11,16 @@ Tests, counts repairs and reviews, creates the candidate and records all of it i
 log. If the TaskSpec asks for any of those facts, do not try to verify them and do not
 treat them as blocking: state that the Orchestrator records them, and do the rest.
 
+## Purpose of this application
+{{PURPOSE}}
+
 ## TaskSpec
 {{TASK}}
+
+## Fixed acceptance criteria
+The Reviewer will judge your work against exactly these criteria (fixed before you start).
+Meet every one of them in this first pass, including edge cases and Tests.
+{{CRITERIA}}
 
 Preserve scope, existing changes, secrets and business data. Do not commit, push,
 switch branches, reset, stash, rebase, BUILD, UPDATE or DEPLOY. Do not change any

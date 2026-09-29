@@ -51,6 +51,9 @@ class _FileProvider(Provider):
         return AgentResult(self.name, "main", True, text="implemented feature.txt")
 
     def run_review(self, worktree, prompt, *, timeout, hooks):
+        if prompt.startswith("# CRITERIA"):   # the pre-implementation criteria step
+            return AgentResult(self.name, "review", True, text=json.dumps(
+                {"criteria": ["feature.txt exists", "nothing else changes"], "summary": "fake criteria"}))
         return AgentResult(self.name, "review", True, text=json.dumps({"verdict": "PASS", "summary": "fake review of the worktree", "findings": []}))
 
 

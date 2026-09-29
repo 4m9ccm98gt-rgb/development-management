@@ -249,6 +249,82 @@ def extract_acceptance(task: str) -> str:
     return ""
 
 
+_BULLET = re.compile(r"^\s*(?:[-*・●]|\d+[.)、])\s*(.+\S)\s*$")
+MAX_CRITERIA = 12
+# Findings of these categories may block without pointing at a fixed criterion, provided they carry evidence:
+# they are defects in the change itself, not extra requirements.
+DEFECT_CATEGORIES = ("bug", "regression", "safety")
+
+
+def criteria_from_acceptance(block: str) -> list[dict]:
+    """Fixed criteria from a TaskSpec acceptance section: one per bullet line, else the whole block."""
+    lines = block.splitlines()[1:]   # first line is the section heading
+    items = [m.group(1).strip() for line in lines if (m := _BULLET.match(line))]
+    if not items:
+        text = "\n".join(line.strip() for line in lines if line.strip())
+        items = [text] if text else []
+    return [{"id": f"C{i}", "text": text} for i, text in enumerate(items[:MAX_CRITERIA], 1)]
+
+
+def parse_criteria(text: str) -> list[dict]:
+    """Criteria drafted by the Reviewer: {"criteria": ["...", ...]}. Strict; raises ReviewParseError."""
+    value = extract_json_object(text)
+    raw = value.get("criteria")
+    if not isinstance(raw, list):
+        raise ReviewParseError("criteria must be an array")
+    items = []
+    for entry in raw:
+        item = _text(entry.get("text") if isinstance(entry, dict) else entry)
+        if item:
+            items.append(item)
+    if not items:
+        raise ReviewParseError("no criteria given")
+    return [{"id": f"C{i}", "text": text} for i, text in enumerate(items[:MAX_CRITERIA], 1)]
+
+
+def format_criteria(criteria: list[dict]) -> str:
+    return "\n".join(f"- {c['id']}: {c['text']}" for c in criteria) or "(none)"
+
+
+def apply_fixed_criteria(verdict: ReviewVerdict, criteria: list[dict], *, final: bool) -> tuple[ReviewVerdict, list[dict]]:
+    """Enforce "criteria are fixed before implementation" in code, not only in the prompt.
+
+    A blocking finding stands only when it cites a fixed criterion id (`criterion`) or is a defect
+    (bug / regression / safety) with concrete evidence. Anything else is kept for the record but
+    downgraded to `minor`, so it can no longer send the Main AI (and the Reviewer) around another loop.
+    In a final review, a FAIL that has no blocking finding left becomes PASS. Returns the verdict and
+    the list of downgraded findings."""
+    if not criteria:
+        return verdict, []
+    ids = {c["id"] for c in criteria}
+    kept, dropped = [], []
+    for finding in verdict.findings:
+        entry = dict(finding)
+        if entry["severity"] in BLOCKING:
+            cited = _text(entry.get("criterion")).upper() in ids
+            defect = _text(entry.get("category")).lower() in DEFECT_CATEGORIES and bool(_text(entry.get("evidence")))
+            if not (cited or defect):
+                entry["severity"] = "minor"
+                entry["downgraded"] = "not a fixed criterion and not an evidenced defect"
+                dropped.append(entry)
+        kept.append(entry)
+    if not dropped:
+        return verdict, []
+    blocking = [f for f in kept if f["severity"] in BLOCKING]
+    if verdict.verdict == "FAIL" and not blocking and final:
+        new_verdict = "PASS"
+        instructions = ""
+    else:
+        new_verdict = verdict.verdict
+        instructions = _assemble_instructions(verdict.summary, verdict.root_cause,
+                                              "" if not blocking else verdict.instructions, kept)
+    return ReviewVerdict(
+        verdict=new_verdict, summary=verdict.summary, findings=tuple(kept), root_cause=verdict.root_cause,
+        instructions=instructions or verdict.summary, needs_human_reason=verdict.needs_human_reason,
+        fingerprint=review_fingerprint(kept, verdict.summary if not kept else ""),
+    ), dropped
+
+
 def tail(text: str, limit: int) -> str:
     return text if len(text) <= limit else "…(truncated)…\n" + text[-limit:]
 

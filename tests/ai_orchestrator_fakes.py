@@ -59,7 +59,8 @@ def review_json(verdict="PASS", summary="checked the diff and Tests", findings=N
 
 FAIL_REVIEW = review_json(
     "FAIL", "requirement gap", instructions="Handle the empty input in app.py",
-    findings=[{"severity": "major", "file": "app.py", "problem": "empty input crashes", "instruction": "guard it"}])
+    findings=[{"severity": "major", "criterion": "C1", "file": "app.py", "problem": "empty input crashes",
+               "instruction": "guard it"}])
 
 
 class ScriptedProvider(Provider):

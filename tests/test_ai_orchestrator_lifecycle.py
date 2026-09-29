@@ -123,7 +123,7 @@ class DetachedRunTests(LifecycleCase):
         record = self.wait_done(run_dir)["record"]
         self.assertEqual(record["stage"], rs.COMPLETED, record["final_result"])
         self.assertEqual((record["main_agent"], record["review_agent"]), ("fakemain", "fakereview"))
-        self.assertEqual((record["main_calls"], record["review_calls"], record["tests_run_count"]), (1, 1, 1))
+        self.assertEqual((record["main_calls"], record["review_calls"], record["tests_run_count"]), (1, 2, 1))  # 2 = criteria draft + final review
         self.assertTrue(record["candidate_branch"].startswith("ai-candidate/"))
         self.assertEqual(record["apply_status"], "ready")
         # the candidate exists in the source repo; the source branch itself was never moved

@@ -243,6 +243,31 @@ def windows_test_command_line(command: str) -> str:
     return "".join(out)
 
 
+PROJECTS_DIR = Path(__file__).resolve().parents[2] / "projects"
+_PURPOSE_HEADINGS = ("正式な目的", "目的", "役割", "概要")
+
+
+def read_project_purpose(repo_name: str, *, projects_dir: Path | None = None, limit: int = 1500) -> str:
+    """The first purpose-like section of projects/<repo_name>.md (empty when there is none)."""
+    path = (projects_dir or PROJECTS_DIR) / f"{repo_name}.md"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    for wanted in _PURPOSE_HEADINGS:
+        for index, line in enumerate(lines):
+            if line.startswith("#") and line.lstrip("# ").strip() == wanted:
+                body = []
+                for follow in lines[index + 1:]:
+                    if follow.startswith("#"):
+                        break
+                    body.append(follow)
+                text = "\n".join(body).strip()
+                if text:
+                    return text[:limit]
+    return ""
+
+
 class GitHost:
     """Engine host backed by the real isolated worktree."""
 
@@ -297,6 +322,11 @@ class GitHost:
                 continue
             parts.append(f"### {name}\n{text[:8000]}")
         return "\n\n".join(parts)
+
+    def project_purpose(self) -> str:
+        """What this application is for, taken from the knowledge base (`projects/<repo>.md`), so the AIs
+        judge a change against the business purpose without the user retyping it in every Task."""
+        return read_project_purpose(self.baseline.root.name)
 
     def tests_env(self) -> tuple[dict[str, str], Path | None]:
         """Environment of the independent Tests: the source repo's own `.venv` (git-ignored, so absent

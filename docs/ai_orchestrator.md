@@ -39,6 +39,17 @@ DCC側は `scripts/dev_control_center/orchestrator_view.py`（別画面。`RunMo
 - Mainだけがworktreeを編集（Claude: `acceptEdits` + 許可Bashのみ、gitの書込系は含めない / Codex: `--sandbox workspace-write`）。Reviewerは読み取り専用（Claude: `Read,Glob,Grep`のみ・shell / editor / MCP無し / Codex: `--sandbox read-only`）。Reviewer呼出し前後でdiff fingerprintを比較し、変更があれば `SAFETY_VIOLATION`。
 - Windowsでsandbox化されたCodexが作るファイルは所有者ACLの都合で独立Testsから読めないことがあるため、Main呼出し後に**変更されたファイルと親directoryだけ**へ実行ユーザーのmodify権限を付与します（`icacls`、無関係な範囲は変更しない）。
 
+## 受入基準の固定とクレジット保護
+
+Reviewerの後出し指摘でループが増え、Reviewer（既定Codex）のクレジットが小さな修正で尽きるのを防ぐための仕組みです。
+
+- **基準は実装前に固定します。** Taskに「受入条件」節があればその箇条書きを `C1, C2…` としてそのまま固定基準にします（Reviewer呼出し無し・クレジット消費無し）。無ければ、実装前にReviewerが1回だけ基準を作成します（read-only。使えない返答が2回続けばTaskSpec全体を基準にして**それ以上呼ばない**）。基準は `run.json` の `criteria` / `criteria_source`（`task` / `reviewer` / `task_fallback`）に保存され、Mainには実装前から、Reviewerには全レビューに同じものが渡されます。
+- **最終レビューは固定基準で判定します。** blocker / major の指摘は、固定基準のID（`criterion`）を示すか、証拠付きの欠陥（category が bug / regression / safety で `evidence` あり）でなければなりません。それ以外（好み・改善案・新しい要件）はOrchestratorが `minor` へ**格下げ**し、記録は残りますが差し戻し理由になりません。格下げの結果 blocking が無くなったFAILはPASSになります（`review_history[].downgraded`）。Tests失敗時の原因分析（failure analysis）の指摘は格下げしません。
+- **2回目以降は確認だけです。** 差し戻し後の再レビューには前回のblocking指摘を渡し、「直ったか」と「修正が新たに壊した回帰」だけを見させます（基準の追加は不可）。
+- **打ち切られた作業は検証に回しません。** MainがClaudeのturn上限（12）で中断された場合、差分が一部あっても**Tests・Reviewerへ進めず**、同じsessionで最大 `max_main_resumes`（2）回続きを書かせます。それでも終わらなければ `MAIN_TURN_LIMIT`（`needs_human`）で停止し、worktreeは保存します（Codexは呼びません）。
+- **予算で強制停止します。** 上表の `max_review_calls` / `max_review_tokens` / `max_main_tokens`。最終レビューがFAILで、次のレビューを呼べない予算状態なら、修正のためにMainを呼ばずにその場で `REVIEW_BUDGET` で停止します。停止は呼出しの間で判定するため、実行中の1回を途中で切ることはありません。
+- **アプリの目的を自動で渡します。** `projects/<repo名>.md` の「正式な目的 / 目的 / 役割 / 概要」節（最初に見つかったもの、1500字まで）をMain・Reviewerへ渡します。Taskに目的を書く必要はありません。該当節が無いrepoは「未記録」として扱います。
+
 ## Tests FAIL → Reviewer投入
 
 - Testsが2回FAIL（`reviewer_trigger_fails`、既定2）するまでReviewerを呼びません。FAIL #1 はMainが原因分析して自己修正します。
@@ -62,7 +73,10 @@ run記録（`run.json`）: run ID、repo、Task、Main / Reviewer、stage、Test
 | `max_same_failure` | 3 | 同一failure fingerprint → `SAME_FAILURE_REPEATED` |
 | `max_same_review` | 3 | 同一指摘の繰り返し → `REVIEW_LOOP` |
 | `max_no_change_repairs` | 2 | 差分が変わらない修正が連続 → `NO_PROGRESS` |
-| `max_review_rounds` | 12 | `MAX_REVIEW_ROUNDS` |
+| `max_review_rounds` | 4 | `MAX_REVIEW_ROUNDS`（Reviewerの判定回数。旧既定12） |
+| `max_review_calls` | 8 | `REVIEW_BUDGET`（受入基準作成・形式不正の再依頼を含む全Reviewer呼出し。次の呼出しの**前**に停止） |
+| `max_review_tokens` | 1,000,000 | `REVIEW_BUDGET`（Reviewer累計トークン＝入力＋出力。0で無制限。呼出し間で判定） |
+| `max_main_tokens` | 0（無制限） | `MAIN_BUDGET`（Main累計トークン。Claude: 入力＋cache作成＋出力、cache読取は除外 / Codex: 入力＋出力） |
 | `max_provider_retries` | 2 | transientのみ（下記） |
 | `max_runtime_minutes` | 360 | `MAX_RUNTIME` |
 | `agent_timeout` / `review_timeout` / `test_timeout` | 1800 / 1200 / 600秒 | process tree終了後、providerは `PROVIDER_ERROR`、Testsは失敗（`HANG`） |

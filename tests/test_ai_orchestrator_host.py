@@ -41,6 +41,8 @@ class QuietProvider(Provider):
         return AgentResult(self.name, "main", True, text="implemented")
 
     def run_review(self, worktree, prompt, *, timeout, hooks):
+        if prompt.startswith("# CRITERIA"):   # pre-implementation criteria step
+            return AgentResult(self.name, "review", True, text='{"criteria": ["feature.txt exists"], "summary": "criteria"}')
         return AgentResult(self.name, "review", True,
                            text='{"verdict": "PASS", "summary": "checked diff and Tests", "findings": []}')
 
@@ -183,7 +185,7 @@ class WorkerRunTests(HostCase):
         self.assertEqual(git(self.repo, "rev-parse", record["candidate_branch"]).strip(), record["candidate_sha"])
         self.assertEqual(record["apply_status"], "ready")
         self.assertEqual(rs.active_runs(), [])
-        self.assertEqual((record["main_calls"], record["review_calls"], record["tests_run_count"]), (1, 1, 1))
+        self.assertEqual((record["main_calls"], record["review_calls"], record["tests_run_count"]), (1, 2, 1))  # 2 = criteria draft + final review
         # no push happened: origin still has only the initial commit
         remote = git(self.tmp / "origin.git", "branch", "--list", "ai-candidate/*").strip()
         self.assertEqual(remote, "")

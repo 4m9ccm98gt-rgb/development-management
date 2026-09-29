@@ -82,7 +82,10 @@ class Limits:
     max_same_failure: int = 3             # same failure fingerprint this many times => human
     max_same_review: int = 3              # same reviewer finding set this many times => human
     max_no_change_repairs: int = 2        # consecutive repairs that changed nothing
-    max_review_rounds: int = 12
+    max_review_rounds: int = 4            # Reviewer verdicts per run (was 12: each round is paid Reviewer usage)
+    max_review_calls: int = 8             # every Reviewer invocation incl. protocol retries; hard stop before the next one
+    max_review_tokens: int = 1_000_000    # cumulative Reviewer tokens (input+output); 0 = unlimited. Checked between calls
+    max_main_tokens: int = 0              # cumulative Main tokens; 0 = unlimited (Main is usually on a flat plan)
     max_provider_retries: int = 2         # transient provider errors only
     max_main_resumes: int = 2             # empty-diff max-turns resume (Claude)
     max_runtime_minutes: int = 360
@@ -114,6 +117,8 @@ def new_record(*, run_id: str, repo: str, task: str, main_agent: str, review_age
         "tests_run_count": 0, "tests_fail_count": 0, "tests_consecutive_fail_count": 0,
         "repair_iteration": 0, "main_calls": 0, "review_calls": 0, "review_rounds": 0,
         "reviewer_engaged": False,
+        "main_tokens": 0, "review_tokens": 0,
+        "criteria": [], "criteria_source": "",
         "current_failure_fingerprint": None, "failure_fingerprint_counts": {},
         "review_fingerprint_counts": {}, "no_change_repairs": 0,
         "failure_history": [], "repair_history": [], "review_history": [],

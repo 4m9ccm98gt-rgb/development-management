@@ -27,8 +27,9 @@ from .providers import (
     ERR_AUTH, ERR_QUOTA, ERR_TRANSIENT, AgentResult, Provider,
 )
 from .review import (
-    RUNNER_NO_TESTS, ReviewParseError, ReviewVerdict, classify_runner_problem, extract_acceptance,
-    failure_fingerprint, head, parse_review, tail,
+    BLOCKING, RUNNER_NO_TESTS, ReviewParseError, ReviewVerdict, apply_fixed_criteria, classify_runner_problem,
+    criteria_from_acceptance, extract_acceptance, failure_fingerprint, format_criteria, head, parse_criteria,
+    parse_review, tail,
 )
 from .runstate import (
     COMPLETED, FAILED, FINALIZING, IMPLEMENTING, NEEDS_HUMAN, PREFLIGHT, REPAIRING, REVIEWING, STOPPED,
@@ -42,8 +43,8 @@ MAX_TESTS_CHARS = 14_000
 MAX_INSTRUCTION_CHARS = 8_000
 RESUME_PROMPT = (
     "Continue the work from the previous instructions in this session. The previous invocation "
-    "reached max-turns without a reviewable change. Make the required file changes now; do not "
-    "restart investigation, redesign, or self-review. Keep all original scope and safety constraints. "
+    "was cut off at its turn limit before it finished. Complete the remaining file changes and Tests now; "
+    "do not restart investigation, redesign, or self-review. Keep all original scope and safety constraints. "
     "Do not commit, push, build, or deploy."
 )
 OPERATING_CONTRACT_TEXT = (
@@ -115,11 +116,13 @@ class Engine:
         self.tested_fp = ""
         self.reviewed_fp = ""
         self.last_main_summary = ""
+        self.criteria: list[dict] = list(rec.record.get("criteria") or [])
 
     # ------------------------------------------------------------------ top level
     def run(self) -> str:
         rec = self.rec
         try:
+            self._define_criteria()
             self._implement()
             while True:
                 self._guard()
@@ -199,10 +202,13 @@ class Engine:
         counter = "main_calls" if role == "main" else "review_calls"
         for attempt in range(self.limits.max_provider_retries + 1):
             self._guard()
+            self._check_budget(role)
             call_no = self.rec.incr(counter)
             self.rec.log(f"[{role}:{provider.name}] call #{call_no} {label}" + (f" (retry {attempt})" if attempt else ""))
             result = call()
             self.rec.write_text(f"calls/{role}-{call_no:03d}.log", result.raw)
+            if result.tokens:
+                self.rec.incr("main_tokens" if role == "main" else "review_tokens", int(result.tokens))
             self._ingest_usage(result)
             self.host.check_safety()
             if result.ok or result.max_turns:
@@ -224,6 +230,75 @@ class Engine:
             raise NeedsHuman(f"{who}が異常終了しました（{result.error_kind}）: {result.error_detail}", "PROVIDER_ERROR")
         raise NeedsHuman("provider retries exhausted", "PROVIDER_ERROR")  # pragma: no cover
 
+    def _budget_exhausted(self, role: str) -> str:
+        """Why another call of this role must not start ("" when there is budget left)."""
+        record, limits = self.rec.record, self.limits
+        if role == "review":
+            if record["review_calls"] >= limits.max_review_calls:
+                return f"Reviewer呼出し回数が上限({limits.max_review_calls})に到達しました"
+            if limits.max_review_tokens and record.get("review_tokens", 0) >= limits.max_review_tokens:
+                return (f"Reviewerの累計トークン({record.get('review_tokens', 0):,})が上限"
+                        f"({limits.max_review_tokens:,})に到達しました")
+        elif limits.max_main_tokens and record.get("main_tokens", 0) >= limits.max_main_tokens:
+            return f"Mainの累計トークン({record.get('main_tokens', 0):,})が上限({limits.max_main_tokens:,})に到達しました"
+        return ""
+
+    def _check_budget(self, role: str) -> None:
+        reason = self._budget_exhausted(role)
+        if reason:
+            raise NeedsHuman(reason + "。これ以上AIを呼ばず停止します（worktreeは保存）",
+                             "REVIEW_BUDGET" if role == "review" else "MAIN_BUDGET")
+
+    def _purpose(self) -> str:
+        getter = getattr(self.host, "project_purpose", None)
+        try:
+            text = getter() if callable(getter) else ""
+        except Exception:  # noqa: BLE001 - purpose is context only and must never affect the run
+            text = ""
+        return text or "(not recorded for this repository)"
+
+    def _define_criteria(self) -> None:
+        """Fix the acceptance criteria BEFORE any code is written, so the review cannot keep adding
+        new demands later. A TaskSpec that already has an acceptance section is used as it is (no
+        Reviewer call, no credits); otherwise the Reviewer drafts them once, read-only."""
+        rec = self.rec
+        if self.criteria:
+            return
+        block = extract_acceptance(self.task)
+        criteria = criteria_from_acceptance(block) if block else []
+        source = "task"
+        if not criteria:
+            criteria, source = self._draft_criteria()
+        self.criteria = criteria
+        rec.update(criteria=criteria, criteria_source=source)
+        rec.log(f"[criteria] fixed {len(criteria)} criteria ({source}):\n" + format_criteria(criteria))
+
+    def _draft_criteria(self) -> tuple[list[dict], str]:
+        rec = self.rec
+        rec.update(stage_detail=f"Reviewer AI ({self.reviewer.display}) が受入基準を作成中")
+        prompt = read_prompt("criteria.md", {
+            "PURPOSE": self._purpose(), "TASK": self.task, "CONTRACT": OPERATING_CONTRACT_TEXT,
+            "REPO_INSTRUCTIONS": self.host.repo_instructions() or "(none)",
+        })
+        before = self.host.snapshot().fingerprint
+        for attempt in range(2):
+            result = self._invoke(
+                "review", self.reviewer,
+                lambda p=prompt: self.reviewer.run_review(
+                    self.host.worktree, p, timeout=self.limits.review_timeout,
+                    hooks=self._hooks("review", self.reviewer)),
+                "criteria")
+            if self.host.snapshot().fingerprint != before:
+                raise SafetyViolation("the read-only Reviewer changed the worktree")
+            try:
+                return parse_criteria(result.text), "reviewer"
+            except ReviewParseError as exc:
+                rec.log(f"[criteria] unusable reply: {exc}")
+                prompt += f"\n\nYour previous reply could not be used ({exc}). Reply with the single JSON object only."
+        # Never loop on paid calls: fall back to the TaskSpec itself as the single fixed criterion.
+        rec.log("[criteria] Reviewer reply unusable twice; the TaskSpec itself is the fixed criterion")
+        return [{"id": "C1", "text": "The TaskSpec is fully met without changing anything it does not ask for."}], "task_fallback"
+
     def _call_main(self, prompt: str, label: str, *, implementation: bool) -> str:
         session = None
         before = self.host.snapshot().fingerprint
@@ -239,9 +314,18 @@ class Engine:
             self.host.normalize_permissions()
             snap = self.host.snapshot()
             changed = snap.fingerprint != before
-            if result.max_turns and not changed:
+            if result.max_turns:
+                # The Main AI was cut off mid-work. Whatever is in the worktree is unfinished: do NOT hand it to
+                # Tests / the Reviewer (that is what burns Reviewer credits on "incomplete" findings). Let the
+                # same session finish, a bounded number of times, then stop for a human.
                 if self.main.supports_resume and session and resume < self.limits.max_main_resumes:
+                    self.rec.log(f"[main] cut off at the turn limit (resume {resume + 1}/{self.limits.max_main_resumes}); "
+                                 "continuing before any Tests / review")
                     continue
+                if changed:
+                    raise NeedsHuman(f"Main AIがturn上限で{resume + 1}回中断され、作業を完了できませんでした。"
+                                     "未完成の差分をTests・Reviewerへ渡さず停止します（worktreeは保存）。"
+                                     "Taskを小さく分割するか、再実行してください", "MAIN_TURN_LIMIT")
                 raise NeedsHuman("Main AIがturn上限に達し、変更を出せませんでした", "MAIN_NO_PROGRESS")
             text = result.text or "Main reached max-turns; partial worktree changes are kept for Tests."
             self.last_main_summary = text
@@ -257,8 +341,9 @@ class Engine:
     # ------------------------------------------------------------------ steps
     def _implement(self) -> None:
         self.rec.transition(IMPLEMENTING, f"Main AI ({self.main.display}) が実装中")
-        self._call_main(read_prompt("main_implementation.md", {"TASK": self.task}), "implementation",
-                        implementation=True)
+        self._call_main(read_prompt("main_implementation.md", {
+            "TASK": self.task, "PURPOSE": self._purpose(), "CRITERIA": format_criteria(self.criteria)}),
+            "implementation", implementation=True)
 
     def _test(self) -> bool:
         rec = self.rec
@@ -358,6 +443,7 @@ class Engine:
             "REVIEW": head(review.instructions, MAX_INSTRUCTION_CHARS) if review
             else "(none — analyse the Tests failure yourself)",
             "HISTORY": self._history_text(),
+            "CRITERIA": format_criteria(self.criteria),
         })
         summary = self._call_main(prompt, f"repair {iteration}", implementation=False)
         after = self.host.snapshot().fingerprint
@@ -377,6 +463,8 @@ class Engine:
             raise NeedsHuman(f"最大レビュー回数({self.limits.max_review_rounds})に到達しました", "MAX_REVIEW_ROUNDS")
         round_no = rec.incr("review_rounds")
         mode = "final_review" if final else "failure_analysis"
+        previous = [f for item in rec.record["review_history"][-1:] for f in item.get("findings", [])
+                    if f.get("severity") in BLOCKING]
         rec.update(reviewer_engaged=True)
         rec.transition(REVIEWING, f"Reviewer AI ({self.reviewer.display}) が{'最終レビュー' if final else '失敗分析'}中 (round {round_no})")
         snap = self.host.snapshot()
@@ -384,10 +472,18 @@ class Engine:
         if final and (not self.last_tests_ok or before != self.tested_fp):
             raise SafetyViolation("final review requested on a diff that Tests did not pass")
         prompt = read_prompt("reviewer.md", {
-            "MODE": ("FINAL REVIEW: Tests passed on this exact diff. Decide PASS or FAIL." if final else
+            "MODE": (("RE-REVIEW (confirmation only): the work was repaired after your previous review. Check each previous "
+                      "blocking finding, add only regressions caused by the repair, and decide PASS or FAIL. "
+                      "Tests passed on this exact diff." if previous else
+                      "FINAL REVIEW: Tests passed on this exact diff. Decide PASS or FAIL. Report all blocking findings now.")
+                     if final else
                      "FAILURE ANALYSIS: Tests are failing. Find the root cause and tell Main what to change (verdict FAIL, or NEEDS_HUMAN)."),
             "TASK": self.task,
-            "ACCEPTANCE": extract_acceptance(self.task) or "(no explicit section; derive the conditions from the TaskSpec)",
+            "PURPOSE": self._purpose(),
+            "CRITERIA": format_criteria(self.criteria),
+            "PREVIOUS_FINDINGS": "\n".join(
+                f"- [{f.get('severity')}] {f.get('file') or ''}: {f.get('problem') or ''} (criterion {f.get('criterion') or '-'})"
+                for f in previous) or "(none: this is the first review)",
             "BASE": f"{rec.record['source_branch']} @ {rec.record['base_sha']}",
             "FILES": "\n".join(snap.files) or "(none)",
             "STAT": snap.stat or "(none)",
@@ -424,8 +520,17 @@ class Engine:
                 prompt += f"\n\nYour previous reply could not be used ({exc}). Reply with the single JSON object only."
         if verdict is None:
             raise NeedsHuman("Reviewerの回答を解釈できませんでした", "REVIEW_UNPARSABLE")
+        # Only a final review judges the work against the criteria. In failure analysis the Tests are already
+        # red and the Reviewer's job is to find the cause, so its findings are handed to Main untouched.
+        downgraded: list[dict] = []
+        if final:
+            verdict, downgraded = apply_fixed_criteria(verdict, self.criteria, final=True)
+        if downgraded:
+            rec.log(f"[review] {len(downgraded)} blocking finding(s) were not fixed criteria / evidenced defects and were "
+                    "downgraded to minor: " + " | ".join(str(f.get("problem", ""))[:80] for f in downgraded))
         rec.append("review_history", {
             "round": round_no, "mode": mode, "verdict": verdict.verdict, "summary": verdict.summary,
+            "downgraded": len(downgraded),
             "findings": list(verdict.findings), "fingerprint": verdict.fingerprint, "instructions": verdict.instructions,
             "tests_ok": self.last_tests_ok, "diff_fingerprint": before[:16], "reviewer": self.reviewer.name,
             "at": time.strftime("%Y-%m-%dT%H:%M:%S")})
@@ -435,6 +540,13 @@ class Engine:
         if verdict.passed:
             self.reviewed_fp = before
             return verdict
+        if final:
+            # A FAIL means Main repairs and then another review is needed. If the Reviewer budget cannot pay for
+            # that review, stop now instead of spending Main on a repair that could never be verified.
+            reason = self._budget_exhausted("review")
+            if reason:
+                raise NeedsHuman(reason + "。指摘の修正を確認するReviewerを呼べないため、ここで停止します（worktreeは保存）。"
+                                 "指摘内容は run の review_history にあります", "REVIEW_BUDGET")
         counts = dict(rec.record["review_fingerprint_counts"])
         counts[verdict.fingerprint] = counts.get(verdict.fingerprint, 0) + 1
         rec.update(review_fingerprint_counts=counts)

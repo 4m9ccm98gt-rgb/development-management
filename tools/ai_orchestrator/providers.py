@@ -62,6 +62,7 @@ class AgentResult:
     # Facts reported by the provider during this call (never guessed):
     rate_limit: dict | None = None   # Claude: rate_limit_event.rate_limit_info
     context: dict | None = None      # {"used_tokens", "window_tokens", "model"}
+    tokens: int = 0                  # tokens this whole call consumed (Claude: input+cache-creation+output; Codex: input+output)
     events: list = field(default_factory=list)  # short human log lines already emitted
 
 
@@ -263,9 +264,11 @@ class ClaudeProvider(Provider):
         session = final.get("session_id")
         if not (isinstance(session, str) and _SESSION_UUID.fullmatch(session)):
             session = None
+        spent = final.get("usage") if isinstance(final.get("usage"), dict) else {}
+        tokens = sum(int(spent.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "output_tokens"))
         common = dict(provider="claude", role=role, session_id=session.lower() if session else None,
                       returncode=result.returncode, raw=result.stdout + "\n" + result.stderr,
-                      rate_limit=rate, context=context, events=events or [])
+                      rate_limit=rate, context=context, events=events or [], tokens=tokens)
         max_turns = final.get("subtype") == "error_max_turns" or "maximum number of turns" in (
             json.dumps(final.get("errors", "")) + result.stderr).lower()
         if max_turns:
@@ -360,12 +363,15 @@ class CodexProvider(Provider):
         errors = [json.dumps(i, ensure_ascii=False) for i in items if i.get("type") in {"turn.failed", "error"}]
         completed = any(i.get("type") == "turn.completed" for i in items)
         used = None
+        total_tokens = 0
         for item in items:
             if item.get("type") == "turn.completed" and isinstance(item.get("usage"), dict):
                 used = int(item["usage"].get("input_tokens") or 0) + int(item["usage"].get("output_tokens") or 0)
+                total_tokens += used
         context = {"used_tokens": used, "window_tokens": None, "model": None} if used else None
         common = dict(provider="codex", role=role, returncode=result.returncode,
-                      raw=result.stdout + "\n" + result.stderr, context=context, events=events or [])
+                      raw=result.stdout + "\n" + result.stderr, context=context, events=events or [],
+                      tokens=total_tokens)
         # Transient `error` events (e.g. stream reconnect notices) are fine when the turn completed.
         if result.returncode or not completed:
             text = "\n".join(errors + [result.stderr] + ([] if items else [result.stdout[-2000:]]))

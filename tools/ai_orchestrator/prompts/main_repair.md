@@ -7,6 +7,9 @@ Work in this isolated worktree (inspect `git diff HEAD` to see your current chan
 ## TaskSpec
 {{TASK}}
 
+## Fixed acceptance criteria (unchanged since the start of the run)
+{{CRITERIA}}
+
 ## Why you are being called
 {{TRIGGER}}
 
