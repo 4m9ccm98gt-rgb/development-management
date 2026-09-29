@@ -1069,6 +1069,26 @@ class TransactionTests(ReleaseCase):
         self.assertTrue(ru.inflight_path(self.repo).exists())
         self.assertEqual(self.production(), production)
 
+    # ---- Astra review round 6
+
+    def test_a_committed_release_stays_successful_when_the_marker_can_not_be_removed(self):
+        self.commit("v2")
+        self.build(self.v2(_internal__a_dat=b"changed"))
+        body = self.plan()
+        real_unlink = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == "update-inflight.json":
+                raise PermissionError("held by another process")
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", unlink):
+            result = self.execute(body)
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("update-inflight.json" in w for w in result["warnings"]))
+        self.assertEqual(self.last_release()["returncode"], 0)
+        self.assertEqual(self.production()["release_id"], body["release_id"])
+
     # ---- Astra review round 5
 
     def test_the_build_lock_is_held_for_the_whole_update(self):

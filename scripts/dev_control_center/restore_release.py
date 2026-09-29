@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import time
 
@@ -45,6 +46,16 @@ def _changed_protected_hashes(target: Path, before: dict, after: dict) -> dict[s
     diff = metadata_diff(before, after)
     return {rel: (sha256(safe_join(target, rel)) if rel in after else None)
             for rel in diff["changed"] + diff["created"] + diff["missing"]}
+
+
+def _source_commit(info: dict) -> str:
+    """The full SHA of the live release being restored away (it becomes revoked). Unknown or malformed: refuse
+    before anything is written, so no rollback history is ever recorded without a valid source identity."""
+    commit = str(info.get("Git commit SHA", "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ReleaseError(f"the live BUILD_INFO has no valid commit SHA ({commit or 'missing'}); the release being "
+                           "replaced can not be identified — repair BUILD_INFO / verify by hand first", "SOURCE_UNKNOWN")
+    return commit
 
 
 def _identity(backup: Path, commit: str, version: str, config: dict) -> tuple[dict, dict]:
@@ -91,6 +102,7 @@ def plan(target: Path, backup: Path, repo_name: str, commit: str, version: str, 
     protected = protected_of(config)
     progress = Progress(6, emit)
     timing, started = {}, time.monotonic()
+    _source_commit(read_key_values(target / config.get("build_info", "BUILD_INFO.txt")))  # identity of what is replaced
     exe = config["commit_file"]
 
     t = time.monotonic()
@@ -223,6 +235,7 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
         live_info = read_key_values(target / config.get("build_info", "BUILD_INFO.txt"))
         if live_info != body.get("current_build_info"):  # the release being replaced is the one that gets revoked
             raise ReleaseError("the live BUILD_INFO differs from the plan's current_build_info", "PLAN_DRIFT")
+        _source_commit(live_info)
         changes = []
         for number, item in enumerate(body["files"], 1):
             protected.assert_writable(item["path"])

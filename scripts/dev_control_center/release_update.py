@@ -651,7 +651,13 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
             result["warnings"] = [f"DCC follow-up record failed after the release was committed: {exc}"]
         for warning in result["warnings"]:
             progress.detail(f"NOTE {warning}")
-    inflight_path(repo).unlink(missing_ok=True)
+    try:  # committed: a marker that can not be removed is a warning to reconcile, never a failed release
+        inflight_path(repo).unlink(missing_ok=True)
+    except OSError as exc:
+        result.setdefault("warnings", []).append(
+            f"update-inflight.json could not be removed ({exc}); the next UPDATE stops until it is cleared "
+            "(release_update clear-interrupted) — this release itself is committed")
+        progress.detail(f"NOTE {result['warnings'][-1]}")
     try:  # committed: retention problems are warnings only
         result["retention"] = prune_backups(target, config, body["repo_name"], keep_path=save_root)
     except Exception as exc:  # noqa: BLE001

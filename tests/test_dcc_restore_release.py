@@ -429,6 +429,32 @@ class ExecuteTests(RestoreCase):
                 "destination": destination,
                 "source": {rel: restored_from.get(rel, value) for rel, value in destination.items()}}
 
+    # ---- Astra review round 6
+
+    def test_a_restore_away_from_an_unidentified_release_is_refused_before_any_write(self):
+        for info in (b"App version: v1.3.0\n", b"Git commit SHA: 910d29de\n", b""):
+            with self.subTest(info=info):
+                (self.target / "BUILD_INFO.txt").write_bytes(info)
+                before = tree(self.target)
+                with self.assertRaises(re_.ReleaseError) as ctx:
+                    self.plan()
+                self.assertEqual(ctx.exception.code, "SOURCE_UNKNOWN")
+                self.assertEqual(tree(self.target), before)
+        (self.target / "BUILD_INFO.txt").write_bytes(self.build_info(NEW, "v1.3.0", b"exe-v130"))
+        body = self.plan()                                         # a plan made while the identity was valid
+        before = tree(self.target)
+        with mock.patch.object(rr, "read_key_values", side_effect=lambda path: (
+                {} if Path(path).name == "BUILD_INFO.txt" and Path(path).parent == self.target
+                else re_.read_key_values(path))), \
+             mock.patch.object(rr, "plan_digest", return_value=body["plan_id"]), \
+             self.assertRaises(re_.ReleaseError) as ctx:
+            body["current_build_info"] = {}
+            self.plan_path.write_text(json.dumps(body), encoding="utf-8")
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "SOURCE_UNKNOWN")
+        self.assertEqual(tree(self.target), before)
+        self.record.assert_not_called()
+
     # ---- Astra review round 5
 
     def test_clearing_refuses_a_partly_restored_folder_with_a_consistent_exe_and_build_info(self):
