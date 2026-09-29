@@ -41,12 +41,16 @@ LEFTOVER_SUFFIXES = (".dcc-stage", ".dcc-undo")
 
 # ------------------------------------------------------------------ local DCC state
 
-def engine_repo(repo_name: str) -> bool:
-    """DCC's UPDATE of this repo goes through the common engine (`engine = "dcc"` in its [release] table)."""
-    try:
-        return release_config(repo_name).get("engine") == "dcc"
-    except ReleaseError:
-        return False
+def engine_repo(repo_name: str, registry: Path | None = None) -> bool:
+    """DCC's UPDATE of this repo goes through the common engine (`engine = "dcc"` in its [release] table).
+    Decided from the raw table, independently of validation: an engine repo whose settings are invalid stays an
+    engine repo (its UPDATE then stops with CONFIG_INVALID) and never falls back to the legacy updater."""
+    import tomllib
+    from .release_engine import REGISTRY
+
+    with (registry or REGISTRY).open("rb") as handle:
+        table = tomllib.load(handle).get("release", {}).get(repo_name) or {}
+    return table.get("engine") == "dcc"
 
 
 def state_dir(repo: Path) -> Path:
@@ -186,7 +190,11 @@ def verify_production(repo: Path, target: Path, config: dict, repo_name: str) ->
     keys = config["build_info_keys"]
     live_info = read_key_values(safe_join(target, config["build_info"])) if config.get("build_info") else {}
     live_commit = live_info.get(keys["commit"], "").lower()
-    record = _read_json(provenance.production_record_path(repo))
+    record_path = provenance.production_record_path(repo)
+    record = _read_json(record_path)
+    if record_path.exists() and (not isinstance(record, dict) or not isinstance(record.get("commit"), str)):
+        raise _stop(f"DCC production record unreadable or invalid: {record_path}; it is never treated as absent",
+                    "STATE_UNREADABLE")
     if record and config.get("build_info") and str(record.get("commit", "")).lower() != live_commit:
         raise _stop(f"DCC production record {str(record.get('commit'))[:12]} differs from the live "
                     f"{config['build_info']} {live_commit[:12] or '(none)'}; reconcile before any UPDATE",
@@ -472,11 +480,22 @@ def execute(plan_path: Path, confirm: str, *, config: dict | None = None, emit=p
     _same("the artifact", build, body["build_files"])
     provenance.no_links(target)
     try:
-        with LockSet(target, config):
-            busy = [rel for rel in config["in_use"] if in_use(safe_join(target, rel))]
-            if busy:
-                raise _stop(f"still in use (close the app on every PC): {busy}", "IN_USE")
-            return _execute_locked(body, repo, target, config, build, protected, progress, started, before_each, record)
+        # DCC's BUILD / legacy-release lock of this artifact for the whole update: no BUILD can replace the
+        # artifact or its receipt while it is being deployed.
+        try:
+            output = provenance.output_lock(Path(prov["artifact"]))
+            output.__enter__()
+        except ValueError as exc:
+            raise _stop(f"a BUILD / UPDATE of this artifact is running ({exc})", "LOCKED") from exc
+        try:
+            with LockSet(target, config):
+                busy = [rel for rel in config["in_use"] if in_use(safe_join(target, rel))]
+                if busy:
+                    raise _stop(f"still in use (close the app on every PC): {busy}", "IN_USE")
+                return _execute_locked(body, repo, target, config, build, protected, progress, started, before_each,
+                                       record)
+        finally:
+            output.__exit__(None, None, None)
     except Exception as exc:
         if record:  # the attempt is history; production.json is never touched by a failed UPDATE
             provenance.record_engine_attempt(repo, body, getattr(exc, "code", type(exc).__name__), str(exc))
@@ -558,6 +577,10 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
             transaction.cleanup(changes)
             transaction.remove_created_dirs()
             raise
+        # Backup and staging can take long: prove the BUILD / candidate / approval / origin / revocation again,
+        # immediately before the first live replacement.
+        _same("the BUILD / candidate / origin (after staging)", verify_provenance(repo, body["branch"], config),
+              body["provenance"])
         progress.stage(6, f"{STAGES[5]}: {len(changes)} files ({', '.join(config['final_swap'])} last)")
         transaction.apply(changes, before_each=before_each)
 
@@ -597,7 +620,10 @@ def _execute_locked(body, repo, target, config, build, protected, progress, star
             if errors:
                 raise RollbackIncomplete(f"{failure}; ROLLBACK INCOMPLETE; recovery copies: {save_root}; "
                                          + "; ".join(errors)) from failure
-        elif save_root is not None and save_root.exists():
+        else:  # nothing live was changed: remove staged copies (re-validated) and the folders made for them
+            transaction.cleanup(changes)
+            transaction.remove_created_dirs()
+        if not transaction.applied and save_root is not None and save_root.exists():
             try:  # nothing live was changed: the partial backup holds only this update's copies
                 remove_backup(target, config, save_root.name)
             except (OSError, ReleaseError):

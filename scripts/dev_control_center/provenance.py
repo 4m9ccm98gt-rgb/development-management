@@ -120,7 +120,6 @@ def record_engine_release(repo: Path, body: dict, result: dict, manifest: dict) 
     _migrate_confirmed_production(repo)
     write_json(folder / f"release-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{record['build_id'][:8]}.json", record)
     write_json(folder / "releases" / f"{body['release_id']}.manifest.json", manifest)
-    write_json(release_record_path(repo), record)
     binding = body["provenance"].get("binding") or {}
     production = {
         "schema": 1, "commit": record["base_head"], "version": record["version"], "build_id": record["build_id"],
@@ -130,7 +129,12 @@ def record_engine_release(repo: Path, body: dict, result: dict, manifest: dict) 
         "candidate_pending": ({"sha": binding["expected_sha"], "run_id": binding["candidate_run_id"],
                                "build_id": record["build_id"]} if binding else None)}
     write_json(production_record_path(repo), production)  # the commit point of the DCC records
-    record["warnings"] = reconcile_candidate(repo)
+    warnings = []
+    try:  # after the commit point: the successful attempt record is bookkeeping, never a precondition
+        write_json(release_record_path(repo), record)
+    except OSError as exc:
+        warnings.append(f"last_release.json not updated after the committed release: {exc}")
+    record["warnings"] = warnings + reconcile_candidate(repo)
     return record
 
 
@@ -142,6 +146,8 @@ def reconcile_candidate(repo: Path) -> list[str]:
         production = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
+    if not isinstance(production, dict):
+        return []  # an invalid record is reported (and stops the UPDATE) by release_update.verify_production
     pending = production.get("candidate_pending")
     if not pending:
         return []
@@ -164,8 +170,8 @@ def _migrate_confirmed_production(repo: Path) -> None:
         previous = json.loads(release_record_path(repo).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return
-    if previous.get("returncode") != 0:
-        return
+    if previous.get("returncode") != 0 or previous.get("engine"):
+        return  # common-engine records are never legacy: their production commit is production.json alone
     folder = release_record_path(repo).parent
     write_json(folder / f"release-migrated-{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", previous)
     if previous.get("kind") == "rollback":

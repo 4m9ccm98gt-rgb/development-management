@@ -249,7 +249,12 @@ def execute(plan_path: Path, confirm: str, *, dcc_repo: Path | None = None, emit
         guard = InUseGuard([safe_join(target, rel) for rel in config.get("in_use", [exe])])
         transaction = Transaction(target, save_root, protected, commit_file=exe, progress=progress, guard=guard)
         if intent is not None:  # durable before the first write to the share (revokes the source while pending)
+            restored_from = {f["path"]: f["current_sha256"] for f in body["files"]}
+            destination = dict(body["expected"]["all_candidates"])
             write_json(intent, {"plan_id": body["plan_id"], "target": body["target"], "repo_name": body["repo"],
+                                # complete inventories (rel -> SHA-256, None = absent) of both possible end states
+                                "destination": destination,
+                                "source": {rel: restored_from.get(rel, sha) for rel, sha in destination.items()},
                                 "restore_version": body["restore_version"], "backup": body["backup"],
                                 "saved_before_restore": str(save_root),
                                 "rolled_back_from": (body.get("current_build_info") or {}).get("Git commit SHA", ""),
@@ -343,11 +348,20 @@ def clear_interrupted(dcc_repo: Path, confirm: str) -> dict:
         raise ReleaseError("confirm with the first 12+ characters of the restore plan id", "NOT_CONFIRMED")
     config = release_config(intent["repo_name"])
     target = Path(intent["target"])
-    info = read_key_values(safe_join(target, config.get("build_info", "BUILD_INFO.txt")))
+    if not isinstance(intent.get("destination"), dict) or not isinstance(intent.get("source"), dict):
+        raise ReleaseError("the restore intent has no file inventories; verify and repair the target by hand",
+                           "UNKNOWN_STATE")
+    with LockSet(target, config):  # nothing else may change the deployment while its state is judged
+        inventory = {}
+        for rel in sorted(intent["destination"]):
+            live_file = safe_join(target, rel)
+            inventory[rel] = sha256(live_file) if live_file.is_file() else None
+        info = read_key_values(safe_join(target, config.get("build_info", "BUILD_INFO.txt")))
+        exe_sha = sha256(safe_join(target, config["commit_file"]))
     live = info.get("Git commit SHA", "").strip().lower()
-    exe_sha = sha256(safe_join(target, config["commit_file"]))
     consistent = exe_sha == info.get("EXE SHA-256", "").upper()
-    if live == str(intent["deployed_commit"]).lower() and consistent:
+    # every file of the restore must be exactly one end state: a partly restored or partly undone folder is neither
+    if live == str(intent["deployed_commit"]).lower() and consistent and inventory == intent["destination"]:
         record = {
             "schema": 1, "kind": "rollback", "repo": str(dcc_repo), "target": intent["target"], "returncode": 0,
             "deployed_commit": intent["deployed_commit"], "app_version": intent.get("restore_version", ""),
@@ -360,11 +374,14 @@ def clear_interrupted(dcc_repo: Path, confirm: str) -> dict:
         if changes_commit(record):
             candidate_flow.mark_rolled_back(dcc_repo, record["rolled_back_from"], record["deployed_commit"])
         outcome = "restore recorded"
-    elif live == str(intent["rolled_back_from"]).lower() and consistent:
+    elif live == str(intent["rolled_back_from"]).lower() and consistent and inventory == intent["source"]:
         outcome = "restore not in effect; nothing recorded"
     else:
-        raise ReleaseError(f"the live deployment ({live[:12] or '?'}, EXE consistent: {consistent}) is neither the "
-                           "restore's source nor its destination; repair it before clearing", "UNKNOWN_STATE")
+        differ = sorted(rel for rel, value in inventory.items()
+                        if value != intent["destination"].get(rel) and value != intent["source"].get(rel))
+        raise ReleaseError(f"the live deployment ({live[:12] or '?'}, EXE consistent: {consistent}) is neither exactly "
+                           f"the restore's source nor its destination (mixed / other files: {differ[:10]}); repair it "
+                           "before clearing", "UNKNOWN_STATE")
     path.unlink()
     return dict(intent, outcome=outcome)
 

@@ -404,20 +404,53 @@ class ExecuteTests(RestoreCase):
 
         repo = self.root / "repo"
         intent = provenance.restore_intent_path(repo)
-        provenance.write_json(intent, {"plan_id": "q" * 64, "target": str(self.target), "repo_name": "next-day-setup",
-                                       "rolled_back_from": NEW, "deployed_commit": OLD, "restore_version": "v1.4.0"})
+        provenance.write_json(intent, self.intent_for(self.plan()))
         self.assertIn(NEW, candidate.revoked_shas(repo))              # pending: counts as revoked
-        cleared = rr.clear_interrupted(repo, "q" * 12)                # the live folder is still NEW
+        before = tree(self.target)
+        cleared = rr.clear_interrupted(repo, "q" * 12)                # the live folder is still exactly NEW
         self.assertEqual(cleared["outcome"], "restore not in effect; nothing recorded")
+        self.assertEqual(tree(self.target), before)                   # clearing only reads the deployment
+        self.assertFalse(intent.exists())
         self.assertEqual(candidate.revoked_shas(repo), set())
         self.assertFalse(provenance.production_record_path(repo).exists())
-        provenance.write_json(intent, {"plan_id": "q" * 64, "target": str(self.target), "repo_name": "next-day-setup",
-                                       "rolled_back_from": NEW, "deployed_commit": OLD})
+        provenance.write_json(intent, self.intent_for(self.plan()))
         (self.target / "DinnerSystem.exe").write_bytes(b"half updated")
         with self.assertRaises(re_.ReleaseError) as ctx:               # neither source nor destination: refused
             rr.clear_interrupted(repo, "q" * 12)
         self.assertEqual(ctx.exception.code, "UNKNOWN_STATE")
         self.assertTrue(intent.exists())
+
+    def intent_for(self, body):
+        """The restore intent execute() writes for this plan (both complete end-state inventories)."""
+        restored_from = {f["path"]: f["current_sha256"] for f in body["files"]}
+        destination = dict(body["expected"]["all_candidates"])
+        return {"plan_id": "q" * 64, "target": str(self.target), "repo_name": "next-day-setup",
+                "rolled_back_from": NEW, "deployed_commit": OLD, "restore_version": "v1.4.0",
+                "destination": destination,
+                "source": {rel: restored_from.get(rel, value) for rel, value in destination.items()}}
+
+    # ---- Astra review round 5
+
+    def test_clearing_refuses_a_partly_restored_folder_with_a_consistent_exe_and_build_info(self):
+        from scripts.dev_control_center import provenance
+
+        repo = self.root / "repo"
+        intent = provenance.restore_intent_path(repo)
+        body = self.plan()
+        provenance.write_json(intent, self.intent_for(body))
+        # a library was restored, BUILD_INFO / EXE were not, and the undo of that library failed
+        self.write(self.target / "_internal/base_library.zip", b"lib-v140")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            rr.clear_interrupted(repo, "q" * 12)
+        self.assertEqual(ctx.exception.code, "UNKNOWN_STATE")
+        self.assertTrue(intent.exists())                               # still blocking, still revoking
+        self.write(self.target / "_internal/base_library.zip", b"lib-v130")
+        for rel in ("DinnerSystem.exe", "BUILD_INFO.txt", "_internal/ucrtbase.dll"):   # the other way round
+            shutil.copyfile(self.backup / rel, self.target / rel)
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            rr.clear_interrupted(repo, "q" * 12)
+        self.assertEqual(ctx.exception.code, "UNKNOWN_STATE")
+        self.assertFalse(provenance.production_record_path(repo).exists())
 
     def test_a_failed_restore_that_was_undone_leaves_no_intent(self):
         from scripts.dev_control_center import provenance

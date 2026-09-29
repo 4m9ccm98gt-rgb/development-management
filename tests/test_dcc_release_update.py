@@ -637,7 +637,7 @@ class LifecycleTests(ReleaseCase):
             body = self.plan()
             self.execute(body)
         self.assertEqual(body["provenance"]["route"], "candidate")
-        self.assertEqual(gate.call_count, 2)                              # proved at dry-run and again at execute
+        self.assertEqual(gate.call_count, 3)          # proved at dry-run, at execute start and again after staging
         deployed.assert_called_once_with(self.repo.resolve(), head, "run-1", body["provenance"]["build_id"])
 
 
@@ -1068,6 +1068,83 @@ class TransactionTests(ReleaseCase):
         self.assertEqual((self.target / "_internal/a.dat").read_bytes(), b"changed")   # not changed under the app
         self.assertTrue(ru.inflight_path(self.repo).exists())
         self.assertEqual(self.production(), production)
+
+    # ---- Astra review round 5
+
+    def test_the_build_lock_is_held_for_the_whole_update(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed")
+        with provenance.output_lock(self.artifact):          # a DCC BUILD of this artifact is running
+            with self.assertRaises(re_.ReleaseError) as ctx:
+                self.execute(body)
+        self.assertEqual(ctx.exception.code, "LOCKED")
+        self.assert_untouched_after_failure(before, production)
+        blocked = []
+
+        def build_starts(change):
+            try:
+                with provenance.output_lock(self.artifact):
+                    blocked.append(False)
+            except ValueError:
+                blocked.append(True)
+
+        self.execute(self.plan(), before_each=build_starts)
+        self.assertEqual(blocked, [True, True])            # no BUILD could start while files were replaced
+
+    def test_provenance_change_during_backup_or_staging_stops_before_the_first_replacement(self):
+        body, before, production = self.planned(_internal__a_dat=b"changed", App_exe=b"exe-v2")
+        real_stage = re_.Transaction.stage
+
+        def stage_then_origin_moves(self_, changes):
+            real_stage(self_, changes)
+            self.commit("pushed while the update was staging")
+
+        with mock.patch.object(re_.Transaction, "stage", stage_then_origin_moves), \
+             self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "PROVENANCE")
+        self.assert_untouched_after_failure(before, production)
+        self.assertFalse(list((self.target / "backup").glob("dcc_release_*")))
+
+    def test_failed_production_write_of_a_first_release_never_becomes_production(self):
+        provenance.production_record_path(self.repo).unlink()   # no DCC production record yet
+        self.commit("v2")
+        self.build(self.v2(_internal__a_dat=b"changed"))
+        body = self.plan()
+        real_write = provenance.write_json
+
+        def failing(path, value):
+            if Path(path).name == "production.json":
+                raise OSError("disk full")
+            return real_write(path, value)
+
+        with mock.patch.object(provenance, "write_json", failing), self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute(body)
+        self.assertEqual(ctx.exception.code, "RECORD_FAILED")
+        self.assertFalse(provenance.production_record_path(self.repo).exists())   # nothing promoted
+        self.assertEqual(self.last_release()["returncode"], 1)
+        self.assertTrue(ru.inflight_path(self.repo).exists())                      # reconciled by a person
+
+    def test_an_engine_repo_with_invalid_settings_never_falls_back_to_the_legacy_updater(self):
+        registry = self.root / "repos.toml"
+        registry.write_text('[release.next-day-setup]\nengine = "dcc"\nmanifest = "保存データ/m.json"\n'
+                            'protected = ["保存データ/*"]\n', encoding="utf-8")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            re_.release_config("next-day-setup", registry)
+        self.assertEqual(ctx.exception.code, "CONFIG_INVALID")
+        self.assertTrue(ru.engine_repo("next-day-setup", registry))
+        with mock.patch.object(re_, "REGISTRY", registry), self.assertRaises(ValueError) as refused:
+            provenance.release_command(self.root / "next-day-setup", self.artifact, self.target)
+        self.assertIn("共通UPDATE engine", str(refused.exception))
+
+    def test_an_unreadable_production_record_is_never_treated_as_absent(self):
+        self.commit("v2")
+        self.build(self.v2())
+        for bad in (b"{truncated", b"[]", b'{"commit": 5}'):
+            with self.subTest(bad=bad):
+                provenance.production_record_path(self.repo).write_bytes(bad)
+                with self.assertRaises(re_.ReleaseError) as ctx:
+                    self.plan()
+                self.assertEqual(ctx.exception.code, "STATE_UNREADABLE")
 
     def test_new_file_changed_by_someone_is_not_removed_by_undo(self):
         body, before, production = self.planned(_internal__n_dat=b"new", App_exe=b"exe-v2")
