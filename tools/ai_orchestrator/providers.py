@@ -18,7 +18,7 @@ from .common import (
     CommandResult, OrchestratorError, ProcessHooks, StopRequested, resolved_command, run_streaming,
 )
 
-CLAUDE_MAIN_MAX_TURNS = 12
+CLAUDE_MAIN_MAX_TURNS = 40   # fallback per invocation; the engine sets `turn_limit` from Limits (implementation / repair)
 CLAUDE_REVIEW_MAX_TURNS = 16
 API_BILLING_ENV_VARS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK",
@@ -144,6 +144,7 @@ class Provider:
     name = ""
     display = ""
     supports_resume = False
+    turn_limit: int | None = None   # set by the engine per call (Claude --max-turns); None = provider default
 
     def run_main(self, worktree: Path, prompt: str, *, timeout: int, hooks: ProcessHooks,
                  session_id: str | None = None) -> AgentResult:
@@ -166,7 +167,7 @@ class ClaudeProvider(Provider):
             *resolved_command("claude"), "-p", "--output-format", "stream-json", "--verbose",
             "--permission-mode", "acceptEdits",
             "--allowedTools", ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
-            "--max-turns", str(CLAUDE_MAIN_MAX_TURNS),
+            "--max-turns", str(self.turn_limit or CLAUDE_MAIN_MAX_TURNS),
         ]
         if session_id is not None:
             if not _SESSION_UUID.fullmatch(session_id):

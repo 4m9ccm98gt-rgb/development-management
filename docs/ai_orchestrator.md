@@ -46,7 +46,7 @@ Reviewerの後出し指摘でループが増え、Reviewer（既定Codex）の�
 - **基準は実装前に固定します。** Taskに「受入条件」節があればその箇条書きを `C1, C2…` としてそのまま固定基準にします（Reviewer呼出し無し・クレジット消費無し）。無ければ、実装前にReviewerが1回だけ基準を作成します（read-only。使えない返答が2回続けばTaskSpec全体を基準にして**それ以上呼ばない**）。基準は `run.json` の `criteria` / `criteria_source`（`task` / `reviewer` / `task_fallback`）に保存され、Mainには実装前から、Reviewerには全レビューに同じものが渡されます。
 - **最終レビューは固定基準で判定します。** blocker / major の指摘は、固定基準のID（`criterion`）を示すか、証拠付きの欠陥（category が bug / regression / safety で `evidence` あり）でなければなりません。それ以外（好み・改善案・新しい要件）はOrchestratorが `minor` へ**格下げ**し、記録は残りますが差し戻し理由になりません。格下げの結果 blocking が無くなったFAILはPASSになります（`review_history[].downgraded`）。Tests失敗時の原因分析（failure analysis）の指摘は格下げしません。
 - **2回目以降は確認だけです。** 差し戻し後の再レビューには前回のblocking指摘を渡し、「直ったか」と「修正が新たに壊した回帰」だけを見させます（基準の追加は不可）。
-- **打ち切られた作業は検証に回しません。** MainがClaudeのturn上限（12）で中断された場合、差分が一部あっても**Tests・Reviewerへ進めず**、同じsessionで最大 `max_main_resumes`（2）回続きを書かせます。それでも終わらなければ `MAIN_TURN_LIMIT`（`needs_human`）で停止し、worktreeは保存します（Codexは呼びません）。
+- **打ち切られた作業は検証に回しません。** MainがClaudeのturn上限（1呼出しあたり、初回の実装 `main_turns_implementation`=80 / 修正 `main_turns_repair`=40。旧12は複数ファイルの変更で探索だけで尽きた）で中断された場合、差分が一部あっても**Tests・Reviewerへ進めず**、同じsessionで最大 `max_main_resumes`（2）回、続きの呼出しも同じ上限が新たに与えられます（実装なら最大240ターン）。それでも終わらなければ `MAIN_TURN_LIMIT`（`needs_human`）で停止し、worktreeは保存します（Codexは呼びません）。
 - **予算で強制停止します。** 上表の `max_review_calls` / `max_review_tokens` / `max_main_tokens`。最終レビューがFAILで、次のレビューを呼べない予算状態なら、修正のためにMainを呼ばずにその場で `REVIEW_BUDGET` で停止します。停止は呼出しの間で判定するため、実行中の1回を途中で切ることはありません。
 - **アプリの目的を自動で渡します。** `projects/<repo名>.md` の「正式な目的 / 目的 / 役割 / 概要」節（最初に見つかったもの、1500字まで）をMain・Reviewerへ渡します。Taskに目的を書く必要はありません。該当節が無いrepoは「未記録」として扱います。
 

@@ -87,7 +87,9 @@ class Limits:
     max_review_tokens: int = 1_000_000    # cumulative Reviewer tokens (input+output); 0 = unlimited. Checked between calls
     max_main_tokens: int = 0              # cumulative Main tokens; 0 = unlimited (Main is usually on a flat plan)
     max_provider_retries: int = 2         # transient provider errors only
-    max_main_resumes: int = 2             # empty-diff max-turns resume (Claude)
+    main_turns_implementation: int = 80   # Claude turns per Main call while implementing (exploration + edits + Tests)
+    main_turns_repair: int = 40           # Claude turns per Main call while repairing (the scope is already known)
+    max_main_resumes: int = 2             # resumes after the Claude turn limit (each resume gets a fresh turn budget)
     max_runtime_minutes: int = 360
     agent_timeout: int = 1800
     review_timeout: int = 1200

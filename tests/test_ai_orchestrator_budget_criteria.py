@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 from tools.ai_orchestrator import providers as p
 from tools.ai_orchestrator import runstate as rs
@@ -61,6 +62,33 @@ class TurnLimitTests(EngineCase):
         self.assertEqual(self.record["final_result"]["code"], "MAIN_TURN_LIMIT")
         self.assertEqual(self.host.test_calls, 1)          # only the run before the cut-off repair
         self.assertEqual(self.record["review_calls"], 0)
+
+
+class TurnBudgetTests(EngineCase):
+    def test_implementation_gets_more_turns_than_a_repair(self):
+        seen = []
+        self.build([FAIL_A, PASS], [("+a", "impl"), ("+b", "fix")])
+        original = self.main.run_main
+
+        def spy(*args, **kwargs):
+            seen.append(self.main.turn_limit)
+            return original(*args, **kwargs)
+        self.main.run_main = spy
+        self.assertEqual(self.engine.run(), rs.COMPLETED)
+        limits = rs.Limits()
+        self.assertEqual(seen, [limits.main_turns_implementation, limits.main_turns_repair])
+        self.assertGreater(limits.main_turns_implementation, limits.main_turns_repair)
+
+    def test_claude_command_uses_the_engine_turn_limit(self):
+        provider = p.ClaudeProvider()
+        provider.turn_limit = 77
+        with unittest.mock.patch.object(p, "resolved_command", return_value=["claude"]):
+            command = provider._main_command(None)
+        self.assertEqual(command[command.index("--max-turns") + 1], "77")
+        provider.turn_limit = None
+        with unittest.mock.patch.object(p, "resolved_command", return_value=["claude"]):
+            command = provider._main_command(None)
+        self.assertEqual(command[command.index("--max-turns") + 1], str(p.CLAUDE_MAIN_MAX_TURNS))
 
 
 class BudgetTests(EngineCase):

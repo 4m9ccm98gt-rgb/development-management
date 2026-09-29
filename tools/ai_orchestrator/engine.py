@@ -302,6 +302,10 @@ class Engine:
     def _call_main(self, prompt: str, label: str, *, implementation: bool) -> str:
         session = None
         before = self.host.snapshot().fingerprint
+        # Generous for the first implementation (unknown code to explore), tighter for repairs. A cut-off is
+        # never sent to Tests / the Reviewer, so a large budget cannot create paid review loops.
+        self.main.turn_limit = (self.limits.main_turns_implementation if implementation
+                                else self.limits.main_turns_repair)
         for resume in range(self.limits.max_main_resumes + 1):
             text_prompt = prompt if session is None else RESUME_PROMPT
             result = self._invoke(
