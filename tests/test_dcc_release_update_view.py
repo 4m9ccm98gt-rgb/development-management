@@ -27,7 +27,7 @@ def plan_body(**extra) -> dict:
     return body
 
 
-class EngineUpdateUiTests(unittest.TestCase):
+class UiCase(unittest.TestCase):
     def setUp(self):
         for target, name in ((dcc.App, "scan_remote_repos"), (dcc.App, "check_self_update"), (dcc.SelectionState, "_fire")):
             mocked = patch.object(target, name)
@@ -65,6 +65,8 @@ class EngineUpdateUiTests(unittest.TestCase):
         self.plan_path.write_text(json.dumps(body), encoding="utf-8")
         return body
 
+
+class EngineUpdateUiTests(UiCase):
     def test_update_button_starts_only_the_read_only_dry_run(self):
         definition = self.ui.current
         state = RepoState(True, True, head="a" * 40, origin_repo=definition.full_name)
@@ -150,6 +152,59 @@ class EngineUpdateUiTests(unittest.TestCase):
         self.ui.lifecycle_events.put(("finished", token, name, "update-dry-run", 0))
         self.pump_until(lambda: seen == [0])
         self.assertNotIn(name, self.ui.lifecycle_after)
+
+
+class RevertUiTests(UiCase):
+    def revert_body(self) -> dict:
+        body = {"plan_id": "cd" * 32, "target": "\\\\server\\share\\App", "release_commit": "c" * 40,
+                "previous_commit": "a" * 40, "previous_version": "v1.4.0", "in_use_now": [],
+                "summary": {"restore": 44, "remove": 2, "protected_live": 4061}}
+        self.plan_path.write_text(json.dumps(body), encoding="utf-8")
+        return body
+
+    def test_the_revert_button_is_only_enabled_for_a_live_engine_release(self):
+        with patch.object(self.ui, "_engine_release_live", return_value=False):
+            self.ui._set_button_states()
+            self.assertIn("disabled", self.ui.revert_button.state())
+        with patch.object(self.ui, "_engine_release_live", return_value=True):
+            self.ui._set_button_states()
+            self.assertNotIn("disabled", self.ui.revert_button.state())
+
+    def test_revert_starts_with_a_dry_run_and_executes_only_that_plan_on_yes(self):
+        definition = self.ui.current
+        with patch.object(self.ui, "_engine_release_live", return_value=True), \
+             patch.object(dcc.filedialog, "askdirectory", return_value="C:/share"), \
+             patch.object(self.ui, "_start_lifecycle", return_value=True) as launch:
+            self.ui.revert_release()
+        command, name, action = launch.call_args.args
+        self.assertEqual(action, "revert-dry-run")
+        self.assertEqual(command[command.index("scripts.dev_control_center.release_update") + 1], "revert-plan")
+        self.assertIn(definition.name, self.ui.lifecycle_after)
+        body = self.revert_body()
+        with patch.object(dcc.messagebox, "askyesno", return_value=False) as ask, \
+             patch.object(self.ui, "_start_lifecycle") as launch:
+            self.ui._confirm_revert_plan(definition, self.plan_path, 0)
+        launch.assert_not_called()
+        for fragment in ("cccccccccccc を戻し", "aaaaaaaaaaaa v1.4.0", "戻す: 44", "削除: 2", "失効"):
+            self.assertIn(fragment, ask.call_args.args[1])
+        with patch.object(dcc.messagebox, "askyesno", return_value=True), \
+             patch.object(self.ui, "_start_lifecycle") as launch:
+            self.ui._confirm_revert_plan(definition, self.plan_path, 0)
+        command, _, action = launch.call_args.args
+        self.assertEqual(action, "revert")
+        self.assertTrue(body["plan_id"].startswith(command[command.index("--confirm") + 1]))
+
+    def test_a_running_revert_can_not_be_stopped_from_the_window(self):
+        name = self.ui.current.name
+        token = object()
+        self.ui.lifecycle_jobs[name] = token
+        cancel = MagicMock()
+        self.ui.lifecycle_cancellations[name] = cancel
+        dcc.ACTIVE_OPERATIONS[id(token)] = (name, "revert")
+        with patch.object(dcc.messagebox, "showinfo") as info:
+            self.ui.stop_lifecycle()
+        info.assert_called_once()
+        cancel.set.assert_not_called()
 
 
 if __name__ == "__main__":

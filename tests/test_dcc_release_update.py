@@ -1384,5 +1384,170 @@ class OperationTests(ReleaseCase):
             self.assertFalse(re_.managed(config, rel), rel)
 
 
+# ====================================================================== revert of an engine release
+
+class RevertTests(ReleaseCase):
+    """release_revert: roll the latest engine release back from its changed-only backup."""
+
+    def released(self):
+        """v1 (legacy) -> engine release v2 (adopts the manifest) -> engine release v3 with changes + new files."""
+        self.release(self.v2(), "v2")
+        self.v2_files = self.app_files()
+        self.v2_commit = git(self.repo, "rev-parse", "HEAD")
+        body, result = self.release(self.v2(_internal__a_dat=b"v3-a", _internal__newdir__n_dat=b"new",
+                                            _internal__x_dat=b"x", App_exe=b"exe-v3"), "v3")
+        self.v3_commit = body["provenance"]["base_head"]
+        return body, result
+
+    def app_files(self):
+        """The deployment without the release manifest (a revert leaves the reverted, now untrusted, one)."""
+        return {rel: data for rel, data in self.app_state().items() if rel != "DCC_RELEASE_MANIFEST.json"}
+
+    def plan_revert(self, **extra):
+        from scripts.dev_control_center import release_revert
+
+        return release_revert.plan_revert(self.repo, self.target, repo_name="app", config=self.config,
+                                          emit=self.emitted.append, **extra)
+
+    def execute_revert(self, body, **extra):
+        from scripts.dev_control_center import release_revert
+
+        return release_revert.execute_revert(Path(body["plan_path"]), body["plan_id"][:12], config=self.config,
+                                             emit=self.emitted.append, **extra)
+
+    def test_revert_restores_the_previous_release_exactly_and_revokes_the_reverted_sha(self):
+        from scripts.dev_control_center import candidate
+
+        self.released()
+        operational = self.operational()
+        before = tree(self.target, backups=True)
+        body = self.plan_revert()
+        self.assertEqual(tree(self.target, backups=True), before)          # the dry-run writes nothing
+        self.assertEqual((body["previous_commit"], body["release_commit"]), (self.v2_commit, self.v3_commit))
+        self.assertEqual({i["path"]: i["action"] for i in body["items"]},
+                         {"_internal/a.dat": "restore", "App.exe": "restore", "BUILD_INFO.txt": "restore",
+                          "_internal/newdir/n.dat": "remove", "_internal/x.dat": "remove"})
+        result = self.execute_revert(body)
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.app_files(), self.v2_files)                  # exactly the previous release again
+        self.assertEqual(self.operational(), operational)                  # operational data never touched
+        production = self.production()
+        self.assertEqual(production["commit"], self.v2_commit)
+        self.assertIsNone(production.get("release_id"))                    # the next UPDATE verifies everything
+        self.assertIn(self.v3_commit, candidate.revoked_shas(self.repo))
+        self.assertFalse(provenance.restore_intent_path(self.repo).exists())
+        saved = Path(result["saved"]) / "files"
+        self.assertEqual((saved / "_internal/x.dat").read_bytes(), b"x")   # what was removed is kept, verified
+        self.commit("v4")                                                 # the next UPDATE works from there
+        self.build(self.v2(_internal__a_dat=b"v4"), "v4")
+        next_body = self.plan()
+        self.assertFalse(next_body["production"]["manifest_trusted"])
+        self.execute(next_body)
+
+    def test_the_reverted_build_can_not_be_released_again(self):
+        self.released()
+        self.execute_revert(self.plan_revert())
+        git(self.repo, "reset", "-q", "--hard", self.v3_commit)
+        self.build(self.v2(_internal__a_dat=b"v3-a"), "v3")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.plan()
+        self.assertEqual(ctx.exception.code, "PROVENANCE")
+
+    def test_a_deployment_that_is_not_exactly_the_release_is_never_reverted(self):
+        self.released()
+        (self.target / "_internal/x.dat").write_bytes(b"someone's edit")   # a file the release added, changed
+        before = tree(self.target)
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.plan_revert()
+        self.assertEqual(ctx.exception.code, "REVERT_UNSAFE")
+        self.assertEqual(tree(self.target), before)
+
+    def test_a_changed_backup_copy_is_refused(self):
+        _, result = self.released()
+        (Path(result["backup"]) / "files/_internal/a.dat").write_bytes(b"tampered")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.plan_revert()
+        self.assertEqual(ctx.exception.code, "BACKUP_IDENTITY")
+
+    def test_a_legacy_deployment_without_a_trusted_release_is_refused(self):
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.plan_revert()
+        self.assertEqual(ctx.exception.code, "REVERT_UNSAFE")
+
+    def test_a_failure_in_the_middle_puts_the_release_back_and_leaves_nothing_pending(self):
+        self.released()
+        body = self.plan_revert()
+        before, production = self.app_state(), self.production()
+
+        def fail_exe(change):
+            if change.rel == "App.exe":
+                raise OSError("injected swap failure")
+
+        with self.assertRaises(OSError):
+            self.execute_revert(body, before_each=fail_exe)
+        self.assertEqual(self.app_state(), before)                         # the release is live again, complete
+        self.assertEqual(self.production(), production)
+        self.assertFalse(provenance.restore_intent_path(self.repo).exists())
+
+    def test_an_edited_or_unconfirmed_revert_plan_is_refused(self):
+        from scripts.dev_control_center import release_revert
+
+        self.released()
+        body = self.plan_revert()
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            release_revert.execute_revert(Path(body["plan_path"]), body["plan_id"][:6], config=self.config)
+        self.assertEqual(ctx.exception.code, "NOT_CONFIRMED")
+        data = json.loads(Path(body["plan_path"]).read_text(encoding="utf-8"))
+        data["items"] = [i for i in data["items"] if i["action"] != "remove"]
+        Path(body["plan_path"]).write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute_revert(body)
+        self.assertEqual(ctx.exception.code, "PLAN_TAMPERED")
+
+    def test_a_change_after_the_revert_dry_run_stops_before_any_write(self):
+        self.released()
+        body = self.plan_revert()
+        (self.target / "_internal/a.dat").write_bytes(b"changed after the plan")
+        before = tree(self.target)
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.execute_revert(body)
+        self.assertIn(ctx.exception.code, ("PLAN_DRIFT", "STATE_UNREADABLE"))
+        self.assertEqual(tree(self.target), before)
+
+    def test_a_failed_record_after_the_revert_is_resolved_by_clear_interrupted(self):
+        from scripts.dev_control_center import candidate, restore_release as rr
+
+        self.released()
+        body = self.plan_revert()
+        with mock.patch.object(rr, "record_rollback", side_effect=OSError("local state disk full")), \
+             self.assertRaises(OSError):
+            self.execute_revert(body)
+        self.assertEqual(self.app_files(), self.v2_files)                  # the revert itself happened
+        self.assertIn(self.v3_commit, candidate.revoked_shas(self.repo))  # revoked while pending
+        with self.assertRaises(re_.ReleaseError) as ctx:
+            self.plan()
+        self.assertEqual(ctx.exception.code, "INTERRUPTED")
+        with mock.patch.object(rr, "release_config", return_value=self.config):
+            cleared = rr.clear_interrupted(self.repo, body["plan_id"][:12])
+        self.assertEqual(cleared["outcome"], "restore recorded")
+        self.assertEqual(self.production()["commit"], self.v2_commit)
+
+    @unittest.skipUnless(os.name == "nt", "share-mode semantics")
+    def test_the_app_can_not_start_during_a_revert(self):
+        self.released()
+        body = self.plan_revert()
+        blocked = []
+
+        def try_to_start(change):
+            try:
+                open(self.target / "App.exe", "rb").close()
+                blocked.append(False)
+            except PermissionError:
+                blocked.append(True)
+
+        self.execute_revert(body, before_each=try_to_start)
+        self.assertTrue(blocked and all(blocked))
+
+
 if __name__ == "__main__":
     unittest.main()

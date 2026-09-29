@@ -114,6 +114,8 @@ executeの間はDCCのBUILDと同じ成果物ロック（`output_lock`）を保�
 
 **backup保持**: `backup_dir` 直下の `dcc_release_*` で、同じrepoの完全な `backup_manifest.json` を持つものだけが対象です。新しい順に `backup_retention` 世代（今回分は必ず）を残し、それより古いものを削除します（中にreparse pointがあれば削除しない）。旧updaterの `update_before_*`、restoreの `rollback_before_*`、他repo・不完全なbackupには触れません。
 
+**release単位の戻し（revert）**: 共通engineはfull backupを作らないため、直前のengine releaseは `release_revert`（DCC画面の「直前のreleaseを戻す」、またはCLI `release_update revert-plan` → `revert`）で戻します。ボタンは本番がengine releaseの時だけ有効で、dry-run → 結果ダイアログ → 「はい」でexecute（実行中は画面から停止不可）。条件: 配布先が記録どおりのrelease（信頼済みmanifest・production記録）で、そのreleaseが書いた全ファイルが今もSHA-256で一致し、release backupが完全で退避コピーが記録hashと一致し、退避した `BUILD_INFO` が前のcommit（40桁）を示し前のEXEと整合すること。dry-runは書き込みなし。executeはUPDATEと同じlock・起動防止・退避（現ファイル）・stage・置換（EXE最後）・最終検証で、更新ファイルを戻しreleaseが追加したファイルを削除します（削除分も検証済みコピーを保存）。失敗時は置換・削除したものだけを戻し、戻せなければ `ROLLBACK_INCOMPLETE`。配布先への初回書き込み前にrestoreと同じ `restore-inflight.json`（両端状態の完全なファイル一覧）を書くため、記録前の中断は `restore_release clear-interrupted` で配布先の現状から解決できます。成功時はrollbackとして記録（戻したSHAは失効、productionは前のcommit）。manifestは戻したreleaseのものが残り（production記録と一致しないので信頼されない）、次のUPDATEは全管理ファイルを検証します。
+
 **CLI**: `python -m scripts.dev_control_center.release_update plan --repo <repo> --target <配布先> [--branch main] [--acknowledge-orphans]`（rc 0: 実行可能、2: 停止理由あり）→ `execute --plan <plan.json> --confirm <plan id先頭12文字以上>`（rc 3: `ROLLBACK_INCOMPLETE`）。
 
 ## 既存entrypointとの接続

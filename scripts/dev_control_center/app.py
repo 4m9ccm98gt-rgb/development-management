@@ -449,6 +449,9 @@ class App(ttk.Frame):
         self.orchestrator_button.grid(row=1, column=3, sticky="ew", padx=(3, 0), pady=(8, 0))
         self.operation_stop_button = ttk.Button(lifecycle, text="このrepoの実行を停止", command=self.stop_lifecycle)
         self.operation_stop_button.grid(row=0, column=0, columnspan=2, sticky="w")
+        # Common UPDATE engine: revert the latest engine release from its changed-only backup (dry-run first).
+        self.revert_button = ttk.Button(lifecycle, text="直前のreleaseを戻す", command=self.revert_release)
+        self.revert_button.grid(row=0, column=2, columnspan=2, sticky="e")
         entries = ttk.LabelFrame(right, text="検出した正式入口", padding=10)
         # Entry paths are available in tool logs; keep the main screen compact.
         entries.columnconfigure(1, weight=1)
@@ -1187,7 +1190,7 @@ class App(ttk.Frame):
         name = self.current.name
         cancel = self.lifecycle_cancellations.get(name)
         job = self.lifecycle_jobs.get(name)
-        if job is not None and ACTIVE_OPERATIONS.get(id(job), (None, None))[1] == "release" \
+        if job is not None and ACTIVE_OPERATIONS.get(id(job), (None, None))[1] in ("release", "revert") \
                 and release_update.engine_repo(name):
             messagebox.showinfo("UPDATE実行中", "共通UPDATE engineの実行中は停止できません。途中で止めると配布先が中断状態になります。"
                                 "\n失敗時はengineが自動で元に戻します。完了までお待ちください。", parent=self.master)
@@ -1380,6 +1383,54 @@ class App(ttk.Frame):
         if hasattr(self, "operation_stop_button"):
             running = self.current and self.current.name in self.lifecycle_cancellations
             self.operation_stop_button.configure(state="normal" if running else "disabled")
+        if hasattr(self, "revert_button"):
+            idle = self.current is not None and not App._repo_busy(self)
+            self.revert_button.state(["!disabled" if idle and self._engine_release_live() else "disabled"])
+
+    def _engine_release_live(self) -> bool:
+        """The confirmed production of the current repo is a common-engine release (so it can be reverted)."""
+        if not self.current:
+            return False
+        try:
+            if not release_update.engine_repo(self.current.name):
+                return False
+        except OSError:
+            return False
+        record = candidate_flow._read_json(provenance.production_record_path((REPOS_ROOT / self.current.name).resolve()))
+        return bool(record and record.get("release_id"))
+
+    def revert_release(self) -> None:
+        if not self.current or App._repo_busy(self) or not self._engine_release_live():
+            return
+        definition = self.current
+        repo_root = REPOS_ROOT / definition.name
+        production = candidate_flow._read_json(provenance.production_record_path(repo_root.resolve())) or {}
+        folder = filedialog.askdirectory(title="戻す配布先フォルダを選択（まずdry-run）",
+                                         initialdir=production.get("target") or None, parent=self.master)
+        if not folder:
+            return
+        plan_path = release_update.plans_dir(repo_root.resolve()) / f"revert-plan-{time.strftime('%Y%m%d_%H%M%S')}.json"
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.release_update",
+                   "revert-plan", "--repo", str(repo_root), "--target", folder, "--out", str(plan_path)]
+        if self._start_lifecycle(command, definition.name, "revert-dry-run"):
+            self.lifecycle_after[definition.name] = lambda rc: self._confirm_revert_plan(definition, plan_path, rc)
+
+    def _confirm_revert_plan(self, definition: RepoDefinition, plan_path: Path, rc: int) -> None:
+        if self.current != definition:
+            self._log(f"{definition.name}: 選択が変わったため戻しの確認を中止しました（dry-runのみ実施）")
+            return
+        if not plan_path.is_file():
+            self.banner_var.set(f"{definition.name}: 戻しのdry-run停止 rc={rc}（ログを確認してください）")
+            return
+        body = json.loads(plan_path.read_text(encoding="utf-8"))
+        if not messagebox.askyesno("直前のreleaseを戻す（dry-run結果）", revert_plan_text(body), parent=self.master):
+            self.banner_var.set("戻しをキャンセルしました（dry-runのみ。配布先は未変更）")
+            return
+        if self.current != definition or App._repo_busy(self):
+            return
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.release_update", "revert",
+                   "--plan", str(plan_path), "--confirm", body["plan_id"][:16]]
+        self._start_lifecycle(command, definition.name, "revert")
 
     def _copy_to_clipboard(self, text: str) -> None:
         self.master.clipboard_clear()
@@ -1438,6 +1489,21 @@ def flow_text(flow: dict | None) -> str:
         lines.append("■ baseが移動: fast-forwardできません。再Orchestratorまたは人間の判断が必要です")
     if not flow.get("active") and not flow.get("error"):
         lines.append("（このcandidateは完了・破棄済み、または既にoriginに含まれます。通常ルート）")
+    return "\n".join(lines)
+
+
+def revert_plan_text(body: dict) -> str:
+    """The dry-run result of reverting the latest engine release, as shown before the explicit confirmation."""
+    s = body["summary"]
+    lines = [f"本番 {body['release_commit'][:12]} を戻し、前のrelease {body['previous_commit'][:12]} "
+             f"{body.get('previous_version') or ''} に戻します",
+             f"配布先: {body['target']}",
+             f"更新ファイルを戻す: {s['restore']} / releaseが追加したファイルを削除: {s['remove']}（削除分も検証済みコピーを保存）",
+             f"運用データ（触れない）: {s['protected_live']}",
+             f"戻したSHA {body['release_commit'][:12]} は失効し、同じSHAは再配布できません（新しいcommitが必要）"]
+    if body.get("in_use_now"):
+        lines.append(f"■ 使用中: {', '.join(body['in_use_now'])} — 全PCでアプリを閉じてから実行してください")
+    lines += [f"plan: {body['plan_id'][:12]}", "", "この内容で戻しますか？（失敗時は変更分だけ自動で元に戻します）"]
     return "\n".join(lines)
 
 

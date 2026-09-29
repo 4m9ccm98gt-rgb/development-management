@@ -1,5 +1,9 @@
 # 変更履歴
 
+## 2026-09-29 — 共通UPDATE engineの独立レビュー対応とrelease単位の戻し
+
+GPT-6 Astraのread-onlyレビュー Round 1〜6 の指摘（計27件）をすべて修正し、各指摘に回帰テスト（修正前コミットでFAILを確認）を追加。主な強化: 実行中EXEの検出（読み書き・共有なしで判定）と置換中の起動防止、unchanged全ファイルのexecute時SHA-256確認、書き込み・削除時の親フォルダまでのreparse point再検証、失効SHAのfail closed（revoked.json・不変のrollback履歴・restore intent）、restore intentと配布先の完全なファイル一覧による中断解決、BUILD成果物ロックの保持とstaging後のprovenance再確認、production.jsonを唯一の確定点に。`release_revert`（直前のengine releaseを変更分backupから戻す。dry-run → 確認 → execute）を追加。**レビュー状態: REVIEW_PENDING**（Round 7はCodex残量不足で未実施。独立レビュー完了まで本番への初回UPDATE / DEPLOYは保留）。BUILD / UPDATE / DEPLOYなし。本番（v1.4.0 / 1a03178）は不変。
+
 ## 2026-09-28 — DCC共通UPDATE engine（差分UPDATE）
 
 全アプリ共通の `release_update`（dry-run → plan確認 → execute）を追加し、next-day-setupのDCC UPDATEをこれに切り替え（`[release.next-day-setup] engine = "dcc"`。`update_shared_folder.ps1` / `update_delta.ps1` はDCCから使わない）。管理対象ファイルだけの差分（size / mtime → 必要な分だけSHA-256）、変更ファイルだけのbackup（manifest付き・既定5世代保持、旧 `update_before_*` は削除しない）、stage後のSHA-256照合、EXEを最後にした置換、失敗時の逆順undo / `ROLLBACK_INCOMPLETE`、release manifest v2（`production.json` にSHA-256を記録し、整合しなければfull検証へfallback）、dry-run後の変化検出（plan digest）、EXEを共有なしで保持して置換中の起動を防止、中断マーカー、7段階の進捗表示。安全プリミティブは `restore_release` と共用（lockは `.dcc-release.lock` + 旧 `.nds-update.lock`）。`update_delta.ps1` の6テストの考え方と30項目を含む回帰テストを追加。BUILD / UPDATE / DEPLOYなし。本番（v1.4.0 / 1a03178）は不変。

@@ -765,8 +765,23 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("clear-interrupted", help="forget an interrupted update after verifying the target")
     c.add_argument("--repo", required=True, type=Path)
     c.add_argument("--confirm", required=True)
+    rp = sub.add_parser("revert-plan", help="dry-run of reverting the latest engine release (release_revert)")
+    rp.add_argument("--repo", required=True, type=Path)
+    rp.add_argument("--target", required=True, type=Path)
+    rp.add_argument("--out", type=Path)
+    rx = sub.add_parser("revert", help="apply a reviewed revert plan")
+    rx.add_argument("--plan", required=True, type=Path)
+    rx.add_argument("--confirm", required=True, help="first 12+ characters of the plan id")
     args = parser.parse_args(argv)
     try:
+        if args.action in ("revert-plan", "revert"):
+            from . import release_revert
+
+            if args.action == "revert-plan":
+                release_revert.plan_revert(args.repo, args.target, out=args.out)
+            else:
+                release_revert.execute_revert(args.plan, args.confirm)
+            return 0
         if args.action == "plan":
             body = plan(args.repo, args.target, branch=args.branch, acknowledge_orphans=args.acknowledge_orphans,
                         out=args.out)

@@ -485,9 +485,9 @@ class Progress:
 @dataclass
 class Change:
     rel: str
-    source: Path            # verified content to install
+    source: Path | None     # verified content to install (None: a removal)
     target: Path
-    expected_sha: str       # hash the target must have afterwards
+    expected_sha: str | None  # hash the target must have afterwards (None: removed; needs before_sha + a saved copy)
     before_sha: str | None  # current target hash (None: the file does not exist yet)
     saved: Path | None = None
     staged: Path | None = None
@@ -541,7 +541,9 @@ class Transaction:
         final = [f.lower() for f in self.final]
         if self.commit_file and self.commit_file.lower() not in final:
             final.append(self.commit_file.lower())
-        return sorted(changes, key=lambda c: final.index(c.rel.lower()) + 1 if c.rel.lower() in final else 0)
+        # removals first, then ordinary replacements, then the final-swap files in their order (EXE last)
+        return sorted(changes, key=lambda c: final.index(c.rel.lower()) + 1 if c.rel.lower() in final
+                      else (-1 if c.expected_sha is None else 0))
 
     def _make_parents(self, path: Path) -> None:
         missing = []
@@ -592,6 +594,8 @@ class Transaction:
     def _stage(self, changes: list[Change]) -> None:
         for number, change in enumerate(changes, 1):
             self.protected.assert_writable(change.rel)
+            if change.expected_sha is None:
+                continue  # a removal: nothing to stage (its current content is in the verified saved copy)
             target = safe_join(self.target_root, change.rel, ancestors=True)
             self._make_parents(target)
             staged = target.with_name(f"{target.name}.{uuid.uuid4().hex[:12]}.dcc-stage")
@@ -617,6 +621,16 @@ class Transaction:
                 if before_each:
                     before_each(change)
                 self.applied.append(change)
+                if change.expected_sha is None:  # removal of a file whose verified copy is in save_root
+                    if change.saved is None:
+                        raise ReleaseError(f"no verified saved copy before removing: {change.rel}", "SAVE_MISSING")
+                    if self.guard is not None:
+                        self.guard.release_for(change.target)
+                    change.target.unlink()
+                    if change.target.exists():
+                        raise ReleaseError(f"file still present after removal: {change.rel}", "TARGET_HASH_MISMATCH")
+                    self._emit(number, len(ordered), "applied")
+                    continue
                 self._swap(change.staged, change.target)
                 if self._current(change.target) != change.expected_sha:
                     raise ReleaseError(f"target hash mismatch after replace: {change.rel}", "TARGET_HASH_MISMATCH")
