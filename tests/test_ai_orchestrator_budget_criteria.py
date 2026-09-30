@@ -19,7 +19,7 @@ from tools.ai_orchestrator import runstate as rs
 from tools.ai_orchestrator.common import CommandResult
 from tools.ai_orchestrator.orchestrator import read_project_purpose
 from tools.ai_orchestrator.providers import AgentResult
-from tools.ai_orchestrator.review import ReviewParseError, apply_fixed_criteria, criteria_from_acceptance, parse_criteria, parse_review
+from tools.ai_orchestrator.review import ReviewParseError, apply_fixed_criteria, criteria_from_acceptance, extract_acceptance, parse_criteria, parse_review
 
 from ai_orchestrator_fakes import FAIL_REVIEW, review_json
 from test_ai_orchestrator_engine import FAIL_A, PASS, EngineCase
@@ -276,6 +276,19 @@ class ReviewHelperTests(unittest.TestCase):
                          ["休館日が出ない", "2日分表示される", "既存の表示は変わらない"])
         self.assertEqual(criteria_from_acceptance("## 受入条件\n自由文だけ"), [{"id": "C1", "text": "自由文だけ"}])
         self.assertEqual(criteria_from_acceptance("## 受入条件\n"), [])
+
+    def test_plain_text_paste_without_bullets_gives_one_criterion_per_line(self):
+        block = "受入条件\n検証してから使う。\n\n壊れたキャッシュは削除しない。\n失敗時は起動しない。"
+        self.assertEqual([c["text"] for c in criteria_from_acceptance(block)],
+                         ["検証してから使う。", "壊れたキャッシュは削除しない。", "失敗時は起動しない。"])
+
+    def test_acceptance_section_ends_at_plain_next_section_title(self):
+        task = "目的\n何かをする\n受入条件\nAを満たす。\nBを満たす。\n範囲外（今回やらない）\nGUI\n制約\n標準ライブラリのみ"
+        block = extract_acceptance(task)
+        self.assertEqual([c["text"] for c in criteria_from_acceptance(block)], ["Aを満たす。", "Bを満たす。"])
+        self.assertNotIn("GUI", block)
+        markdown = "## 受入条件\n- A\n- B\n## 範囲外\nGUI"
+        self.assertEqual(extract_acceptance(markdown), "## 受入条件\n- A\n- B")
 
     def test_parse_criteria_is_strict(self):
         self.assertEqual(len(parse_criteria(CRITERIA_REPLY)), 2)

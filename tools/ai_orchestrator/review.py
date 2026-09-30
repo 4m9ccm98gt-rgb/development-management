@@ -234,6 +234,15 @@ def classify_runner_problem(text: str) -> str:
     return ""
 
 
+_PLAIN_SECTION = re.compile(r"^\s*(?:範囲外|制約|関連ファイル|目的|背景|前提|注意|補足|out of scope|constraints?|notes?)", re.IGNORECASE)
+_PLAIN_SECTION_MAX = 40
+
+
+def _opens_section(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("#") or (len(stripped) <= _PLAIN_SECTION_MAX and bool(_PLAIN_SECTION.match(stripped)))
+
+
 def extract_acceptance(task: str) -> str:
     """Acceptance criteria section of the TaskSpec (marker line up to the next heading or
     40 lines), or an empty string when the TaskSpec has no such section."""
@@ -242,7 +251,7 @@ def extract_acceptance(task: str) -> str:
         if re.search(r"受入条件|受け入れ条件|acceptance", line, re.IGNORECASE):
             block = [line]
             for follow in lines[index + 1:index + 41]:
-                if follow.lstrip().startswith("#") and len(block) > 1:
+                if _opens_section(follow) and len(block) > 1:
                     break
                 block.append(follow)
             return "\n".join(block).strip()
@@ -257,12 +266,11 @@ DEFECT_CATEGORIES = ("bug", "regression", "safety")
 
 
 def criteria_from_acceptance(block: str) -> list[dict]:
-    """Fixed criteria from a TaskSpec acceptance section: one per bullet line, else the whole block."""
+    """箇条書き・番号行ごとに1条件。記号が1つも無い場合は空でない行ごとに1条件"""
     lines = block.splitlines()[1:]   # first line is the section heading
     items = [m.group(1).strip() for line in lines if (m := _BULLET.match(line))]
     if not items:
-        text = "\n".join(line.strip() for line in lines if line.strip())
-        items = [text] if text else []
+        items = [line.strip() for line in lines if line.strip()]
     return [{"id": f"C{i}", "text": text} for i, text in enumerate(items[:MAX_CRITERIA], 1)]
 
 
