@@ -481,6 +481,15 @@ class PromptTests(unittest.TestCase):
         self.assertIn("[initial_tests]", text)
         self.assertIn("https://github.com/example/new-app", text)
 
+    def test_new_repo_setup_requests_run_entry_registration_without_run_dev_cmd(self):
+        remote = RemoteRepo("new-app", default_branch="main", owner="example")
+        text = build_new_repo_setup_prompt(remote, Path(r"C:\repos\new-app"))
+        self.assertIn("RUN_DEV", text)
+        self.assertIn("[run.", text)
+        self.assertIn('module="unittest"', text)
+        self.assertIn("PYTHONPATH", text)
+        self.assertLess(text.index("[run."), text.index("SYNC / RUN_DEV / BUILD"))
+
 
 class DarkThemeContractTests(unittest.TestCase):
     def test_dcc_applies_dark_theme_before_building_widgets(self):
