@@ -45,6 +45,7 @@ shizen-launcher = "python -m unittest discover -s tests -v"
 #          from the source repo into the candidate worktree before every RUN_DEV. Never copied back;
 #          each path must be ignored in the source and untracked in the candidate.
 # A repo's own dcc_entrypoints.json still takes precedence.
+# A registered repo without RUN_DEV.cmd still gets a READY RUN entry (this body is what DCC runs).
 [run.next-day-setup]
 cwd = "."
 entry = "dinner_system/hotel_app_entry.py"  # v1.4.1+: production entry (extends hotel_app.HotelApp)
@@ -135,3 +136,10 @@ probe = "import flask"
 cwd = "python_app"
 entry = "app.py"
 probe = "import PySide6; assert PySide6.__version__.startswith('6.8.')"
+
+# No GUI and no RUN_DEV.cmd: RUN is the test suite (exit code 0 = PASS). The tests import their
+# helper as a top-level `support` module, so tests/ goes on PYTHONPATH.
+[run.shizen-launcher]
+cwd = "."
+module = "unittest"
+env = { PYTHONPATH = "tests" }

@@ -757,6 +757,19 @@ class RegisteredRunTests(unittest.TestCase):
                 self.assertEqual(subprocess.run(["git", "-C", str(source), "check-ignore", "-q", "--", item]).returncode, 0)
                 self.assertEqual(git(source, "ls-files", "--", item), "")
 
+    def test_shizen_launcher_runs_its_unittest_suite_from_the_source_venv(self):
+        spec = entrypoints.run_specs()["shizen-launcher"]
+        self.assertEqual((spec["cwd"], spec["module"], spec["env"]), (".", "unittest", {"PYTHONPATH": "tests"}))
+        self.assertNotIn("probe", spec)  # standard library only: nothing to import-check or install
+        self.assertNotIn("seed", spec)
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, source = Path(tmp) / "candidate", Path(tmp) / "shizen-launcher"
+            candidate.mkdir()
+            plan = entrypoints.plan_run(candidate, name="shizen-launcher", venv_root=source)
+        self.assertEqual(plan.args, ["-m", "unittest"])
+        self.assertEqual(plan.env, {"PYTHONPATH": str(candidate / "tests")})
+        self.assertEqual(plan.python, source / "." / ".venv" / "Scripts" / "python.exe")
+
     def test_every_registered_python_run_names_its_entry(self):
         for name, spec in entrypoints.run_specs().items():
             with self.subTest(name=name):

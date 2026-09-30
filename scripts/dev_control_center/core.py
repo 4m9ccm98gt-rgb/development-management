@@ -118,6 +118,7 @@ class EntryPointChoice:
     state: str
     path: Path | None = None
     candidates: tuple[Path, ...] = ()
+    note: str = ""
 
     @property
     def ready(self) -> bool:
@@ -755,6 +756,7 @@ def discover_entrypoints(
     *,
     application_implemented: bool = True,
     cancel: threading.Event | None = None,
+    run_specs: dict | None = None,
 ) -> RepoEntrypoints:
     """Conservatively find formal user-facing lifecycle entrypoints."""
     scripts = _iter_scripts(repo_root, cancel=cancel)
@@ -805,12 +807,25 @@ def discover_entrypoints(
     else:
         release_label = "N/A"
         release = EntryPointChoice("N/A")
+    if run.state == "MISSING" and application_implemented:
+        run = _registered_run(repo_root, run_specs)
     if not application_implemented:
         if build.state == "MISSING":
             build = EntryPointChoice("N/A")
         if release.state == "MISSING":
             release = EntryPointChoice("N/A")
     return RepoEntrypoints(sync, run, build, release, release_label)
+
+
+def _registered_run(repo_root: Path, specs: dict | None) -> EntryPointChoice:
+    """A repo without RUN_DEV.cmd whose non-interactive RUN body is registered in
+    dev_control_center_repos.toml ([run.<repo>]); DCC RUN / RUN_DEV execute that body."""
+    if specs is None:
+        from .entrypoints import run_specs as load
+        specs = load()
+    if repo_root.name not in specs:
+        return EntryPointChoice("MISSING")
+    return EntryPointChoice("READY", repo_root, note=f"[run.{repo_root.name}] (dev_control_center_repos.toml)")
 
 
 def _run_git(
@@ -975,6 +990,8 @@ def short_sha(value: str) -> str:
 
 
 def choice_text(choice: EntryPointChoice, repo_root: Path) -> str:
+    if choice.ready and choice.note:
+        return f"READY  {choice.note}"
     if choice.ready and choice.path:
         return f"READY  {choice.path.relative_to(repo_root)}"
     if choice.state == "MULTIPLE":

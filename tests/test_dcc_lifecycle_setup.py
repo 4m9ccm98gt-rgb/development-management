@@ -2,7 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from scripts.dev_control_center.core import discover_entrypoints, parse_github_repo
+from scripts.dev_control_center.core import choice_text, discover_entrypoints, parse_github_repo
 
 
 class LifecycleSetupTests(unittest.TestCase):
@@ -47,6 +47,32 @@ class LifecycleSetupTests(unittest.TestCase):
             result = discover_entrypoints(root, 'desktop')
             for action in ['sync', 'run', 'build', 'release']:
                 self.assertEqual(getattr(result, action).state, 'MULTIPLE')
+
+    def test_registered_run_body_is_the_run_entry_without_run_dev_cmd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'headless-app'
+            root.mkdir()
+            specs = {'headless-app': {'cwd': '.', 'module': 'unittest'}}
+            result = discover_entrypoints(root, 'desktop', run_specs=specs)
+            self.assertTrue(result.run.ready)
+            self.assertEqual(choice_text(result.run, root),
+                             'READY  [run.headless-app] (dev_control_center_repos.toml)')
+            self.assertEqual(discover_entrypoints(root, 'desktop', run_specs={}).run.state, 'MISSING')
+            unimplemented = discover_entrypoints(root, 'desktop', application_implemented=False, run_specs=specs)
+            self.assertEqual(unimplemented.run.state, 'MISSING')
+
+    def test_registered_run_does_not_override_found_or_ambiguous_run_dev_cmd(self):
+        specs = {'headless-app': {'cwd': '.', 'module': 'unittest'}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'headless-app'
+            root.mkdir()
+            (root / 'RUN_DEV.cmd').touch()
+            self.assertEqual(discover_entrypoints(root, 'desktop', run_specs=specs).run.path.name, 'RUN_DEV.cmd')
+            (root / 'RUN_DEV.cmd').unlink()
+            for folder in ['one', 'two']:
+                (root / folder).mkdir()
+                (root / folder / 'RUN_DEV.cmd').touch()
+            self.assertEqual(discover_entrypoints(root, 'desktop', run_specs=specs).run.state, 'MULTIPLE')
 
 
 if __name__ == '__main__':
