@@ -759,7 +759,8 @@ class RegisteredRunTests(unittest.TestCase):
 
     def test_shizen_launcher_runs_its_unittest_suite_from_the_source_venv(self):
         spec = entrypoints.run_specs()["shizen-launcher"]
-        self.assertEqual((spec["cwd"], spec["module"], spec["env"]), (".", "unittest", {"PYTHONPATH": "tests"}))
+        self.assertEqual((spec["cwd"], spec["module"]), (".", "unittest"))
+        self.assertNotIn("PYTHONPATH", spec.get("env") or {})  # tests/ is a package: nothing to add
         self.assertNotIn("probe", spec)  # standard library only: nothing to import-check or install
         self.assertNotIn("seed", spec)
         with tempfile.TemporaryDirectory() as tmp:
@@ -767,7 +768,7 @@ class RegisteredRunTests(unittest.TestCase):
             candidate.mkdir()
             plan = entrypoints.plan_run(candidate, name="shizen-launcher", venv_root=source)
         self.assertEqual(plan.args, ["-m", "unittest"])
-        self.assertEqual(plan.env, {"PYTHONPATH": str(candidate / "tests")})
+        self.assertNotIn("PYTHONPATH", plan.env or {})
         self.assertEqual(plan.python, source / "." / ".venv" / "Scripts" / "python.exe")
 
     def test_every_registered_python_run_names_its_entry(self):

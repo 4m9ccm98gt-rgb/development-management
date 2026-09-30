@@ -71,9 +71,9 @@ class DevelopmentRoutesTests(unittest.TestCase):
         for name in ("development-management", "shizen-launcher"):
             self.assertIn(name, items)
             self.assertEqual(items[name].branch, "main")
-            self.assertTrue(items[name].initial_ai_task)
             self.assertTrue(items[name].initial_test)
-        self.assertIn("PySide6", items["shizen-launcher"].initial_ai_task)
+        self.assertTrue(items["development-management"].initial_ai_task)
+        self.assertFalse(items["shizen-launcher"].initial_ai_task)
         self.assertEqual(items["development-management"].repo_type, "management")
 
     def test_development_management_has_formal_run_dev_entry(self):

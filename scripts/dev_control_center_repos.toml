@@ -20,11 +20,6 @@ call-reception-assistant = "Application source is not implemented; SYNC-only set
 development-management = """development-managementの変更依頼です。
 変更内容・優先順位・受入条件をここへ具体的に書いてください。
 OPERATING_CONTRACT.mdを正本とし、関連する自動テストも追加・更新してください。"""
-shizen-launcher = """PySide6のデモアプリを新規に作成してください。
-ウィンドウにタイトルとボタンを1つ表示し、ボタンを押すとラベルが更新される最小構成にしてください。
-RUN_DEV.cmd（.venvを作成しrequirements.txtからPySide6を導入して起動）とrequirements.txt、README.md、
-ヘッドレスで実行できる最小のテストを追加してください。
-BUILD / UPDATEの入口はこの依頼では作成せず、秘密情報・実運用データは含めないでください。"""
 
 # Default independent Tests command per repo, filled into the Orchestrator Tests field (editable there).
 # Takes precedence over DCC's guessed command. Written as a POSIX-shell command line; on Windows
@@ -137,9 +132,8 @@ cwd = "python_app"
 entry = "app.py"
 probe = "import PySide6; assert PySide6.__version__.startswith('6.8.')"
 
-# No GUI and no RUN_DEV.cmd: RUN is the test suite (exit code 0 = PASS). The tests import their
-# helper as a top-level `support` module, so tests/ goes on PYTHONPATH.
+# No GUI and no RUN_DEV.cmd: RUN is the test suite (exit code 0 = PASS). tests/ is a package
+# (`from tests import support`), so no PYTHONPATH is needed.
 [run.shizen-launcher]
 cwd = "."
 module = "unittest"
-env = { PYTHONPATH = "tests" }
