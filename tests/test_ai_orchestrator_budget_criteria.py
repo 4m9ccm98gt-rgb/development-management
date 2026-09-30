@@ -290,6 +290,20 @@ class ReviewHelperTests(unittest.TestCase):
         markdown = "## 受入条件\n- A\n- B\n## 範囲外\nGUI"
         self.assertEqual(extract_acceptance(markdown), "## 受入条件\n- A\n- B")
 
+    def test_bullets_folded_onto_one_line_by_copy_paste_are_split(self):
+        task = ("目的 何かをする。\n\n"
+                "受入条件 ・Aを満たす。 ・Bを満たす（フォルダ・ファイル）。 ・Cを満たす。\n\n"
+                "範囲外（今回やらない。指摘対象にもしない） GUI、exe化。\n\n"
+                "制約 標準ライブラリのみ。")
+        block = extract_acceptance(task)
+        self.assertNotIn("GUI", block)
+        self.assertEqual([c["text"] for c in criteria_from_acceptance(block)],
+                         ["Aを満たす。", "Bを満たす（フォルダ・ファイル）。", "Cを満たす。"])
+
+    def test_heading_with_a_note_is_not_taken_as_a_criterion(self):
+        block = "## 受入条件（必須）\n- A\n- B"
+        self.assertEqual([c["text"] for c in criteria_from_acceptance(block)], ["A", "B"])
+
     def test_parse_criteria_is_strict(self):
         self.assertEqual(len(parse_criteria(CRITERIA_REPLY)), 2)
         for bad in ('{"criteria": []}', '{"criteria": "x"}', "no json"):

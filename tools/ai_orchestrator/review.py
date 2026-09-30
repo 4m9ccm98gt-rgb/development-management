@@ -236,11 +236,16 @@ def classify_runner_problem(text: str) -> str:
 
 _PLAIN_SECTION = re.compile(r"^\s*(?:範囲外|制約|関連ファイル|目的|背景|前提|注意|補足|out of scope|constraints?|notes?)", re.IGNORECASE)
 _PLAIN_SECTION_MAX = 40
+# Copying a rendered Markdown page folds single line breaks into spaces, so a title can arrive followed by
+# its whole text on one long line. These titles are recognised at any length (when followed by a space,
+# a bracket or a colon), so an acceptance section cannot swallow the "out of scope" / "constraints" text.
+_STRONG_SECTION = re.compile(r"^\s*(?:範囲外|制約|関連ファイル|out of scope|constraints?)(?=[\s（(:：]|$)", re.IGNORECASE)
 
 
 def _opens_section(line: str) -> bool:
     stripped = line.strip()
-    return stripped.startswith("#") or (len(stripped) <= _PLAIN_SECTION_MAX and bool(_PLAIN_SECTION.match(stripped)))
+    return (stripped.startswith("#") or bool(_STRONG_SECTION.match(stripped))
+            or (len(stripped) <= _PLAIN_SECTION_MAX and bool(_PLAIN_SECTION.match(stripped))))
 
 
 def extract_acceptance(task: str) -> str:
@@ -259,18 +264,47 @@ def extract_acceptance(task: str) -> str:
 
 
 _BULLET = re.compile(r"^\s*(?:[-*・●]|\d+[.)、])\s*(.+\S)\s*$")
-MAX_CRITERIA = 12
+MAX_CRITERIA = 20
 # Findings of these categories may block without pointing at a fixed criterion, provided they carry evidence:
 # they are defects in the change itself, not extra requirements.
 DEFECT_CATEGORIES = ("bug", "regression", "safety")
 
 
+_ACCEPTANCE_MARK = re.compile(r"^.*?(?:受入条件|受け入れ条件|acceptance criteria|acceptance)\s*[:：]?", re.IGNORECASE)
+_INLINE_BULLET = re.compile(r"(?:^|\s+)・\s*")
+
+
+def _inline_items(line: str) -> list[str]:
+    """Split "・A ・B ・C" (bullets folded onto one line by copy / paste). A "・" inside a word is kept."""
+    return [part.strip() for part in _INLINE_BULLET.split(line.strip()) if part.strip()]
+
+
+def _has_inline_bullets(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("・") or bool(re.search(r"\s+・", stripped))
+
+
 def criteria_from_acceptance(block: str) -> list[dict]:
-    """箇条書き・番号行ごとに1条件。記号が1つも無い場合は空でない行ごとに1条件"""
-    lines = block.splitlines()[1:]   # first line is the section heading
-    items = [m.group(1).strip() for line in lines if (m := _BULLET.match(line))]
-    if not items:
-        items = [line.strip() for line in lines if line.strip()]
+    """Fixed criteria from a TaskSpec acceptance section: one per bullet / numbered line; when the text
+    carries no bullet marks at all (e.g. pasted as plain text), one per non-empty line. Bullets folded onto
+    one line by copy / paste ("受入条件 ・A ・B") are split back into separate criteria."""
+    lines = block.splitlines()
+    body = lines[1:]   # first line is the section heading
+    if lines:
+        remainder = _ACCEPTANCE_MARK.sub("", lines[0], count=1).strip()
+        if remainder and _has_inline_bullets(remainder):
+            body = [remainder] + body
+    bullets, plain = [], []
+    for line in body:
+        if not line.strip():
+            continue
+        if _has_inline_bullets(line):
+            bullets += _inline_items(line)
+        elif m := _BULLET.match(line):
+            bullets.append(m.group(1).strip())
+        else:
+            plain.append(line.strip())
+    items = bullets or plain
     return [{"id": f"C{i}", "text": text} for i, text in enumerate(items[:MAX_CRITERIA], 1)]
 
 
