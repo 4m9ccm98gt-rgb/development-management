@@ -8,6 +8,10 @@ automatically, so make every instruction specific and actionable.
 Base your review on the actual code, diff and Tests evidence below (open the files when
 the diff is truncated). Do not judge from prose alone.
 
+Keep the review cheap: everything you need (TaskSpec, fixed criteria, diff, Tests result) is
+below. Do NOT load or use any skills, plugins or sub-agents, and do not read the whole
+repository. Open a file only to verify a specific claim or to see a caller of changed code.
+
 ## Review mode
 {{MODE}}
 

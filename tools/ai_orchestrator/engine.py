@@ -306,6 +306,10 @@ class Engine:
         # never sent to Tests / the Reviewer, so a large budget cannot create paid review loops.
         self.main.turn_limit = (self.limits.main_turns_implementation if implementation
                                 else self.limits.main_turns_repair)
+        # The repo's own venv first on PATH (same as the independent Tests) so the Main AI can run the Tests
+        # itself instead of installing packages into the user's Python.
+        getter = getattr(self.host, "main_env", None)
+        self.main.extra_env = getter() if callable(getter) else None
         for resume in range(self.limits.max_main_resumes + 1):
             text_prompt = prompt if session is None else RESUME_PROMPT
             result = self._invoke(

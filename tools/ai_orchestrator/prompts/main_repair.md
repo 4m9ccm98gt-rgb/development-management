@@ -30,6 +30,8 @@ Rules:
 - Do not weaken tests, delete assertions or narrow acceptance conditions to make
   Tests pass. Do not commit, push, switch branches, reset, stash, rebase, BUILD, UPDATE
   or DEPLOY. Protect secrets and business data. Do not start sub-agents.
-- Tests will be re-run automatically after your repair; you need not claim they pass.
+- Tests will be re-run automatically after your repair; you need not claim they pass. You may run them
+  yourself with the repository's own command; its interpreter is already first on PATH. Do NOT install
+  packages (pip, uv, npm ...) or change the Python environment.
 - Report what you changed and why. If the TaskSpec cannot be completed without a
   human decision, emit the standalone line `IMPLEMENTATION_STATUS: BLOCKED` and the reason.

@@ -91,6 +91,50 @@ class TurnBudgetTests(EngineCase):
         self.assertEqual(command[command.index("--max-turns") + 1], str(p.CLAUDE_MAIN_MAX_TURNS))
 
 
+class MainEnvironmentTests(EngineCase):
+    def test_main_gets_the_hosts_environment_and_reviewer_does_not(self):
+        self.build([PASS], [("+a", "impl")])
+        self.host.main_env = lambda: {"PATH": "/repo/.venv/bin", "VIRTUAL_ENV": "/repo/.venv"}
+        self.assertEqual(self.engine.run(), rs.COMPLETED)
+        self.assertEqual(self.main.extra_env, {"PATH": "/repo/.venv/bin", "VIRTUAL_ENV": "/repo/.venv"})
+        provider = p.ClaudeProvider()
+        provider.extra_env = {"VIRTUAL_ENV": "/repo/.venv"}
+        self.assertEqual(provider.child_env("main")["VIRTUAL_ENV"], "/repo/.venv")
+        self.assertNotIn("VIRTUAL_ENV", {k: v for k, v in provider.child_env("review").items() if v == "/repo/.venv"})
+
+    def test_git_host_puts_the_repo_venv_first_and_is_empty_without_one(self):
+        import os
+        from tools.ai_orchestrator.orchestrator import GitHost, RepoBaseline
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            host = GitHost(RepoBaseline(root, "main", "a" * 40, "a" * 40), root / "wt", "run")
+            self.assertEqual(host.main_env(), {})
+            bin_dir = root / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+            bin_dir.mkdir(parents=True)
+            (bin_dir / ("python.exe" if os.name == "nt" else "python")).write_text("", encoding="utf-8")
+            env = host.main_env()
+            self.assertTrue(env["PATH"].startswith(str(bin_dir)))
+            self.assertEqual(env["VIRTUAL_ENV"], str(bin_dir.parent))
+
+    def test_claude_main_command_denies_package_installs_but_the_review_command_is_unchanged(self):
+        provider = p.ClaudeProvider()
+        with unittest.mock.patch.object(p, "resolved_command", return_value=["claude"]):
+            main = provider._main_command(None)
+            review = provider._review_command()
+        denied = main[main.index("--disallowedTools") + 1]
+        for needle in ("Bash(pip:*)", "Bash(python -m pip:*)", "Bash(py -m pip:*)"):
+            self.assertIn(needle, denied)
+        self.assertNotIn("--disallowedTools", review)
+        self.assertNotIn("Bash(pip:*)", main[main.index("--allowedTools") + 1])
+
+    def test_prompts_tell_the_agents_not_to_install_packages_or_load_skills(self):
+        prompts = Path(__file__).resolve().parents[1] / "tools" / "ai_orchestrator" / "prompts"
+        for name in ("main_implementation.md", "main_repair.md"):
+            self.assertIn("Do NOT install packages", " ".join((prompts / name).read_text(encoding="utf-8").split()))
+        for name in ("reviewer.md", "criteria.md"):
+            self.assertIn("not load or use any skills", " ".join((prompts / name).read_text(encoding="utf-8").lower().split()))
+
+
 class BudgetTests(EngineCase):
     def test_reviewer_call_budget_stops_before_a_repair_that_could_not_be_reviewed(self):
         self.build([PASS], [("+a", "impl"), ("+b", "fix")], [FAIL_REVIEW], limits=rs.Limits(max_review_calls=1))

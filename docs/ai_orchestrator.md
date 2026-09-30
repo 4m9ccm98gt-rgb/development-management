@@ -50,6 +50,8 @@ Reviewerの後出し指摘でループが増え、Reviewer（既定Codex）の�
 - **予算で強制停止します。** 上表の `max_review_calls` / `max_review_tokens` / `max_main_tokens`。最終レビューがFAILで、次のレビューを呼べない予算状態なら、修正のためにMainを呼ばずにその場で `REVIEW_BUDGET` で停止します。停止は呼出しの間で判定するため、実行中の1回を途中で切ることはありません。
 - **アプリの目的を自動で渡します。** `projects/<repo名>.md` の「正式な目的 / 目的 / 役割 / 概要」節（最初に見つかったもの、1500字まで）をMain・Reviewerへ渡します。Taskに目的を書く必要はありません。該当節が無いrepoは「未記録」として扱います。
 
+- **Reviewerの消費を抑えます。** Reviewer・基準作成のpromptに「skill / plugin / sub-agentを使わない。TaskSpec・基準・diff・Tests結果は全て渡してあるので、リポジトリ全体を読まず、特定の主張の検証にだけファイルを開く」と明記しています（実runでCodexがレビュー前にCoworkのコードレビュー用skillを読んでいたため）。効果は次のrunのCodexのログ（`[review:codex] command ...`）で確認します。
+
 ## Tests FAIL → Reviewer投入
 
 - Testsが2回FAIL（`reviewer_trigger_fails`、既定2）するまでReviewerを呼びません。FAIL #1 はMainが原因分析して自己修正します。
@@ -132,7 +134,7 @@ stash / reset --hard / force checkout / branch削除は行いません。行っ�
 ## 既定Testsとコマンドの解釈
 
 - repo別の既定Testsは `scripts/dev_control_center_repos.toml` の `[initial_tests]`。Orchestrator画面でrepoを選ぶと自動入力され、編集できます（編集内容はrepo別draftとして保持）。設定値はDCCの推測コマンド（`suggest_test_command`）より優先。未設定repoだけ推測値を使います。`--test` 必須・`--allow-no-tests` は明示例外のまま。
-- **repo-local venv**: source repoに `.venv\Scripts\python.exe`（POSIXは `.venv/bin/python`）があれば、独立Testsのprocessに限りその `Scripts` / `bin` をPATHの先頭へ置き `VIRTUAL_ENV` を設定します。Testsコマンドは書き換えず、`python` / `pytest` がrepoのvenvへ解決されます。cwdはisolated worktreeのままなので、テストされるのはworktree側のコードです（`.venv` はgit管理外でworktreeに存在せず、コピーもしません）。venvが無いrepoは従来通りPATH上のPython。Main / Reviewer AIの環境には影響しません。使用したvenvはTests出力の `(repo-local venv first on PATH: ...)` に表示されます。next-day-setupの既定Testsは正式runnerに合わせ `python -m pytest -q`（pytestはrepoの `.venv` に導入済み）。
+- **repo-local venv**: source repoに `.venv\Scripts\python.exe`（POSIXは `.venv/bin/python`）があれば、独立Testsのprocessに限りその `Scripts` / `bin` をPATHの先頭へ置き `VIRTUAL_ENV` を設定します。Testsコマンドは書き換えず、`python` / `pytest` がrepoのvenvへ解決されます。cwdはisolated worktreeのままなので、テストされるのはworktree側のコードです（`.venv` はgit管理外でworktreeに存在せず、コピーもしません）。venvが無いrepoは従来通りPATH上のPython。Reviewer AIの環境には影響しません。**Main AIにも同じ `.venv` をPATH先頭に置いて渡します**（`GitHost.main_env`）。worktreeに `.venv` が無いためMainが `pytest` を実行できず、PC全体のPythonへ `pip install` した実例があったためです。あわせてClaude Mainには `pip` / `python -m pip` / `uv pip` 等を `--disallowedTools` で拒否し、Main用promptでも「パッケージをインストールしない。不足は `IMPLEMENTATION_STATUS: BLOCKED` で報告」と指示します（偶発的なインストールの防止であり、完全なsandboxではありません）。使用したvenvはTests出力の `(repo-local venv first on PATH: ...)` に表示されます。next-day-setupの既定Testsは正式runnerに合わせ `python -m pytest -q`（pytestはrepoの `.venv` に導入済み）。
 - Testsコマンドは**POSIX shell（Git Bash等）での意味**を基準にします。Windowsでは `cmd.exe /d /s /c` で実行するため、cmdがquoteとして扱わない `'...'` だけを等価な `"..."` へ変換します（`-p 'test_*.py'` → `-p "test_*.py"`）。double quote内の `'`、未対応の `'`、`%`、`\"`、`'...'` 内の `"` を含む場合は意味を保証できないため**変換せずそのまま**実行します。それ以外の文字は変更しません。変換した場合はTests出力に `(executed by cmd.exe as: ...)` を表示します。
 
 ## source repoとの競合

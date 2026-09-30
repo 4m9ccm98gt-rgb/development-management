@@ -26,6 +26,9 @@ Preserve scope, existing changes, secrets and business data. Do not commit, push
 switch branches, reset, stash, rebase, BUILD, UPDATE or DEPLOY. Do not change any
 repository other than this worktree. Do not weaken tests or acceptance conditions.
 Add or update Tests for the behaviour you change when the repository has a test suite.
+Run the Tests with the repository's own command (for example `python -m pytest -q`): the repository's
+interpreter is already first on PATH. Do NOT install packages (pip, uv, npm ...) and do not change the
+Python environment; if a dependency is missing, report it with `IMPLEMENTATION_STATUS: BLOCKED`.
 Report the changes you made and any unresolved issue. If the TaskSpec cannot be
 completed without a human decision, emit the standalone line
 `IMPLEMENTATION_STATUS: BLOCKED` followed by the reason.

@@ -343,6 +343,13 @@ class GitHost:
         env["AI_ORCHESTRATOR_TEST_VENV_BIN"] = str(bin_dir)
         return env, bin_dir
 
+    def main_env(self) -> dict[str, str]:
+        """Extra environment for the Main AI: the source repo's `.venv` first on PATH (empty when there is none)."""
+        env, bin_dir = self.tests_env()
+        if bin_dir is None:
+            return {}
+        return {"PATH": env["PATH"], "VIRTUAL_ENV": env["VIRTUAL_ENV"]}
+
     def run_tests(self, commands: list[str], timeout: int, hooks: ProcessHooks) -> tuple[bool, str]:
         outputs: list[str] = []
         env, venv_bin = self.tests_env()

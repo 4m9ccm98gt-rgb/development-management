@@ -47,6 +47,14 @@ CLAUDE_ALLOWED_BASH_TOOLS: tuple[str, ...] = tuple(
 )
 
 
+# Explicitly denied (deny rules win over allow rules): a Main AI that cannot run `pytest` must not fix that by
+# installing packages into the user's Python. This stops accidental installs; it is not a hard sandbox.
+CLAUDE_DENIED_BASH_TOOLS: tuple[str, ...] = tuple(
+    f"Bash({prefix}:*)"
+    for prefix in ("pip", "pip3", "python -m pip", "python3 -m pip", "py -m pip", "python -m ensurepip", "uv pip")
+)
+
+
 @dataclass
 class AgentResult:
     provider: str
@@ -145,6 +153,14 @@ class Provider:
     display = ""
     supports_resume = False
     turn_limit: int | None = None   # set by the engine per call (Claude --max-turns); None = provider default
+    extra_env: dict[str, str] | None = None   # set by the engine for Main calls (e.g. the repo's own venv first on PATH)
+
+    def child_env(self, role: str) -> dict[str, str]:
+        """Environment of one agent process. Only the Main AI gets the engine's extra entries."""
+        env = agent_env()
+        if role == "main" and self.extra_env:
+            env.update(self.extra_env)
+        return env
 
     def run_main(self, worktree: Path, prompt: str, *, timeout: int, hooks: ProcessHooks,
                  session_id: str | None = None) -> AgentResult:
@@ -167,6 +183,7 @@ class ClaudeProvider(Provider):
             *resolved_command("claude"), "-p", "--output-format", "stream-json", "--verbose",
             "--permission-mode", "acceptEdits",
             "--allowedTools", ",".join(CLAUDE_ALLOWED_BASH_TOOLS),
+            "--disallowedTools", ",".join(CLAUDE_DENIED_BASH_TOOLS),
             "--max-turns", str(self.turn_limit or CLAUDE_MAIN_MAX_TURNS),
         ]
         if session_id is not None:
@@ -206,7 +223,7 @@ class ClaudeProvider(Provider):
         proc_hooks = ProcessHooks(on_line=relay, stop=hooks.stop, registry=hooks.registry, label=f"claude-{role}")
         try:
             result = run_streaming(command, cwd=worktree, input_text=prompt, timeout=timeout,
-                                   env=agent_env(), hooks=proc_hooks)
+                                   env=self.child_env(role), hooks=proc_hooks)
         except StopRequested:
             raise
         except OrchestratorError as exc:
@@ -325,7 +342,7 @@ class CodexProvider(Provider):
         proc_hooks = ProcessHooks(on_line=relay, stop=hooks.stop, registry=hooks.registry, label=f"codex-{role}")
         try:
             result = run_streaming(command, cwd=worktree, input_text=prompt, timeout=timeout,
-                                   env=agent_env(), hooks=proc_hooks)
+                                   env=self.child_env(role), hooks=proc_hooks)
         except StopRequested:
             raise
         except OrchestratorError as exc:
