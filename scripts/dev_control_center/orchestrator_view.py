@@ -54,6 +54,26 @@ def role_label(name: str) -> str:
     return ROLE_LABEL.get(name, name)
 
 
+def resolve_click_index(y: int, size: int, nearest, bbox) -> int | None:
+    """The run list selects a row only when the click lands inside that row's own pixels.
+
+    `nearest(y)` clamps to the closest row even for clicks in the empty margin below the last
+    row, so it alone can't tell a real row click from a margin click. Checking `bbox(index)`
+    (None for a non-existent/scrolled-out row) against `y` is what makes the distinction. Pure
+    and display-free on purpose: tested with fake `nearest`/`bbox` callables, no real Listbox.
+    """
+    if size <= 0:
+        return None
+    index = nearest(y)
+    box = bbox(index)
+    if box is None:
+        return None
+    top, height = box[1], box[3]
+    if top <= y < top + height:
+        return index
+    return None
+
+
 def prep_text(record: dict) -> str:
     """What the Orchestrator itself did to the source repo before the run (recorded, not asked of Main)."""
     if record.get("source_preparation") is None:
@@ -244,7 +264,13 @@ class OrchestratorWindow:
         self.run_list = tk.Listbox(left, width=58, exportselection=False)
         configure_dark_listbox(self.run_list)
         self.run_list.pack(fill="both", expand=True, pady=(6, 0))
-        self.run_list.bind("<<ListboxSelect>>", lambda _e: self._on_run_selected())
+        # Not <<ListboxSelect>>: that virtual event also fires for the programmatic
+        # selection_set() in _render_runs() (every poll tick) and for native click-drag, so the
+        # row selection could change on its own. Button-1 (checked against the row's own bbox,
+        # so a margin click is rejected) is the only thing that changes it; B1-Motion is
+        # suppressed so dragging can't either.
+        self.run_list.bind("<Button-1>", self._on_run_click)
+        self.run_list.bind("<B1-Motion>", self._on_run_drag)
 
         right = ttk.Frame(outer)
         right.grid(row=0, column=1, sticky="nsew")
@@ -561,6 +587,19 @@ class OrchestratorWindow:
     # ---------------------------------------------------------------- polling / rendering
     def _selected_item(self) -> dict | None:
         return next((i for i in self.run_items if i["record"]["run_id"] == self.selected_run), None)
+
+    def _on_run_click(self, event: tk.Event) -> str:
+        index = resolve_click_index(event.y, self.run_list.size(), self.run_list.nearest, self.run_list.bbox)
+        if index is not None and index < len(self.run_items):
+            self.run_list.selection_clear(0, "end")
+            self.run_list.selection_set(index)
+            self.run_list.focus_set()
+            self._on_run_selected()
+        return "break"
+
+    def _on_run_drag(self, _event: tk.Event) -> str:
+        """Click-drag must not change the selection: suppress Listbox's native drag-select."""
+        return "break"
 
     def _on_run_selected(self) -> None:
         index = self.run_list.curselection()

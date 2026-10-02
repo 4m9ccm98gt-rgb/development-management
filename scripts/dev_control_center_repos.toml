@@ -41,6 +41,21 @@ shizen-launcher = "python -m unittest discover -s tests -v"
 #          each path must be ignored in the source and untracked in the candidate.
 # A repo's own dcc_entrypoints.json still takes precedence.
 # A registered repo without RUN_DEV.cmd still gets a READY RUN entry (this body is what DCC runs).
+# DCC受信箱（DCC Task 8）: 共有フォルダの reports/pending を読む場所。既存の [release.<repo>] は
+# UPDATE成果物の配置規則であり、配布先（共有フォルダそのもの）のパスは持っていない（UPDATEのTargetは
+# 実行時にダイアログで都度選ぶ）。そのため新規にこの最小限のテーブルを追加した。
+#   shared_root   アプリの共有フォルダのルート（配下の reports/pending を読む）。実際のネットワーク
+#                 パス（例 \\サーバ\share\DinnerSystem）は開発PCでのみ把握しており、このrepoには
+#                 置かない。空文字のままの間は、受信箱はそのアプリを「接続できません」と表示する。
+[reports.next-day-setup]
+shared_root = ""
+
+[reports.menu-sheet-generator]
+shared_root = ""
+
+[reports.beverage-inventory-ordering-system]
+shared_root = ""
+
 [run.next-day-setup]
 cwd = "."
 entry = "dinner_system/hotel_app_entry.py"  # v1.4.1+: production entry (extends hotel_app.HotelApp)

@@ -409,6 +409,144 @@ class RunStatusTests(ViewCase):
         self.assertNotIn("go", self.window.log.get("1.0", "end"))
 
 
+class RunListRowClickLogicTests(unittest.TestCase):
+    """resolve_click_index is pure (Tk-free): a margin click, a scrolled-out row, or an empty
+    list must never resolve to a row, regardless of what nearest() clamps to."""
+
+    @staticmethod
+    def _nearest(rows):
+        def nearest(y):
+            if not rows:
+                return 0
+            best = 0
+            for i, (top, _height) in enumerate(rows):
+                if y < top:
+                    break
+                best = i
+            return best
+        return nearest
+
+    @staticmethod
+    def _bbox(rows):
+        def bbox(index):
+            if index is None or not (0 <= index < len(rows)):
+                return None
+            top, height = rows[index]
+            return (0, top, 200, height)
+        return bbox
+
+    def test_click_inside_a_row_resolves_to_that_row(self):
+        rows = [(0, 20), (20, 20), (40, 20)]
+        self.assertEqual(view.resolve_click_index(25, 3, self._nearest(rows), self._bbox(rows)), 1)
+
+    def test_click_in_the_margin_below_the_last_row_resolves_to_nothing(self):
+        rows = [(0, 20), (20, 20), (40, 20)]
+        self.assertIsNone(view.resolve_click_index(5000, 3, self._nearest(rows), self._bbox(rows)))
+
+    def test_click_on_an_empty_list_resolves_to_nothing(self):
+        self.assertIsNone(view.resolve_click_index(10, 0, self._nearest([]), self._bbox([])))
+
+    def test_a_scrolled_out_row_with_no_bbox_resolves_to_nothing(self):
+        self.assertIsNone(view.resolve_click_index(10, 3, lambda _y: 0, lambda _i: None))
+
+
+class _FakeRunListbox:
+    """A Listbox stand-in exposing only what the click handlers touch — no real Tk widget."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.selection = None
+        self.focused = False
+
+    def size(self):
+        return len(self.rows)
+
+    def nearest(self, y):
+        if not self.rows:
+            return 0
+        best = 0
+        for i, (top, _height) in enumerate(self.rows):
+            if y < top:
+                break
+            best = i
+        return best
+
+    def bbox(self, index):
+        if index is None or not (0 <= index < len(self.rows)):
+            return None
+        top, height = self.rows[index]
+        return (0, top, 200, height)
+
+    def selection_clear(self, _start, _end):
+        self.selection = None
+
+    def selection_set(self, index):
+        self.selection = index
+
+    def focus_set(self):
+        self.focused = True
+
+    def curselection(self):
+        return (self.selection,) if self.selection is not None else ()
+
+
+class _FakeOrchestratorWindow:
+    """Stands in for the bits of OrchestratorWindow that _on_run_click / _on_run_selected touch."""
+
+    def __init__(self, rows, run_ids):
+        self.run_list = _FakeRunListbox(rows)
+        self.run_items = [{"record": {"run_id": rid}} for rid in run_ids]
+        self.selected_run = None
+        self.monitor_selected = []
+        self.render_count = 0
+
+    def _render_selected(self):
+        self.render_count += 1
+
+    _on_run_selected = view.OrchestratorWindow._on_run_selected
+
+    class _Monitor:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def select(self, run_id):
+            self.outer.monitor_selected.append(run_id)
+
+    @property
+    def monitor(self):
+        return self._Monitor(self)
+
+
+class RunListClickWiringTests(unittest.TestCase):
+    """The bound handlers themselves, exercised against a fake Listbox (no real window)."""
+
+    def test_clicking_a_row_selects_that_run_and_renders_once(self):
+        win = _FakeOrchestratorWindow([(0, 20), (20, 20), (40, 20)], ["r0", "r1", "r2"])
+        result = view.OrchestratorWindow._on_run_click(win, SimpleNamespace(y=25))
+        self.assertEqual(result, "break")
+        self.assertEqual(win.selected_run, "r1")
+        self.assertEqual(win.monitor_selected, ["r1"])
+        self.assertEqual(win.render_count, 1)
+        self.assertTrue(win.run_list.focused)
+
+    def test_margin_click_leaves_the_selection_untouched(self):
+        win = _FakeOrchestratorWindow([(0, 20), (20, 20), (40, 20)], ["r0", "r1", "r2"])
+        win.selected_run = "r0"
+        result = view.OrchestratorWindow._on_run_click(win, SimpleNamespace(y=9000))
+        self.assertEqual(result, "break")
+        self.assertEqual(win.selected_run, "r0")
+        self.assertEqual(win.monitor_selected, [])
+        self.assertEqual(win.render_count, 0)
+
+    def test_drag_motion_always_breaks_without_touching_selection(self):
+        win = _FakeOrchestratorWindow([(0, 20), (20, 20)], ["r0", "r1"])
+        win.selected_run = "r0"
+        result = view.OrchestratorWindow._on_run_drag(win, SimpleNamespace(y=25))
+        self.assertEqual(result, "break")
+        self.assertEqual(win.selected_run, "r0")
+        self.assertEqual(win.render_count, 0)
+
+
 class RunMonitorTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
