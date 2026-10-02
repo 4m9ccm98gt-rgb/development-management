@@ -183,6 +183,7 @@ class _TkScheduler:
 class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         self.orchestrator_window = None
+        self.reports_window = None
         self._closed = False
         configure_dark_theme(master)
         super().__init__(master, padding=14)
@@ -281,6 +282,9 @@ class App(ttk.Frame):
         window = self.orchestrator_window
         if window is not None and window.exists():
             window.close()
+        reports_window = self.reports_window
+        if reports_window is not None and reports_window.exists():
+            reports_window.close()
         if TIMING.enabled:
             TIMING.event("ui-lag-summary", **self._heartbeat.stats())
         self.selection.close()
@@ -447,6 +451,8 @@ class App(ttk.Frame):
 
         self.orchestrator_button = ttk.Button(lifecycle, textvariable=self.orchestrator_button_var, command=self.open_orchestrator)
         self.orchestrator_button.grid(row=1, column=3, sticky="ew", padx=(3, 0), pady=(8, 0))
+        self.reports_button = ttk.Button(lifecycle, text="報告", command=self.open_reports_inbox)
+        self.reports_button.grid(row=2, column=3, sticky="ew", padx=(3, 0), pady=(4, 0))
         self.operation_stop_button = ttk.Button(lifecycle, text="このrepoの実行を停止", command=self.stop_lifecycle)
         self.operation_stop_button.grid(row=0, column=0, columnspan=2, sticky="w")
         # Common UPDATE engine: revert the latest engine release from its changed-only backup (dry-run first).
@@ -486,6 +492,17 @@ class App(ttk.Frame):
         self.orchestrator_window = OrchestratorWindow(
             self.master, self.definitions, initial_repo=self.current.name if self.current else None,
             drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT)
+
+    def open_reports_inbox(self) -> None:
+        """Open (or focus) the reports inbox window. Display/local-decision only; see
+        reports_inbox.py and reports_inbox_view.py."""
+        from .reports_inbox_view import ReportsInboxWindow
+
+        window = self.reports_window
+        if window is not None and window.exists():
+            window.focus()
+            return
+        self.reports_window = ReportsInboxWindow(self.master)
 
     def _repo_busy(self) -> bool:
         if self.active_process is not None:
