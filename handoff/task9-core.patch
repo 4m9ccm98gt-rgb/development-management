@@ -1,0 +1,559 @@
+diff --git a/tests/test_ai_orchestrator_start_prep.py b/tests/test_ai_orchestrator_start_prep.py
+index 6398c8b..a1f21d2 100644
+--- a/tests/test_ai_orchestrator_start_prep.py
++++ b/tests/test_ai_orchestrator_start_prep.py
+@@ -22,6 +22,7 @@ from tools.ai_orchestrator.common import OrchestratorError, ProcessHooks
+ from tools.ai_orchestrator.review import (
+     NO_TESTS_MARKER, RUNNER_NO_TESTS, RUNNER_UNAVAILABLE, classify_runner_problem, zero_tests_ran,
+ )
++from tools.ai_orchestrator.taskspec import parse_spec_text
+ 
+ from ai_orchestrator_fakes import FakeHost, ScriptedProvider, make_recorder, review_json
+ from test_ai_orchestrator_host import HostCase, git
+@@ -153,6 +154,133 @@ class SourcePreparationTests(HostCase):
+         self.assertFalse(orch._request_from_args(args).prepare_source)
+ 
+ 
++class SpecFileTests(HostCase):
++    """--spec-file / StartRequest.spec: fixed criteria bypass text extraction and the Reviewer
++    criteria call entirely (Task 9)."""
++
++    def test_spec_criteria_fill_run_json_and_are_saved_as_spec_json(self):
++        spec = parse_spec_text('{"criteria": [{"id": "Z1", "text": "custom id kept"}, {"text": "auto numbered"}]}')
++        run_dir, record = orch.prepare_run(self.request(spec=spec))
++        self.assertEqual(record["criteria_source"], "spec")
++        self.assertEqual(record["criteria"], [{"id": "Z1", "text": "custom id kept"},
++                                               {"id": "C1", "text": "auto numbered"}])
++        saved = json.loads((run_dir / "spec.json").read_text(encoding="utf-8"))
++        self.assertEqual(saved["criteria"], record["criteria"])
++        self.assertIsNone(saved["target_repo"])
++        self.assertEqual(rs.read_record(run_dir)["criteria_source"], "spec")
++
++    def test_without_a_spec_criteria_source_and_spec_json_are_unchanged(self):
++        run_dir, record = orch.prepare_run(self.request())
++        self.assertEqual((record["criteria"], record["criteria_source"]), ([], ""))
++        self.assertFalse((run_dir / "spec.json").exists())
++
++    def test_cli_spec_file_argument_loads_into_the_request(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            spec_path = Path(tmp) / "spec.json"
++            spec_path.write_text('{"criteria": [{"text": "a"}], "target_repo": "r"}', encoding="utf-8")
++            args = orch.build_parser().parse_args(
++                ["start", "--task", "t", "--test", "x", "--spec-file", str(spec_path)])
++            request = orch._request_from_args(args)
++            self.assertEqual(request.spec.criteria, ({"id": "C1", "text": "a"},))
++            self.assertEqual(request.spec.target_repo, "r")
++            self.assertIsNone(request.repo)  # --repo is optional (Task 9: resolved from the registry)
++
++    def test_cli_rejects_a_broken_spec_file_before_any_run_is_created(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            spec_path = Path(tmp) / "spec.json"
++            spec_path.write_text("{not json", encoding="utf-8")
++            args = orch.build_parser().parse_args(
++                ["start", "--repo", str(self.repo), "--task", "t", "--test", "x", "--spec-file", str(spec_path)])
++            with self.assertRaises(OrchestratorError) as ctx:
++                orch._request_from_args(args)
++            self.assertEqual(ctx.exception.code, "SPEC_INVALID")
++            self.assertEqual(rs.list_runs(), [])
++
++
++class TargetRepoMismatchTests(HostCase):
++    """The task's own "対象リポジトリ:" line, or the spec's target_repo, must agree with the
++    repository that was actually selected (Task 9: two prior start-the-wrong-repo incidents)."""
++
++    def test_mismatched_task_line_is_refused_before_any_run_or_lock(self):
++        with self.assertRaises(OrchestratorError) as ctx:
++            orch.prepare_run(self.request(task="対象リポジトリ: some-other-repo\nCreate feature.txt"))
++        self.assertEqual(ctx.exception.code, "TASK_REPO_MISMATCH")
++        self.assertIn("some-other-repo", str(ctx.exception))
++        self.assertIn(self.repo.name, str(ctx.exception))
++        self.assertEqual(rs.list_runs(), [])
++        self.assertFalse(list(rs.locks_root().glob("*.json")) if rs.locks_root().exists() else [])
++
++    def test_mismatched_spec_target_repo_is_refused(self):
++        spec = parse_spec_text('{"criteria": [{"text": "a"}], "target_repo": "some-other-repo"}')
++        with self.assertRaises(OrchestratorError) as ctx:
++            orch.prepare_run(self.request(spec=spec))
++        self.assertEqual(ctx.exception.code, "TASK_REPO_MISMATCH")
++        self.assertEqual(rs.list_runs(), [])
++
++    def test_matching_name_tolerates_width_case_and_trailing_bracket(self):
++        task = f"対象リポジトリ：{self.repo.name.upper()}（本番）\nCreate feature.txt"
++        run_dir, record = orch.prepare_run(self.request(task=task))
++        self.assertEqual(Path(record["repo"]).name, self.repo.name)
++
++    def test_marker_after_the_first_10_lines_is_not_checked(self):
++        lines = [f"line {i}" for i in range(10)] + ["対象リポジトリ: some-other-repo"]
++        task = "\n".join(lines) + "\nCreate feature.txt"
++        run_dir, record = orch.prepare_run(self.request(task=task))  # no TASK_REPO_MISMATCH
++        self.assertEqual(Path(record["repo"]).name, self.repo.name)
++
++    def test_task_without_a_target_line_starts_as_before(self):
++        run_dir, record = orch.prepare_run(self.request())
++        self.assertEqual(Path(record["repo"]).name, self.repo.name)
++
++
++class RepoAutoResolutionTests(HostCase):
++    """StartRequest.repo can be omitted: it is then resolved from the spec / task target against
++    the registry (Task 9), the same check prepare_run runs for an explicit --repo (used by both
++    DCC's start form and the CLI, since both call prepare_run)."""
++
++    def registry(self, *names):
++        return mock.patch.object(orch, "_registry_definitions", lambda: [SimpleNamespace(name=n) for n in names])
++
++    def request_no_repo(self, **extra):
++        return self.request(repo=None, **extra)
++
++    def test_omitted_repo_is_resolved_from_the_task_line(self):
++        with self.registry(self.repo.name), mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
++            run_dir, record = orch.prepare_run(self.request_no_repo(
++                task=f"対象リポジトリ: {self.repo.name}\nCreate feature.txt"))
++        self.assertEqual(Path(record["repo"]).resolve(), self.repo.resolve())
++
++    def test_omitted_repo_is_resolved_from_the_spec_target_repo_alone(self):
++        spec = parse_spec_text('{"criteria": [{"text": "a"}], "target_repo": "%s"}' % self.repo.name)
++        with self.registry(self.repo.name), mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
++            run_dir, record = orch.prepare_run(self.request_no_repo(task="Create feature.txt", spec=spec))
++        self.assertEqual(Path(record["repo"]).resolve(), self.repo.resolve())
++
++    def test_omitted_repo_with_no_target_anywhere_is_unresolved(self):
++        with self.registry(self.repo.name):
++            with self.assertRaises(OrchestratorError) as ctx:
++                orch.prepare_run(self.request_no_repo())
++        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
++        self.assertIn(self.repo.name, str(ctx.exception))  # candidates are listed
++        self.assertEqual(rs.list_runs(), [])
++
++    def test_omitted_repo_with_a_target_not_in_the_registry_is_unresolved(self):
++        with self.registry(self.repo.name):
++            with self.assertRaises(OrchestratorError) as ctx:
++                orch.prepare_run(self.request_no_repo(task="対象リポジトリ: nothing-like-that\nCreate feature.txt"))
++        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
++        self.assertEqual(rs.list_runs(), [])
++
++    def test_omitted_repo_with_an_ambiguous_target_is_unresolved(self):
++        with self.registry("App", "APP"):
++            with self.assertRaises(OrchestratorError) as ctx:
++                orch.prepare_run(self.request_no_repo(task="対象リポジトリ: app\nCreate feature.txt"))
++        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
++        self.assertIn("App", str(ctx.exception))
++        self.assertIn("APP", str(ctx.exception))
++        self.assertEqual(rs.list_runs(), [])
++
++
+ class DefaultTestsTests(unittest.TestCase):
+     def test_next_day_setup_default_tests_come_from_the_repo_registry(self):
+         definitions = {d.name: d for d in load_repo_definitions(
+diff --git a/tests/test_ai_orchestrator_taskspec.py b/tests/test_ai_orchestrator_taskspec.py
+new file mode 100644
+index 0000000..93b0dc3
+--- /dev/null
++++ b/tests/test_ai_orchestrator_taskspec.py
+@@ -0,0 +1,122 @@
++"""Fixed-format TaskSpec JSON: parsing, validation and the task-text "対象リポジトリ:" line.
++
++Pure functions only; no git, no AI, no filesystem beyond a single temp spec file.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++import tempfile
++import unittest
++
++from tools.ai_orchestrator.taskspec import SpecError, extract_target_repo_name, load_spec_file, parse_spec_text
++
++
++class ParseSpecTests(unittest.TestCase):
++    def test_ids_are_assigned_in_order_when_missing_and_kept_when_given(self):
++        spec = parse_spec_text('{"schema_version": 1, "criteria": '
++                                '[{"text": "a"}, {"id": "X9", "text": "b"}, {"text": "c"}]}')
++        self.assertEqual([c["id"] for c in spec.criteria], ["C1", "X9", "C2"])
++        self.assertEqual([c["text"] for c in spec.criteria], ["a", "b", "c"])
++        self.assertIsNone(spec.target_repo)
++
++    def test_target_repo_is_read_and_stripped(self):
++        spec = parse_spec_text('{"criteria": [{"text": "a"}], "target_repo": "  development-management  "}')
++        self.assertEqual(spec.target_repo, "development-management")
++
++    def test_unknown_fields_are_ignored(self):
++        spec = parse_spec_text('{"criteria": [{"text": "a"}], "unknown_field": 123}')
++        self.assertEqual(len(spec.criteria), 1)
++
++    def test_to_record_round_trips_as_plain_json_types(self):
++        import json
++        spec = parse_spec_text('{"criteria": [{"text": "a"}], "target_repo": "r"}')
++        record = spec.to_record()
++        self.assertEqual(json.loads(json.dumps(record)), record)
++
++    def test_broken_json_is_refused_in_japanese(self):
++        with self.assertRaises(SpecError) as ctx:
++            parse_spec_text("{not json")
++        self.assertEqual(ctx.exception.code, "SPEC_INVALID")
++        self.assertIn("仕様ファイルが不正です", str(ctx.exception))
++
++    def test_missing_criteria_is_refused(self):
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"target_repo": "r"}')
++
++    def test_empty_criteria_array_is_refused(self):
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"criteria": []}')
++
++    def test_more_than_twenty_criteria_is_refused(self):
++        items = ",".join('{"text": "c%d"}' % i for i in range(21))
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"criteria": [%s]}' % items)
++
++    def test_twenty_criteria_is_accepted(self):
++        items = ",".join('{"text": "c%d"}' % i for i in range(20))
++        spec = parse_spec_text('{"criteria": [%s]}' % items)
++        self.assertEqual(len(spec.criteria), 20)
++
++    def test_whitespace_only_text_is_refused(self):
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"criteria": [{"text": "   "}]}')
++
++    def test_text_over_1000_chars_is_refused(self):
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"criteria": [{"text": "%s"}]}' % ("x" * 1001))
++
++    def test_text_at_1000_chars_is_accepted(self):
++        spec = parse_spec_text('{"criteria": [{"text": "%s"}]}' % ("x" * 1000))
++        self.assertEqual(len(spec.criteria[0]["text"]), 1000)
++
++    def test_duplicate_id_is_refused(self):
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"criteria": [{"id": "C1", "text": "a"}, {"id": "C1", "text": "b"}]}')
++
++    def test_criteria_item_that_is_not_an_object_is_refused(self):
++        with self.assertRaises(SpecError):
++            parse_spec_text('{"criteria": ["just a string"]}')
++
++    def test_load_spec_file_reads_utf8(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            path = Path(tmp) / "spec.json"
++            path.write_text('{"criteria": [{"text": "日本語の条件"}]}', encoding="utf-8")
++            spec = load_spec_file(path)
++            self.assertEqual(spec.criteria[0]["text"], "日本語の条件")
++
++    def test_load_spec_file_missing_is_refused(self):
++        with self.assertRaises(SpecError):
++            load_spec_file(Path(tempfile.mkdtemp()) / "missing.json")
++
++
++class ExtractTargetRepoNameTests(unittest.TestCase):
++    def test_half_width_colon(self):
++        self.assertEqual(extract_target_repo_name("対象リポジトリ: development-management\n次の行"), "development-management")
++
++    def test_full_width_colon(self):
++        self.assertEqual(extract_target_repo_name("対象リポジトリ：development-management"), "development-management")
++
++    def test_trailing_bracket_note_is_stripped(self):
++        self.assertEqual(extract_target_repo_name("対象リポジトリ: development-management（DCC）"),
++                         "development-management")
++        self.assertEqual(extract_target_repo_name("対象リポジトリ: development-management (DCC)"),
++                         "development-management")
++
++    def test_no_marker_line_returns_none(self):
++        self.assertIsNone(extract_target_repo_name("ただの依頼文です。\n対象について特に書いていません。"))
++
++    def test_marker_after_line_10_is_not_seen(self):
++        lines = [f"line {i}" for i in range(10)] + ["対象リポジトリ: development-management"]
++        self.assertIsNone(extract_target_repo_name("\n".join(lines)))
++
++    def test_marker_within_first_10_lines_is_seen(self):
++        lines = [f"line {i}" for i in range(9)] + ["対象リポジトリ: development-management"]
++        self.assertEqual(extract_target_repo_name("\n".join(lines)), "development-management")
++
++    def test_empty_name_after_marker_is_none(self):
++        self.assertIsNone(extract_target_repo_name("対象リポジトリ: \n次の行"))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tools/ai_orchestrator/engine.py b/tools/ai_orchestrator/engine.py
+index fcdfbba..dd40617 100644
+--- a/tools/ai_orchestrator/engine.py
++++ b/tools/ai_orchestrator/engine.py
+@@ -263,6 +263,10 @@ class Engine:
+         Reviewer call, no credits); otherwise the Reviewer drafts them once, read-only."""
+         rec = self.rec
+         if self.criteria:
++            # Already fixed before this run started (criteria_source "spec"): no text extraction,
++            # no Reviewer call to draft them.
++            rec.log(f"[criteria] using {len(self.criteria)} criteria from "
++                    f"{rec.record.get('criteria_source') or 'run.json'} (no extraction, no Reviewer call)")
+             return
+         block = extract_acceptance(self.task)
+         criteria = criteria_from_acceptance(block) if block else []
+diff --git a/tools/ai_orchestrator/orchestrator.py b/tools/ai_orchestrator/orchestrator.py
+index 092af84..99bd3d2 100644
+--- a/tools/ai_orchestrator/orchestrator.py
++++ b/tools/ai_orchestrator/orchestrator.py
+@@ -30,10 +30,13 @@ from .providers import (
+     DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_NAMES, active_api_billing_env, agent_env,
+     make_provider, validate_roles,
+ )
++from .taskspec import Spec, extract_target_repo_name, load_spec_file
+ from .usage import USAGE_PROVIDER_CLASSES, describe, make_usage_provider
+ 
+ DM_ROOT = Path(__file__).resolve().parents[2]
+ MAX_UNTRACKED_BYTES = 200_000
++_REGISTRY_TYPES_PATH = DM_ROOT / "scripts" / "repo_types.toml"
++_REGISTRY_BRANCHES_PATH = DM_ROOT / "scripts" / "dev_control_center_repos.toml"
+ 
+ 
+ # ------------------------------------------------------------------------- Git helpers
+@@ -421,9 +424,9 @@ class GitHost:
+ 
+ @dataclass
+ class StartRequest:
+-    repo: str
+     task: str
+     tests: list[str]
++    repo: str | None = None  # omitted: resolved from spec.target_repo / the task's "対象リポジトリ:" line
+     main_agent: str = DEFAULT_MAIN_AGENT
+     review_agent: str = DEFAULT_REVIEW_AGENT
+     expected_branch: str | None = None
+@@ -433,6 +436,64 @@ class StartRequest:
+     fetch: bool = True
+     allow_no_tests: bool = False
+     prepare_source: bool = False  # switch a clean source repo to expected_branch and fast-forward it (DCC)
++    spec: Spec | None = None  # already-loaded fixed-format TaskSpec (criteria, optional target_repo)
++
++
++def _registry_definitions() -> list:
++    """Repositories DCC's Orchestrator screen itself offers (scripts/repo_types.toml x
++    scripts/dev_control_center_repos.toml), the same set `active_repo_definitions` builds for
++    OrchestratorWindow. A seam for tests: patch this function, not the TOML files."""
++    from scripts.dev_control_center.core import active_repo_definitions
++
++    return active_repo_definitions(_REGISTRY_TYPES_PATH, _REGISTRY_BRANCHES_PATH)
++
++
++def _normalize_repo_name(text: str) -> str:
++    return text.strip().casefold()
++
++
++def _target_repo_candidates(task: str, spec: Spec | None) -> list[tuple[str, str]]:
++    """(label, name) of what the request says its target repository is, in priority order:
++    the spec's target_repo first, then the task's own "対象リポジトリ:" line. Empty when neither
++    is present."""
++    candidates: list[tuple[str, str]] = []
++    if spec is not None and spec.target_repo:
++        candidates.append(("仕様ファイルのtarget_repo", spec.target_repo))
++    task_target = extract_target_repo_name(task)
++    if task_target:
++        candidates.append(("依頼文の「対象リポジトリ:」行", task_target))
++    return candidates
++
++
++def _check_target_repo(task: str, spec: Spec | None, repo_root: Path) -> None:
++    selected = repo_root.name
++    for label, name in _target_repo_candidates(task, spec):
++        if _normalize_repo_name(name) != _normalize_repo_name(selected):
++            raise OrchestratorError(
++                f"対象リポジトリが食い違っています。{label}は「{name}」を指していますが、選ばれたリポジトリは"
++                f"「{selected}」です。", "TASK_REPO_MISMATCH")
++
++
++def _resolve_repo_path(task: str, spec: Spec | None) -> Path:
++    """Repo path from the registry when none was given explicitly (StartRequest.repo is empty)."""
++    candidates = _target_repo_candidates(task, spec)
++    names = sorted({d.name for d in _registry_definitions()})
++    if not candidates:
++        raise OrchestratorError(
++            "リポジトリが指定されておらず、仕様ファイルにも依頼文にも対象リポジトリが書かれていません。"
++            f"--repo を指定するか、依頼文の先頭10行以内に「対象リポジトリ: <名前>」を書いてください。選べる候補: "
++            + (", ".join(names) or "(なし)"), "TASK_REPO_UNRESOLVED")
++    label, name = candidates[0]
++    matches = [n for n in names if _normalize_repo_name(n) == _normalize_repo_name(name)]
++    if not matches:
++        raise OrchestratorError(
++            f"{label}が指す「{name}」はレジストリに見つかりません。選べる候補: " + (", ".join(names) or "(なし)"),
++            "TASK_REPO_UNRESOLVED")
++    if len(matches) > 1:
++        raise OrchestratorError(
++            f"{label}が指す「{name}」に該当するリポジトリが複数あります: {', '.join(matches)}。選べる候補: "
++            + ", ".join(names), "TASK_REPO_UNRESOLVED")
++    return DM_ROOT.parent / matches[0]
+ 
+ 
+ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
+@@ -451,7 +512,9 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
+     if active and not request.allow_api_billing:
+         raise OrchestratorError("API/third-party billing environment detected: " + ", ".join(active)
+                                 + ". Refusing to start.", "API_BILLING_ENV")
+-    root = repo_toplevel(Path(request.repo))
++    repo_arg = Path(request.repo) if request.repo else _resolve_repo_path(task, request.spec)
++    root = repo_toplevel(repo_arg)
++    _check_target_repo(task, request.spec, root)
+     run_id = now_id()
+     # Lock before touching the source repo: its branch is never moved under another live run.
+     lock = rs.acquire_repo_lock(str(root), run_id)
+@@ -464,10 +527,15 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
+             run_id=run_id, repo=str(baseline.root), task=task, main_agent=request.main_agent,
+             review_agent=request.review_agent, tests=request.tests, limits=request.limits,
+             branch=baseline.branch, base_sha=baseline.head_sha)
++        if request.spec is not None:
++            record["criteria"] = list(request.spec.criteria)
++            record["criteria_source"] = "spec"
+         record["billing_env_override"] = list(active)
+         record["same_provider_override"] = request.main_agent == request.review_agent
+         record["source_preparation"] = preparation if request.prepare_source else None  # None: not requested
+         (run_dir / "task.md").write_text(task + "\n", encoding="utf-8")
++        if request.spec is not None:
++            write_json_atomic(run_dir / "spec.json", request.spec.to_record())
+         write_json_atomic(run_dir / "run.json", record)
+     except BaseException:
+         lock.unlink(missing_ok=True)
+@@ -619,11 +687,12 @@ def _limit_args(parser: argparse.ArgumentParser) -> None:
+ def _request_from_args(args: argparse.Namespace) -> StartRequest:
+     task = Path(args.task_file).read_text(encoding="utf-8").strip() if args.task_file else args.task
+     limits = rs.Limits(**{f.name: getattr(args, "limit_" + f.name) for f in fields(rs.Limits)})
++    spec = load_spec_file(Path(args.spec_file)) if args.spec_file else None
+     return StartRequest(
+-        repo=args.repo, task=task or "", tests=list(args.test), main_agent=args.main, review_agent=args.reviewer,
++        task=task or "", tests=list(args.test), repo=args.repo, main_agent=args.main, review_agent=args.reviewer,
+         expected_branch=args.expected_branch, limits=limits, allow_same_provider=args.allow_same_provider,
+         allow_api_billing=args.allow_api_billing, fetch=not args.no_fetch, allow_no_tests=args.allow_no_tests,
+-        prepare_source=args.prepare_source)
++        prepare_source=args.prepare_source, spec=spec)
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+@@ -633,7 +702,9 @@ def build_parser() -> argparse.ArgumentParser:
+     for name, help_text in (("start", "start a detached run and return its run dir"),
+                             ("run", "start a run and stay attached until it finishes (worker runs in-process)")):
+         p = sub.add_parser(name, help=help_text)
+-        p.add_argument("--repo", required=True)
++        p.add_argument("--repo", help="omit to resolve from --spec-file target_repo / the task's "
++                                      "対象リポジトリ: line against the registry")
++        p.add_argument("--spec-file", help="fixed-format JSON TaskSpec (schema_version, criteria, target_repo)")
+         group = p.add_mutually_exclusive_group(required=True)
+         group.add_argument("--task")
+         group.add_argument("--task-file")
+diff --git a/tools/ai_orchestrator/taskspec.py b/tools/ai_orchestrator/taskspec.py
+new file mode 100644
+index 0000000..0aa30b8
+--- /dev/null
++++ b/tools/ai_orchestrator/taskspec.py
+@@ -0,0 +1,117 @@
++"""Fixed-format TaskSpec input: a JSON spec file that gives acceptance criteria (and,
++optionally, the target repository) directly, instead of having them extracted from the
++free-form task text by wording rules (which can cut a criterion or mix in a heading).
++
++Pure functions (no I/O besides reading the given spec file); the caller decides what to
++do with a parsed `Spec` (orchestrator.prepare_run stores it unchanged in criteria /
++criteria_source / spec.json).
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++import json
++from pathlib import Path
++import re
++
++from .common import OrchestratorError
++
++MAX_SPEC_CRITERIA = 20
++MAX_CRITERION_CHARS = 1000
++
++
++class SpecError(OrchestratorError):
++    code = "SPEC_INVALID"
++
++
++@dataclass(frozen=True)
++class Spec:
++    criteria: tuple[dict, ...]
++    target_repo: str | None = None
++
++    def to_record(self) -> dict:
++        return {"schema_version": 1, "criteria": [dict(c) for c in self.criteria], "target_repo": self.target_repo}
++
++
++def _fail(message: str) -> None:
++    raise SpecError(f"仕様ファイルが不正です: {message}")
++
++
++def parse_spec_text(text: str) -> Spec:
++    """Strict: any violation of the fixed format refuses the whole spec (no partial use)."""
++    try:
++        value = json.loads(text)
++    except ValueError as exc:
++        _fail(f"JSONを解析できません: {exc}")
++    if not isinstance(value, dict):
++        _fail("JSONオブジェクトである必要があります")
++    raw_criteria = value.get("criteria")
++    if not isinstance(raw_criteria, list) or not raw_criteria:
++        _fail("criteriaは1件以上の配列が必須です")
++    if len(raw_criteria) > MAX_SPEC_CRITERIA:
++        _fail(f"criteriaは{MAX_SPEC_CRITERIA}件までです（{len(raw_criteria)}件）")
++    items: list[dict] = []
++    seen_ids: set[str] = set()
++    for index, entry in enumerate(raw_criteria, 1):
++        if not isinstance(entry, dict):
++            _fail(f"criteria[{index}]はオブジェクトである必要があります")
++        raw_text = entry.get("text")
++        if not isinstance(raw_text, str) or not raw_text.strip():
++            _fail(f"criteria[{index}].textが空、または空白のみです")
++        if len(raw_text) > MAX_CRITERION_CHARS:
++            _fail(f"criteria[{index}].textが{MAX_CRITERION_CHARS}文字を超えています（{len(raw_text)}文字）")
++        raw_id = entry.get("id")
++        cid: str | None
++        if raw_id is None:
++            cid = None
++        elif isinstance(raw_id, str) and raw_id.strip():
++            cid = raw_id.strip()
++            if cid in seen_ids:
++                _fail(f"criteria[{index}].id「{cid}」が重複しています")
++            seen_ids.add(cid)
++        else:
++            _fail(f"criteria[{index}].idが空です")
++        items.append({"id": cid, "text": raw_text.strip()})
++    counter = 0
++    numbered: list[dict] = []
++    for item in items:
++        if item["id"] is None:
++            counter += 1
++            numbered.append({"id": f"C{counter}", "text": item["text"]})
++        else:
++            numbered.append(item)
++    raw_target = value.get("target_repo")
++    if raw_target is not None and not isinstance(raw_target, str):
++        _fail("target_repoは文字列である必要があります")
++    target_repo = raw_target.strip() if isinstance(raw_target, str) and raw_target.strip() else None
++    return Spec(criteria=tuple(numbered), target_repo=target_repo)
++
++
++def load_spec_file(path: Path) -> Spec:
++    try:
++        text = Path(path).read_text(encoding="utf-8")
++    except OSError as exc:
++        raise SpecError(f"仕様ファイルを読み込めません: {path} ({exc})") from exc
++    return parse_spec_text(text)
++
++
++_TARGET_LINE = re.compile(r"^[ \t　]*対象リポジトリ[ \t　]*[:：][ \t　]*(.*)$")
++_TARGET_STOP = re.compile(r"[\s　（(]")
++
++
++def extract_target_repo_name(task: str) -> str | None:
++    """The word right after a "対象リポジトリ:" / "対象リポジトリ：" line, within the first 10
++    lines of `task` only. A bracketed note after the name (e.g. "development-management（DCC）")
++    and full/half-width spelling of the colon are both handled. None when there is no such line."""
++    for line in task.splitlines()[:10]:
++        match = _TARGET_LINE.match(line)
++        if not match:
++            continue
++        rest = match.group(1).strip()
++        if not rest:
++            continue
++        stop = _TARGET_STOP.search(rest)
++        name = (rest[:stop.start()] if stop else rest).strip()
++        if name:
++            return name
++    return None
