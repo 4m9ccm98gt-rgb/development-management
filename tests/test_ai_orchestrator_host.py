@@ -13,6 +13,7 @@ import time
 import unittest
 from unittest import mock
 
+from git_env_isolation import isolate_git_env
 from tools.ai_orchestrator import orchestrator as orch
 from tools.ai_orchestrator import providers
 from tools.ai_orchestrator import runstate as rs
@@ -53,6 +54,7 @@ def provider_class(name):
 
 class HostCase(unittest.TestCase):
     def setUp(self):
+        isolate_git_env(self)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)

@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 import uuid
 
+from git_env_isolation import isolate_git_env
 from scripts.dev_control_center import provenance
 from scripts.dev_control_center import release_engine as re_
 from scripts.dev_control_center import release_update as ru
@@ -83,6 +84,7 @@ class ReleaseCase(unittest.TestCase):
                    "backup/update_before_20260801_000000/_internal/huge.bin": b"legacy full backup"}
 
     def setUp(self):
+        isolate_git_env(self)
         tmp = tempfile.TemporaryDirectory(prefix="dcc update ")
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)

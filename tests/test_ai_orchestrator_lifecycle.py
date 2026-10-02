@@ -18,6 +18,7 @@ import time
 import unittest
 from unittest import mock
 
+from git_env_isolation import isolate_git_env
 from tools.ai_orchestrator import orchestrator as orch
 from tools.ai_orchestrator import providers
 from tools.ai_orchestrator import runstate as rs
@@ -37,7 +38,9 @@ def git(cwd, *args):
 
 def alive(pid: int) -> bool:
     if os.name == "nt":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True
+        ).stdout.decode("utf-8", errors="replace")
         return str(pid) in out
     try:
         os.kill(pid, 0)
@@ -48,6 +51,7 @@ def alive(pid: int) -> bool:
 
 class LifecycleCase(unittest.TestCase):
     def setUp(self):
+        isolate_git_env(self)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)

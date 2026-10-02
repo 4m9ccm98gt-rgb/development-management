@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from git_env_isolation import isolate_git_env
 from scripts.dev_control_center import app as dcc_app
 from scripts.dev_control_center import candidate as cf
 from scripts.dev_control_center import entrypoints, provenance
@@ -39,6 +40,7 @@ class LifecycleCase(unittest.TestCase):
     IGNORE = ".venv/\n"
 
     def setUp(self):
+        isolate_git_env(self)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.tmp = Path(tmp.name)
