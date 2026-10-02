@@ -22,6 +22,7 @@ from tools.ai_orchestrator.common import OrchestratorError, ProcessHooks
 from tools.ai_orchestrator.review import (
     NO_TESTS_MARKER, RUNNER_NO_TESTS, RUNNER_UNAVAILABLE, classify_runner_problem, zero_tests_ran,
 )
+from tools.ai_orchestrator.taskspec import parse_spec_text
 
 from ai_orchestrator_fakes import FakeHost, ScriptedProvider, make_recorder, review_json
 from test_ai_orchestrator_host import HostCase, git
@@ -151,6 +152,150 @@ class SourcePreparationTests(HostCase):
         self.assertTrue(orch._request_from_args(args).prepare_source)
         args = orch.build_parser().parse_args(["start", "--repo", "r", "--task", "t", "--test", "x"])
         self.assertFalse(orch._request_from_args(args).prepare_source)
+
+
+class SpecFileTests(HostCase):
+    """--spec-file / StartRequest.spec: fixed criteria bypass text extraction and the Reviewer
+    criteria call entirely (Task 9)."""
+
+    def test_spec_criteria_fill_run_json_and_are_saved_as_spec_json(self):
+        spec = parse_spec_text('{"criteria": [{"id": "Z1", "text": "custom id kept"}, {"text": "auto numbered"}]}')
+        run_dir, record = orch.prepare_run(self.request(spec=spec))
+        self.assertEqual(record["criteria_source"], "spec")
+        self.assertEqual(record["criteria"], [{"id": "Z1", "text": "custom id kept"},
+                                               {"id": "C1", "text": "auto numbered"}])
+        saved = json.loads((run_dir / "spec.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["criteria"], record["criteria"])
+        self.assertIsNone(saved["target_repo"])
+        self.assertEqual(rs.read_record(run_dir)["criteria_source"], "spec")
+
+    def test_without_a_spec_criteria_source_and_spec_json_are_unchanged(self):
+        run_dir, record = orch.prepare_run(self.request())
+        self.assertEqual((record["criteria"], record["criteria_source"]), ([], ""))
+        self.assertFalse((run_dir / "spec.json").exists())
+
+    def test_cli_spec_file_argument_loads_into_the_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_path = Path(tmp) / "spec.json"
+            spec_path.write_text('{"criteria": [{"text": "a"}], "target_repo": "r"}', encoding="utf-8")
+            args = orch.build_parser().parse_args(
+                ["start", "--task", "t", "--test", "x", "--spec-file", str(spec_path)])
+            request = orch._request_from_args(args)
+            self.assertEqual(request.spec.criteria, ({"id": "C1", "text": "a"},))
+            self.assertEqual(request.spec.target_repo, "r")
+            self.assertIsNone(request.repo)  # --repo is optional (Task 9: resolved from the registry)
+
+    def test_cli_rejects_a_broken_spec_file_before_any_run_is_created(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            spec_path = Path(tmp) / "spec.json"
+            spec_path.write_text("{not json", encoding="utf-8")
+            args = orch.build_parser().parse_args(
+                ["start", "--repo", str(self.repo), "--task", "t", "--test", "x", "--spec-file", str(spec_path)])
+            with self.assertRaises(OrchestratorError) as ctx:
+                orch._request_from_args(args)
+            self.assertEqual(ctx.exception.code, "SPEC_INVALID")
+            self.assertEqual(rs.list_runs(), [])
+
+
+class TargetRepoMismatchTests(HostCase):
+    """The task's own "対象リポジトリ:" line, or the spec's target_repo, must agree with the
+    repository that was actually selected (Task 9: two prior start-the-wrong-repo incidents)."""
+
+    def test_mismatched_task_line_is_refused_before_any_run_or_lock(self):
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.prepare_run(self.request(task="対象リポジトリ: some-other-repo\nCreate feature.txt"))
+        self.assertEqual(ctx.exception.code, "TASK_REPO_MISMATCH")
+        self.assertIn("some-other-repo", str(ctx.exception))
+        self.assertIn(self.repo.name, str(ctx.exception))
+        self.assertEqual(rs.list_runs(), [])
+        self.assertFalse(list(rs.locks_root().glob("*.json")) if rs.locks_root().exists() else [])
+
+    def test_mismatched_spec_target_repo_is_refused(self):
+        spec = parse_spec_text('{"criteria": [{"text": "a"}], "target_repo": "some-other-repo"}')
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.prepare_run(self.request(spec=spec))
+        self.assertEqual(ctx.exception.code, "TASK_REPO_MISMATCH")
+        self.assertEqual(rs.list_runs(), [])
+
+    def test_matching_name_tolerates_width_case_and_trailing_bracket(self):
+        task = f"対象リポジトリ：{self.repo.name.upper()}（本番）\nCreate feature.txt"
+        run_dir, record = orch.prepare_run(self.request(task=task))
+        self.assertEqual(Path(record["repo"]).name, self.repo.name)
+
+    def test_marker_after_the_first_10_lines_is_not_checked(self):
+        lines = [f"line {i}" for i in range(10)] + ["対象リポジトリ: some-other-repo"]
+        task = "\n".join(lines) + "\nCreate feature.txt"
+        run_dir, record = orch.prepare_run(self.request(task=task))  # no TASK_REPO_MISMATCH
+        self.assertEqual(Path(record["repo"]).name, self.repo.name)
+
+    def test_task_without_a_target_line_starts_as_before(self):
+        run_dir, record = orch.prepare_run(self.request())
+        self.assertEqual(Path(record["repo"]).name, self.repo.name)
+
+    def test_leading_blank_lines_are_not_stripped_before_counting_the_first_10_lines(self):
+        # 10 leading blank lines push a mismatched "対象リポジトリ:" line to line 11 of the
+        # *original* text; task.strip() must not remove them first and shift it back to line 1.
+        task = "\n" * 10 + "対象リポジトリ: some-other-repo\nCreate feature.txt"
+        run_dir, record = orch.prepare_run(self.request(task=task))  # no TASK_REPO_MISMATCH
+        self.assertEqual(Path(record["repo"]).name, self.repo.name)
+
+    def test_cli_task_file_leading_blank_lines_are_not_stripped_either(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task_path = Path(tmp) / "task.md"
+            task_path.write_text("\n" * 10 + "対象リポジトリ: some-other-repo\nCreate feature.txt", encoding="utf-8")
+            args = orch.build_parser().parse_args(
+                ["start", "--repo", str(self.repo), "--task-file", str(task_path), "--test", "x"])
+            request = orch._request_from_args(args)
+            run_dir, record = orch.prepare_run(request)  # no TASK_REPO_MISMATCH
+            self.assertEqual(Path(record["repo"]).name, self.repo.name)
+
+
+class RepoAutoResolutionTests(HostCase):
+    """StartRequest.repo can be omitted: it is then resolved from the spec / task target against
+    the registry (Task 9), the same check prepare_run runs for an explicit --repo (used by both
+    DCC's start form and the CLI, since both call prepare_run)."""
+
+    def registry(self, *names):
+        return mock.patch.object(orch, "_registry_definitions", lambda: [SimpleNamespace(name=n) for n in names])
+
+    def request_no_repo(self, **extra):
+        return self.request(repo=None, **extra)
+
+    def test_omitted_repo_is_resolved_from_the_task_line(self):
+        with self.registry(self.repo.name), mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
+            run_dir, record = orch.prepare_run(self.request_no_repo(
+                task=f"対象リポジトリ: {self.repo.name}\nCreate feature.txt"))
+        self.assertEqual(Path(record["repo"]).resolve(), self.repo.resolve())
+
+    def test_omitted_repo_is_resolved_from_the_spec_target_repo_alone(self):
+        spec = parse_spec_text('{"criteria": [{"text": "a"}], "target_repo": "%s"}' % self.repo.name)
+        with self.registry(self.repo.name), mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
+            run_dir, record = orch.prepare_run(self.request_no_repo(task="Create feature.txt", spec=spec))
+        self.assertEqual(Path(record["repo"]).resolve(), self.repo.resolve())
+
+    def test_omitted_repo_with_no_target_anywhere_is_unresolved(self):
+        with self.registry(self.repo.name):
+            with self.assertRaises(OrchestratorError) as ctx:
+                orch.prepare_run(self.request_no_repo())
+        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
+        self.assertIn(self.repo.name, str(ctx.exception))  # candidates are listed
+        self.assertEqual(rs.list_runs(), [])
+
+    def test_omitted_repo_with_a_target_not_in_the_registry_is_unresolved(self):
+        with self.registry(self.repo.name):
+            with self.assertRaises(OrchestratorError) as ctx:
+                orch.prepare_run(self.request_no_repo(task="対象リポジトリ: nothing-like-that\nCreate feature.txt"))
+        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
+        self.assertEqual(rs.list_runs(), [])
+
+    def test_omitted_repo_with_an_ambiguous_target_is_unresolved(self):
+        with self.registry("App", "APP"):
+            with self.assertRaises(OrchestratorError) as ctx:
+                orch.prepare_run(self.request_no_repo(task="対象リポジトリ: app\nCreate feature.txt"))
+        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
+        self.assertIn("App", str(ctx.exception))
+        self.assertIn("APP", str(ctx.exception))
+        self.assertEqual(rs.list_runs(), [])
 
 
 class DefaultTestsTests(unittest.TestCase):

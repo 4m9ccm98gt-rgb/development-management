@@ -263,6 +263,10 @@ class Engine:
         Reviewer call, no credits); otherwise the Reviewer drafts them once, read-only."""
         rec = self.rec
         if self.criteria:
+            # Already fixed before this run started (criteria_source "spec"): no text extraction,
+            # no Reviewer call to draft them.
+            rec.log(f"[criteria] using {len(self.criteria)} criteria from "
+                    f"{rec.record.get('criteria_source') or 'run.json'} (no extraction, no Reviewer call)")
             return
         block = extract_acceptance(self.task)
         criteria = criteria_from_acceptance(block) if block else []

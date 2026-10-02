@@ -338,7 +338,7 @@ def apply_fixed_criteria(verdict: ReviewVerdict, criteria: list[dict], *, final:
     the list of downgraded findings."""
     if not criteria:
         return verdict, []
-    ids = {c["id"] for c in criteria}
+    ids = {c["id"].upper() for c in criteria}
     kept, dropped = [], []
     for finding in verdict.findings:
         entry = dict(finding)

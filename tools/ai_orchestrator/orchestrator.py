@@ -30,10 +30,13 @@ from .providers import (
     DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_NAMES, active_api_billing_env, agent_env,
     make_provider, validate_roles,
 )
+from .taskspec import Spec, extract_target_repo_name, load_spec_file
 from .usage import USAGE_PROVIDER_CLASSES, describe, make_usage_provider
 
 DM_ROOT = Path(__file__).resolve().parents[2]
 MAX_UNTRACKED_BYTES = 200_000
+_REGISTRY_TYPES_PATH = DM_ROOT / "scripts" / "repo_types.toml"
+_REGISTRY_BRANCHES_PATH = DM_ROOT / "scripts" / "dev_control_center_repos.toml"
 
 
 # ------------------------------------------------------------------------- Git helpers
@@ -421,9 +424,9 @@ class GitHost:
 
 @dataclass
 class StartRequest:
-    repo: str
     task: str
     tests: list[str]
+    repo: str | None = None  # omitted: resolved from spec.target_repo / the task's "対象リポジトリ:" line
     main_agent: str = DEFAULT_MAIN_AGENT
     review_agent: str = DEFAULT_REVIEW_AGENT
     expected_branch: str | None = None
@@ -433,6 +436,64 @@ class StartRequest:
     fetch: bool = True
     allow_no_tests: bool = False
     prepare_source: bool = False  # switch a clean source repo to expected_branch and fast-forward it (DCC)
+    spec: Spec | None = None  # already-loaded fixed-format TaskSpec (criteria, optional target_repo)
+
+
+def _registry_definitions() -> list:
+    """Repositories DCC's Orchestrator screen itself offers (scripts/repo_types.toml x
+    scripts/dev_control_center_repos.toml), the same set `active_repo_definitions` builds for
+    OrchestratorWindow. A seam for tests: patch this function, not the TOML files."""
+    from scripts.dev_control_center.core import active_repo_definitions
+
+    return active_repo_definitions(_REGISTRY_TYPES_PATH, _REGISTRY_BRANCHES_PATH)
+
+
+def _normalize_repo_name(text: str) -> str:
+    return text.strip().casefold()
+
+
+def _target_repo_candidates(task: str, spec: Spec | None) -> list[tuple[str, str]]:
+    """(label, name) of what the request says its target repository is, in priority order:
+    the spec's target_repo first, then the task's own "対象リポジトリ:" line. Empty when neither
+    is present."""
+    candidates: list[tuple[str, str]] = []
+    if spec is not None and spec.target_repo:
+        candidates.append(("仕様ファイルのtarget_repo", spec.target_repo))
+    task_target = extract_target_repo_name(task)
+    if task_target:
+        candidates.append(("依頼文の「対象リポジトリ:」行", task_target))
+    return candidates
+
+
+def _check_target_repo(task: str, spec: Spec | None, repo_root: Path) -> None:
+    selected = repo_root.name
+    for label, name in _target_repo_candidates(task, spec):
+        if _normalize_repo_name(name) != _normalize_repo_name(selected):
+            raise OrchestratorError(
+                f"対象リポジトリが食い違っています。{label}は「{name}」を指していますが、選ばれたリポジトリは"
+                f"「{selected}」です。", "TASK_REPO_MISMATCH")
+
+
+def _resolve_repo_path(task: str, spec: Spec | None) -> Path:
+    """Repo path from the registry when none was given explicitly (StartRequest.repo is empty)."""
+    candidates = _target_repo_candidates(task, spec)
+    names = sorted({d.name for d in _registry_definitions()})
+    if not candidates:
+        raise OrchestratorError(
+            "リポジトリが指定されておらず、仕様ファイルにも依頼文にも対象リポジトリが書かれていません。"
+            f"--repo を指定するか、依頼文の先頭10行以内に「対象リポジトリ: <名前>」を書いてください。選べる候補: "
+            + (", ".join(names) or "(なし)"), "TASK_REPO_UNRESOLVED")
+    label, name = candidates[0]
+    matches = [n for n in names if _normalize_repo_name(n) == _normalize_repo_name(name)]
+    if not matches:
+        raise OrchestratorError(
+            f"{label}が指す「{name}」はレジストリに見つかりません。選べる候補: " + (", ".join(names) or "(なし)"),
+            "TASK_REPO_UNRESOLVED")
+    if len(matches) > 1:
+        raise OrchestratorError(
+            f"{label}が指す「{name}」に該当するリポジトリが複数あります: {', '.join(matches)}。選べる候補: "
+            + ", ".join(names), "TASK_REPO_UNRESOLVED")
+    return DM_ROOT.parent / matches[0]
 
 
 def prepare_run(request: StartRequest) -> tuple[Path, dict]:
@@ -451,7 +512,12 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
     if active and not request.allow_api_billing:
         raise OrchestratorError("API/third-party billing environment detected: " + ", ".join(active)
                                 + ". Refusing to start.", "API_BILLING_ENV")
-    root = repo_toplevel(Path(request.repo))
+    # Line numbering for the "対象リポジトリ:" check must match the original text (including any
+    # leading blank lines), not the stripped-for-storage `task`: stripping would shift what counts
+    # as "the first 10 lines".
+    repo_arg = Path(request.repo) if request.repo else _resolve_repo_path(request.task, request.spec)
+    root = repo_toplevel(repo_arg)
+    _check_target_repo(request.task, request.spec, root)
     run_id = now_id()
     # Lock before touching the source repo: its branch is never moved under another live run.
     lock = rs.acquire_repo_lock(str(root), run_id)
@@ -464,10 +530,15 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
             run_id=run_id, repo=str(baseline.root), task=task, main_agent=request.main_agent,
             review_agent=request.review_agent, tests=request.tests, limits=request.limits,
             branch=baseline.branch, base_sha=baseline.head_sha)
+        if request.spec is not None:
+            record["criteria"] = list(request.spec.criteria)
+            record["criteria_source"] = "spec"
         record["billing_env_override"] = list(active)
         record["same_provider_override"] = request.main_agent == request.review_agent
         record["source_preparation"] = preparation if request.prepare_source else None  # None: not requested
         (run_dir / "task.md").write_text(task + "\n", encoding="utf-8")
+        if request.spec is not None:
+            write_json_atomic(run_dir / "spec.json", request.spec.to_record())
         write_json_atomic(run_dir / "run.json", record)
     except BaseException:
         lock.unlink(missing_ok=True)
@@ -617,13 +688,17 @@ def _limit_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _request_from_args(args: argparse.Namespace) -> StartRequest:
-    task = Path(args.task_file).read_text(encoding="utf-8").strip() if args.task_file else args.task
+    # Kept unstripped (prepare_run strips only for storage): the "対象リポジトリ:" line check
+    # counts lines against the original text, and stripping leading blank lines here would
+    # shift that count.
+    task = Path(args.task_file).read_text(encoding="utf-8") if args.task_file else args.task
     limits = rs.Limits(**{f.name: getattr(args, "limit_" + f.name) for f in fields(rs.Limits)})
+    spec = load_spec_file(Path(args.spec_file)) if args.spec_file else None
     return StartRequest(
-        repo=args.repo, task=task or "", tests=list(args.test), main_agent=args.main, review_agent=args.reviewer,
+        task=task or "", tests=list(args.test), repo=args.repo, main_agent=args.main, review_agent=args.reviewer,
         expected_branch=args.expected_branch, limits=limits, allow_same_provider=args.allow_same_provider,
         allow_api_billing=args.allow_api_billing, fetch=not args.no_fetch, allow_no_tests=args.allow_no_tests,
-        prepare_source=args.prepare_source)
+        prepare_source=args.prepare_source, spec=spec)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -633,7 +708,9 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (("start", "start a detached run and return its run dir"),
                             ("run", "start a run and stay attached until it finishes (worker runs in-process)")):
         p = sub.add_parser(name, help=help_text)
-        p.add_argument("--repo", required=True)
+        p.add_argument("--repo", help="omit to resolve from --spec-file target_repo / the task's "
+                                      "対象リポジトリ: line against the registry")
+        p.add_argument("--spec-file", help="fixed-format JSON TaskSpec (schema_version, criteria, target_repo)")
         group = p.add_mutually_exclusive_group(required=True)
         group.add_argument("--task")
         group.add_argument("--task-file")

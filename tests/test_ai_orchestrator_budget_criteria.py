@@ -322,6 +322,15 @@ class ReviewHelperTests(unittest.TestCase):
         new, dropped = apply_fixed_criteria(verdict, [{"id": "C1", "text": "a"}, {"id": "C2", "text": "b"}], final=True)
         self.assertEqual((new.verdict, dropped), ("FAIL", []))
 
+    def test_cited_lowercase_custom_criterion_id_keeps_the_fail(self):
+        # A spec criterion id need not be "C<n>" (taskspec.py keeps a given id verbatim); the
+        # Reviewer's citation must still match it regardless of case.
+        verdict = parse_review(review_json("FAIL", instructions="fix", findings=[
+            {"severity": "major", "criterion": "custom", "problem": "not met", "instruction": "fix"}]),
+            failure_mode=False)
+        new, dropped = apply_fixed_criteria(verdict, [{"id": "custom", "text": "a"}], final=True)
+        self.assertEqual((new.verdict, dropped), ("FAIL", []))
+
     def test_no_criteria_means_no_enforcement(self):
         verdict = parse_review(FAIL_REVIEW, failure_mode=False)
         self.assertEqual(apply_fixed_criteria(verdict, [], final=True), (verdict, []))
