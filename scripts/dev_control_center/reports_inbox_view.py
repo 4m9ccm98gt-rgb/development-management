@@ -67,12 +67,26 @@ def _set_enabled(widget, enabled: bool) -> None:
 class ReportsInboxWindow:
     def __init__(self, master: tk.Misc, *, configured_apps: Callable[[], list] | None = None,
                  scan_fn: Callable[[list], list] | None = None,
-                 copy_to_clipboard: Callable[[str], None] | None = None) -> None:
+                 copy_to_clipboard: Callable[[str], None] | None = None,
+                 reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
-        self._configured_apps = configured_apps or inbox.configured_apps
+        if reports_config_fn is not None:
+            self._reports_config_fn = reports_config_fn
+        elif configured_apps is not None:
+            # A caller (mostly tests) supplied a fixed (app_key, display_name, shared_root) list
+            # with no notice/source metadata: wrap it as a ReportsConfig with no notices and no
+            # known source, so the rest of the window can treat it the same as the real thing.
+            def _reports_config_fn(_apps=configured_apps):
+                apps = [inbox.ConfiguredApp(key, name, root, "") for key, name, root in _apps()]
+                return inbox.ReportsConfig(apps, [])
+            self._reports_config_fn = _reports_config_fn
+        else:
+            self._reports_config_fn = inbox.load_reports_config
         self._scan_fn = scan_fn or inbox.scan_all
         self._copy_to_clipboard = copy_to_clipboard
+        self._source_by_key: dict[str, str] = {}
+        self._shared_root_by_key: dict[str, str] = {}
         self._events: queue.Queue = queue.Queue()
         self._closed = False
         self._closed_event = threading.Event()
@@ -93,26 +107,36 @@ class ReportsInboxWindow:
 
         self.unresolved_only_var = tk.BooleanVar(value=False)
         self.notice_var = tk.StringVar(value="")
+        self.config_notice_var = tk.StringVar(value="")
 
         outer = ttk.Frame(self.window, padding=12)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
         outer.columnconfigure(1, weight=2)
-        outer.rowconfigure(2, weight=1)
+        outer.rowconfigure(3, weight=1)
+
+        ttk.Label(outer, textvariable=self.config_notice_var, foreground=DARK_MUTED,
+                  wraplength=1100, justify="left").grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        # Config notices (unknown [reports.*] name, unreadable local/repo toml) must be visible
+        # even if the background scan below never completes, so the window is never silently
+        # mute about a config mistake (DCC Task 8c).
+        initial_config = self._reports_config_fn()
+        self._apply_config_metadata(initial_config)
 
         status_frame = ttk.LabelFrame(outer, text="アプリの接続状態", padding=8)
-        status_frame.grid(row=0, column=0, columnspan=2, sticky="ew")
+        status_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.app_status_vars: dict[str, tk.StringVar] = {}
-        for col, (app_key, display_name, _shared_root) in enumerate(self._configured_apps()):
+        for col, app in enumerate(initial_config.apps):
             var = tk.StringVar(value="読み込み中…")
-            self.app_status_vars[app_key] = var
+            self.app_status_vars[app.app_key] = var
             box = ttk.Frame(status_frame)
             box.grid(row=0, column=col, sticky="nw", padx=(0 if col == 0 else 16, 0))
-            ttk.Label(box, text=display_name, font=("Segoe UI", 9, "bold")).pack(anchor="w")
+            ttk.Label(box, text=app.display_name, font=("Segoe UI", 9, "bold")).pack(anchor="w")
             ttk.Label(box, textvariable=var, wraplength=220).pack(anchor="w")
 
         controls = ttk.Frame(outer)
-        controls.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         self.reload_button = ttk.Button(controls, text="再読み込み", command=self.reload)
         self.reload_button.pack(side="left")
         ttk.Checkbutton(controls, text="未対応だけ", variable=self.unresolved_only_var,
@@ -120,7 +144,7 @@ class ReportsInboxWindow:
         ttk.Label(controls, textvariable=self.notice_var, foreground=DARK_MUTED).pack(side="left", padx=(12, 0))
 
         left = ttk.Frame(outer)
-        left.grid(row=2, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
+        left.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
         left.rowconfigure(1, weight=3)
         left.rowconfigure(4, weight=1)
         left.columnconfigure(0, weight=1)
@@ -136,7 +160,7 @@ class ReportsInboxWindow:
         self.broken_list.grid(row=4, column=0, sticky="nsew", pady=(4, 0))
 
         right = ttk.Frame(outer)
-        right.grid(row=2, column=1, sticky="nsew", pady=(8, 0))
+        right.grid(row=3, column=1, sticky="nsew", pady=(8, 0))
         right.rowconfigure(1, weight=1)
         right.rowconfigure(4, weight=1)
         right.columnconfigure(0, weight=1)
@@ -185,6 +209,11 @@ class ReportsInboxWindow:
         self.window.destroy()
 
     # ---------------------------------------------------------------- loading
+    def _apply_config_metadata(self, config) -> None:
+        self.config_notice_var.set("\n".join(config.notices))
+        self._source_by_key = {app.app_key: app.source for app in config.apps}
+        self._shared_root_by_key = {app.app_key: app.shared_root for app in config.apps}
+
     def reload(self) -> None:
         self._start_load()
 
@@ -194,9 +223,11 @@ class ReportsInboxWindow:
         self._loading = True
         _set_enabled(self.reload_button, False)
         self.notice_var.set("読み込み中…")
+        config = self._reports_config_fn()
+        self._apply_config_metadata(config)
         events, closed = self._events, self._closed_event
         scan_fn = self._scan_fn
-        apps = list(self._configured_apps())
+        apps = [(app.app_key, app.display_name, app.shared_root) for app in config.apps]
 
         def work() -> None:
             try:
@@ -235,10 +266,9 @@ class ReportsInboxWindow:
             inb = by_key.get(app_key)
             if inb is None:
                 var.set("未確認")
-            elif inb.reachable:
-                var.set("接続できました")
             else:
-                var.set(inb.error or "接続できません")
+                var.set(inbox.connection_status_text(
+                    inb, self._shared_root_by_key.get(app_key, ""), self._source_by_key.get(app_key, "")))
         self.rows = inbox.build_rows(inboxes)
         self.broken = inbox.all_broken(inboxes)
         self.notice_var.set(f"読み込み完了（{len(self.rows)}件 / 読めない報告 {len(self.broken)}件）")

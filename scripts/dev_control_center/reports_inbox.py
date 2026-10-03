@@ -147,6 +147,13 @@ def sanitize_text(value: str) -> str:
     return "".join("�" if _is_control(ch) else ch for ch in value)
 
 
+def sanitize_path_for_display(value: str) -> str:
+    """Like sanitize_text, but newline/tab are neutralized too: a path is shown as a single
+    one-line status label, so an embedded newline or tab (however it got into shared_root)
+    must not be allowed to expand that label into multiple visual lines or misalign it."""
+    return "".join("�" if _is_control(ch) or ch in ("\n", "\t") else ch for ch in value)
+
+
 # --------------------------------------------------------------------------- configuration
 
 def load_shared_roots(registry: Path = REGISTRY) -> dict[str, str]:
@@ -161,10 +168,134 @@ def load_shared_roots(registry: Path = REGISTRY) -> dict[str, str]:
     return roots
 
 
+def local_config_path() -> Path:
+    """Per-PC override for [reports.<repo>] shared_root (DCC Task 8c). Same placement rule as
+    decisions_root(): LOCALAPPDATA when set, else the home folder. Real network paths are never
+    committed to this repo; a developer writes them only into this local file. Missing is normal
+    (no override); DCC only ever reads this file, never writes it."""
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ShizenDev" / "DCC" / "reports_local.toml"
+
+
+@dataclass(frozen=True)
+class ConfiguredApp:
+    app_key: str
+    display_name: str
+    shared_root: str
+    source: str  # "local" | "repo" | "" (nothing configured)
+
+
+@dataclass(frozen=True)
+class ReportsConfig:
+    apps: list[ConfiguredApp]
+    notices: list[str]  # config-mistake warnings for the top of the inbox window
+
+
+def _raw_reports_table(data: object) -> dict[str, object]:
+    """{repo_name: raw shared_root value} for every `[reports.<repo>]` table present. The value
+    is returned as-is (not coerced to str): callers that must tell "a real string" apart from
+    "a TOML int/bool/array someone put in the wrong field" need the original type."""
+    table = data.get("reports", {}) if isinstance(data, dict) else {}
+    raw: dict[str, object] = {}
+    if isinstance(table, dict):
+        for name, entry in table.items():
+            if isinstance(entry, dict):
+                raw[str(name)] = entry.get("shared_root")
+    return raw
+
+
+def _reports_table(data: object) -> dict[str, str]:
+    return {name: str(value or "").strip() for name, value in _raw_reports_table(data).items()}
+
+
+def load_reports_config(registry: Path = REGISTRY, local_path: Path | None = None) -> ReportsConfig:
+    """Resolve every [reports.<repo>] app from the repo registry and the per-PC local override
+    (local wins when non-empty), filtered to apps DCC actually knows about. Never raises: a
+    missing or malformed registry/local file becomes a notice, not an exception, so the inbox
+    window can always open (DCC Task 8c)."""
+    local_path = local_config_path() if local_path is None else local_path
+    notices: list[str] = []
+
+    known_names: set[str] = set(DISPLAY_NAMES)
+    try:
+        with registry.open("rb") as handle:
+            registry_data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        notices.append(f"リポジトリ設定を読めません: {exc}")
+        registry_data = {}
+    repo_roots = _reports_table(registry_data)
+    branches_table = registry_data.get("branches", {}) if isinstance(registry_data, dict) else {}
+    if isinstance(branches_table, dict):
+        known_names |= {str(name) for name in branches_table}
+
+    try:
+        with local_path.open("rb") as handle:
+            local_data = tomllib.load(handle)
+    except FileNotFoundError:
+        local_data = {}
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        notices.append(f"ローカル設定を読めません: {exc}")
+        local_data = {}
+    local_raw = _raw_reports_table(local_data)
+    # A local shared_root must be an actual string to take priority: a TOML int/bool/array in
+    # that field (a config mistake, not an override) must fall back to the repo value instead
+    # of silently winning via str()-coercion.
+    local_roots = {name: value.strip() for name, value in local_raw.items() if isinstance(value, str)}
+
+    apps: list[ConfiguredApp] = []
+    for name in sorted(set(repo_roots) | set(local_raw)):
+        if name not in known_names:
+            notices.append(f"未知の設定名: {name}（綴りを確認してください）")
+            continue
+        local_value = local_roots.get(name, "")
+        repo_value = repo_roots.get(name, "")
+        if local_value:
+            value, source = local_value, "local"
+        elif repo_value:
+            value, source = repo_value, "repo"
+        else:
+            value, source = "", ""
+        apps.append(ConfiguredApp(name, DISPLAY_NAMES.get(name, name), value, source))
+
+    return ReportsConfig(apps, notices)
+
+
 def configured_apps(registry: Path = REGISTRY) -> list[tuple[str, str, str]]:
-    """(app_key, display_name, shared_root) for every configured app, in a stable order."""
-    roots = load_shared_roots(registry)
-    return [(name, DISPLAY_NAMES.get(name, name), roots[name]) for name in sorted(roots)]
+    """(app_key, display_name, shared_root) for every known, resolved app, in a stable order.
+    Local override (see local_config_path) takes precedence over the repo registry; see
+    load_reports_config for the config-mistake notices and which source was used."""
+    return [(app.app_key, app.display_name, app.shared_root) for app in load_reports_config(registry).apps]
+
+
+PATH_DISPLAY_MAX = 60
+
+SOURCE_LABELS = {"local": "ローカル設定", "repo": "リポジトリ設定"}
+
+
+def truncate_path_for_display(path: str, *, max_chars: int = PATH_DISPLAY_MAX) -> str:
+    """Display-only: sanitize control characters, then keep the head and tail of a path too long
+    to show in full, eliding the middle. Never used for the actual shared_root value."""
+    text = sanitize_path_for_display(path)
+    if len(text) <= max_chars:
+        return text
+    head = max_chars // 2
+    tail = max(max_chars - head - 3, 0)
+    return text[:head] + "..." + text[len(text) - tail:]
+
+
+def connection_status_text(app_inbox: AppInbox, shared_root: str, source: str) -> str:
+    """The 接続状態 line for one app: which (truncated) path was used and whether it came from
+    the local override or the repo registry, shown alongside the reason on failure too (a
+    relative path or an unreachable share is far easier to diagnose when the offending value and
+    where it came from are visible, not just the fact that it failed). When nothing is
+    configured, shared_root is empty and there is no path/source to add."""
+    label = SOURCE_LABELS.get(source, "")
+    suffix = ""
+    if shared_root:
+        path_part = truncate_path_for_display(shared_root)
+        suffix = f"（{path_part}）（{label}）" if label else f"（{path_part}）"
+    if not app_inbox.reachable:
+        return (app_inbox.error or "接続できません") + suffix
+    return f"接続できました{suffix}"
 
 
 # --------------------------------------------------------------------------- reading reports
@@ -241,6 +372,9 @@ def scan_app(app_key: str, display_name: str, shared_root: str) -> AppInbox:
     configured) is reported, not raised, so the other apps still load."""
     if not shared_root:
         return AppInbox(app_key, display_name, False, "接続できません（共有フォルダ未設定）")
+    if not Path(shared_root).is_absolute():
+        return AppInbox(app_key, display_name, False,
+                         "接続できません（共有フォルダの設定が相対パスです。絶対パスで書いてください）")
     try:
         pending = pending_dir(Path(shared_root))
         names = sorted(p.name for p in pending.iterdir() if p.is_file() and p.suffix.lower() == ".json")

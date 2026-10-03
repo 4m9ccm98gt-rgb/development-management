@@ -8,6 +8,7 @@ Orchestrator/investigate drafts.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -516,6 +517,309 @@ class DraftQuotingSafetyTests(unittest.TestCase):
         quote_start = draft.index("報告の引用 開始")
         self.assertGreater(draft.index("rm -rf /"), quote_start)
         self.assertGreater(draft.index("----- boundary -----"), quote_start)
+
+
+def write_toml(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def make_registry_text(branches: dict[str, str], reports: dict[str, str]) -> str:
+    lines = ["[branches]"]
+    for name, branch in branches.items():
+        lines.append(f'{name} = "{branch}"')
+    for name, root in reports.items():
+        lines.append("")
+        lines.append(f"[reports.{name}]")
+        lines.append(f'shared_root = "{root.replace(chr(92), chr(92) * 2)}"')
+    return "\n".join(lines)
+
+
+def make_reports_text(reports: dict[str, str]) -> str:
+    lines = []
+    for name, root in reports.items():
+        lines.append(f"[reports.{name}]")
+        lines.append(f'shared_root = "{root.replace(chr(92), chr(92) * 2)}"')
+        lines.append("")
+    return "\n".join(lines)
+
+
+class LocalConfigPathTests(unittest.TestCase):
+    """DCC Task 8c: the per-PC override file's placement follows the same rule as
+    decisions_root() — LOCALAPPDATA when set, else the home folder."""
+
+    def test_uses_localappdata_when_set(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": r"C:\fake\local"}):
+            path = inbox.local_config_path()
+        self.assertEqual(path, Path(r"C:\fake\local") / "ShizenDev" / "DCC" / "reports_local.toml")
+
+    def test_falls_back_to_home_when_localappdata_is_unset(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LOCALAPPDATA", None)
+            path = inbox.local_config_path()
+        self.assertEqual(path, Path.home() / "ShizenDev" / "DCC" / "reports_local.toml")
+
+
+class LoadReportsConfigTests(unittest.TestCase):
+    """DCC Task 8c: resolving [reports.<repo>] from the repo registry plus the per-PC local
+    override, with config-mistake notices. Every test uses only temp-folder files; none ever
+    touches the real registry or the real LOCALAPPDATA."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.registry = self.root / "registry.toml"
+        self.local = self.root / "local" / "reports_local.toml"  # need not exist
+
+    def _config(self) -> inbox.ReportsConfig:
+        return inbox.load_reports_config(self.registry, self.local)
+
+    def _app(self, config: inbox.ReportsConfig, app_key: str) -> inbox.ConfiguredApp:
+        return next(a for a in config.apps if a.app_key == app_key)
+
+    def test_local_value_is_used_when_repo_has_none(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"}, {"next-day-setup": ""}))
+        write_toml(self.local, make_reports_text({"next-day-setup": r"C:\local\share"}))
+        app = self._app(self._config(), "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\local\share")
+        self.assertEqual(app.source, "local")
+        self.assertEqual(self._config().notices, [])
+
+    def test_repo_value_is_used_when_local_file_is_absent(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": r"C:\repo\share"}))
+        app = self._app(self._config(), "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\repo\share")
+        self.assertEqual(app.source, "repo")
+
+    def test_local_wins_over_repo_when_both_present(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": r"C:\repo\share"}))
+        write_toml(self.local, make_reports_text({"next-day-setup": r"C:\local\share"}))
+        app = self._app(self._config(), "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\local\share")
+        self.assertEqual(app.source, "local")
+
+    def test_empty_local_value_falls_back_to_repo_value(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": r"C:\repo\share"}))
+        write_toml(self.local, make_reports_text({"next-day-setup": ""}))
+        app = self._app(self._config(), "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\repo\share")
+        self.assertEqual(app.source, "repo")
+
+    def test_nothing_configured_has_empty_value_and_empty_source(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"}, {"next-day-setup": ""}))
+        app = self._app(self._config(), "next-day-setup")
+        self.assertEqual(app.shared_root, "")
+        self.assertEqual(app.source, "")
+
+    def test_missing_local_file_and_missing_localappdata_do_not_raise(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"}, {"next-day-setup": ""}))
+        # local_path=None makes load_reports_config fall back to local_config_path(), which in
+        # turn falls back to Path.home() when LOCALAPPDATA is unset: that must still resolve
+        # inside a temp folder here, never the real developer home.
+        fake_home = self.root / "fake-home"
+        with mock.patch.dict(os.environ):
+            os.environ.pop("LOCALAPPDATA", None)
+            with mock.patch.object(inbox.Path, "home", return_value=fake_home):
+                config = inbox.load_reports_config(self.registry, None)
+        self.assertEqual(config.notices, [])
+        self.assertTrue(any(a.app_key == "next-day-setup" for a in config.apps))
+
+    def test_real_loader_picks_up_local_override_via_localappdata_env_var(self):
+        # Exercises the real local_config_path() (local_path=None) rather than an injected path,
+        # with LOCALAPPDATA pointed at a temp folder -- never the real LOCALAPPDATA.
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"}, {"next-day-setup": ""}))
+        fake_localappdata = self.root / "localappdata"
+        local_file = fake_localappdata / "ShizenDev" / "DCC" / "reports_local.toml"
+        write_toml(local_file, make_reports_text({"next-day-setup": r"C:\local\share"}))
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(fake_localappdata)}):
+            config = inbox.load_reports_config(self.registry, None)
+        app = self._app(config, "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\local\share")
+        self.assertEqual(app.source, "local")
+
+    def test_non_string_local_shared_root_falls_back_to_the_repo_value(self):
+        # A local shared_root of the wrong TOML type (int/bool/array) is a config mistake, not
+        # an override: str()-coercing it would make e.g. 123 silently win over the repo value.
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": r"C:\repo\share"}))
+        for local_text in (
+            "[reports.next-day-setup]\nshared_root = 123\n",
+            "[reports.next-day-setup]\nshared_root = true\n",
+            '[reports.next-day-setup]\nshared_root = ["a", "b"]\n',
+        ):
+            write_toml(self.local, local_text)
+            app = self._app(self._config(), "next-day-setup")
+            self.assertEqual(app.shared_root, r"C:\repo\share")
+            self.assertEqual(app.source, "repo")
+
+    def test_unicode_decode_error_in_local_toml_is_reported_and_treated_as_absent(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": r"C:\repo\share"}))
+        self.local.parent.mkdir(parents=True, exist_ok=True)
+        self.local.write_bytes(b"\xff\xfe\x00\x01not valid utf-8")
+        config = self._config()
+        self.assertTrue(any("ローカル設定を読めません" in n for n in config.notices))
+        app = self._app(config, "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\repo\share")
+        self.assertEqual(app.source, "repo")
+
+    def test_unicode_decode_error_in_repo_toml_is_reported_and_the_window_still_gets_an_app_list(self):
+        self.registry.parent.mkdir(parents=True, exist_ok=True)
+        self.registry.write_bytes(b"\xff\xfe\x00\x01not valid utf-8")
+        config = self._config()
+        self.assertTrue(any("リポジトリ設定を読めません" in n for n in config.notices))
+        self.assertEqual(config.apps, [])
+
+    def test_malformed_local_toml_is_reported_and_treated_as_absent(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": r"C:\repo\share"}))
+        write_toml(self.local, "not valid [[[ toml")
+        config = self._config()
+        self.assertTrue(any("ローカル設定を読めません" in n for n in config.notices))
+        app = self._app(config, "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\repo\share")
+        self.assertEqual(app.source, "repo")
+
+    def test_malformed_repo_toml_is_reported_and_the_window_still_gets_an_app_list(self):
+        write_toml(self.registry, "not valid [[[ toml")
+        config = self._config()
+        self.assertTrue(any("リポジトリ設定を読めません" in n for n in config.notices))
+        self.assertEqual(config.apps, [])
+
+    def test_unknown_name_in_repo_config_is_flagged_and_excluded(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"},
+                                                       {"next-day-setup": "", "totally-unknown-app": ""}))
+        config = self._config()
+        self.assertIn("未知の設定名: totally-unknown-app（綴りを確認してください）", config.notices)
+        self.assertFalse(any(a.app_key == "totally-unknown-app" for a in config.apps))
+
+    def test_unknown_name_in_local_config_is_flagged_and_excluded(self):
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main"}, {"next-day-setup": ""}))
+        write_toml(self.local, make_reports_text({"totally-unknown-app": r"C:\somewhere"}))
+        config = self._config()
+        self.assertIn("未知の設定名: totally-unknown-app（綴りを確認してください）", config.notices)
+        self.assertFalse(any(a.app_key == "totally-unknown-app" for a in config.apps))
+
+    def test_name_known_only_via_branches_table_is_not_flagged_unknown(self):
+        # "shizen-launcher" is a real repo ([branches]) but has no entry in DISPLAY_NAMES.
+        write_toml(self.registry, make_registry_text({"next-day-setup": "main", "shizen-launcher": "main"},
+                                                       {"shizen-launcher": ""}))
+        config = self._config()
+        self.assertEqual(config.notices, [])
+        self.assertTrue(any(a.app_key == "shizen-launcher" for a in config.apps))
+
+    def test_apps_other_than_the_broken_one_are_unaffected_by_an_unknown_name(self):
+        write_toml(self.registry, make_registry_text(
+            {"next-day-setup": "main", "menu-sheet-generator": "main"},
+            {"next-day-setup": r"C:\repo\share", "totally-unknown-app": ""}))
+        config = self._config()
+        app = self._app(config, "next-day-setup")
+        self.assertEqual(app.shared_root, r"C:\repo\share")
+
+
+class ScanAppRelativePathTests(unittest.TestCase):
+    """DCC Task 8c requirement 4a: a relative shared_root must be rejected before any filesystem
+    access is attempted (never just a slow/odd failure from passing it straight to iterdir())."""
+
+    def test_relative_shared_root_is_rejected_without_touching_the_filesystem(self):
+        with mock.patch.object(Path, "iterdir", side_effect=AssertionError("must not touch the filesystem")):
+            result = inbox.scan_app("app", "名", "relative" + os.sep + "path")
+        self.assertFalse(result.reachable)
+        self.assertIn("相対パスです", result.error)
+        self.assertEqual(result.reports, ())
+
+    def test_an_absolute_shared_root_is_unaffected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            result = inbox.scan_app("app", "名", str(share))
+        self.assertTrue(result.reachable)
+
+
+class TruncatePathForDisplayTests(unittest.TestCase):
+    def test_short_path_is_unchanged(self):
+        self.assertEqual(inbox.truncate_path_for_display(r"\\server\share"), r"\\server\share")
+
+    def test_long_path_keeps_head_and_tail_and_elides_the_middle(self):
+        long_path = r"\\server\\" + "a" * 100 + r"\reports"
+        out = inbox.truncate_path_for_display(long_path, max_chars=30)
+        self.assertLessEqual(len(out), 30)
+        self.assertIn("...", out)
+        self.assertTrue(long_path.startswith(out.split("...")[0]))
+        self.assertTrue(long_path.endswith(out.split("...")[1]))
+
+    def test_control_characters_are_sanitized(self):
+        nasty = "\\\\server\\share\x00\x07\\reports"
+        out = inbox.truncate_path_for_display(nasty)
+        self.assertNotIn("\x00", out)
+        self.assertNotIn("\x07", out)
+
+    def test_newlines_and_tabs_are_neutralized_unlike_sanitize_text(self):
+        # A path is shown as a single-line status label: unlike sanitize_text (used for report
+        # body text, where newline/tab are meaningful), a newline or tab inside a shared_root
+        # value must not be allowed to turn one status line into several.
+        nasty = "\\\\server\\share\nmore\twith\ttabs"
+        out = inbox.truncate_path_for_display(nasty, max_chars=200)
+        self.assertNotIn("\n", out)
+        self.assertNotIn("\t", out)
+
+
+class ConnectionStatusTextTests(unittest.TestCase):
+    def test_unconfigured_app_shows_the_apps_own_error_unchanged(self):
+        app_inbox = inbox.AppInbox("a", "A", False, "接続できません（共有フォルダ未設定）")
+        self.assertEqual(inbox.connection_status_text(app_inbox, "", "local"), "接続できません（共有フォルダ未設定）")
+
+    def test_unreachable_with_a_configured_path_still_shows_the_path_and_source(self):
+        # A relative-path or connection failure is far easier to diagnose when the offending
+        # path and where it came from are visible too, not just the fact that it failed.
+        app_inbox = inbox.AppInbox(
+            "a", "A", False, "接続できません（共有フォルダの設定が相対パスです。絶対パスで書いてください）")
+        text = inbox.connection_status_text(app_inbox, r"relative\path", "repo")
+        self.assertEqual(
+            text,
+            "接続できません（共有フォルダの設定が相対パスです。絶対パスで書いてください）"
+            "（relative\\path）（リポジトリ設定）",
+        )
+
+    def test_unreachable_with_a_configured_path_and_unknown_source_omits_the_label(self):
+        app_inbox = inbox.AppInbox("a", "A", False, "接続できません（テスト）")
+        text = inbox.connection_status_text(app_inbox, r"\\server\share", "")
+        self.assertEqual(text, "接続できません（テスト）（\\\\server\\share）")
+
+    def test_reachable_shows_truncated_path_with_local_source_label(self):
+        app_inbox = inbox.AppInbox("a", "A", True, "")
+        text = inbox.connection_status_text(app_inbox, r"\\server\share", "local")
+        self.assertEqual(text, "接続できました（\\\\server\\share）（ローカル設定）")
+
+    def test_reachable_shows_truncated_path_with_repo_source_label(self):
+        app_inbox = inbox.AppInbox("a", "A", True, "")
+        text = inbox.connection_status_text(app_inbox, r"\\server\share", "repo")
+        self.assertEqual(text, "接続できました（\\\\server\\share）（リポジトリ設定）")
+
+    def test_reachable_with_unknown_source_omits_the_label(self):
+        app_inbox = inbox.AppInbox("a", "A", True, "")
+        text = inbox.connection_status_text(app_inbox, r"\\server\share", "")
+        self.assertEqual(text, "接続できました（\\\\server\\share）")
+
+
+class ConfiguredAppsBackwardCompatTests(unittest.TestCase):
+    """The legacy configured_apps() wrapper must keep resolving through the same local-override
+    rule as load_reports_config, for any caller that still uses the older 3-tuple API."""
+
+    def test_configured_apps_resolves_the_local_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = root / "registry.toml"
+            local = root / "local.toml"
+            write_toml(registry, make_registry_text({"next-day-setup": "main"}, {"next-day-setup": ""}))
+            write_toml(local, make_reports_text({"next-day-setup": r"C:\local\share"}))
+            with mock.patch.object(inbox, "local_config_path", return_value=local):
+                apps = inbox.configured_apps(registry)
+        self.assertIn(("next-day-setup", inbox.DISPLAY_NAMES["next-day-setup"], r"C:\local\share"), apps)
 
 
 if __name__ == "__main__":

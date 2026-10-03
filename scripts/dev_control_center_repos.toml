@@ -44,9 +44,17 @@ shizen-launcher = "python -m unittest discover -s tests -v"
 # DCC受信箱（DCC Task 8）: 共有フォルダの reports/pending を読む場所。既存の [release.<repo>] は
 # UPDATE成果物の配置規則であり、配布先（共有フォルダそのもの）のパスは持っていない（UPDATEのTargetは
 # 実行時にダイアログで都度選ぶ）。そのため新規にこの最小限のテーブルを追加した。
-#   shared_root   アプリの共有フォルダのルート（配下の reports/pending を読む）。実際のネットワーク
-#                 パス（例 \\サーバ\share\DinnerSystem）は開発PCでのみ把握しており、このrepoには
-#                 置かない。空文字のままの間は、受信箱はそのアプリを「接続できません」と表示する。
+#   shared_root   アプリの共有フォルダのルート（配下の reports/pending を読む）。本物のネットワーク
+#                 パス（例 \\サーバ\share\DinnerSystem）はこのリポジトリには書かない方針のため、
+#                 ここの値は常に空文字のままにする。実際のパスは、各開発PCのローカル設定ファイル
+#                 （%LOCALAPPDATA%\ShizenDev\DCC\reports_local.toml。LOCALAPPDATAが無い環境では
+#                 ホームフォルダの同じ場所）に、ここと同じ [reports.<repo>] の形で書く。例（架空の
+#                 パス。TOMLのリテラル文字列 '...' を使うとバックスラッシュをそのまま書ける）:
+#                     [reports.next-day-setup]
+#                     shared_root = '\\example-server\share\DinnerSystem'
+#                 ローカル設定にそのリポジトリの値（空文字でない）があればそれを使い、無い・空文字
+#                 ならここの値（空文字のまま）が使われ、その場合は受信箱がそのアプリを「接続できま
+#                 せん」と表示する。
 [reports.next-day-setup]
 shared_root = ""
 

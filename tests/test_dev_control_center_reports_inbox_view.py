@@ -397,9 +397,13 @@ class ReportsInboxWindowCase(unittest.TestCase):
         if self.window is not None and self.window.exists():
             self.window.close()
 
-    def make_window(self, *, apps=None, scan_fn=None, clipboard=None):
-        apps = apps if apps is not None else [("app-a", "アプリA", "configured")]
+    def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None):
         scan_fn = scan_fn or inbox.scan_all
+        if reports_config_fn is not None:
+            self.window = view.ReportsInboxWindow(self.master, scan_fn=scan_fn, copy_to_clipboard=clipboard,
+                                                  reports_config_fn=reports_config_fn)
+            return self.window
+        apps = apps if apps is not None else [("app-a", "アプリA", "configured")]
         self.window = view.ReportsInboxWindow(self.master, configured_apps=lambda: apps, scan_fn=scan_fn,
                                               copy_to_clipboard=clipboard)
         return self.window
@@ -424,7 +428,8 @@ class LoadAndDisplayTests(ReportsInboxWindowCase):
             window = self.make_window(apps=apps)
             self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
 
-            self.assertEqual(window.app_status_vars["app-a"].get(), "接続できました")
+            self.assertEqual(window.app_status_vars["app-a"].get(),
+                              f"接続できました（{inbox.truncate_path_for_display(str(share))}）")
             self.assertIn("未設定", window.app_status_vars["app-b"].get())
             self.assertEqual([r.report.report_id for r in window.visible_rows], ["new", "old"])
             self.assertEqual(window.report_list.get(0, "end").__len__(), 2)
@@ -438,6 +443,18 @@ class LoadAndDisplayTests(ReportsInboxWindowCase):
             window._render_rows()
             self.assertEqual([r.report.report_id for r in window.visible_rows], ["new"])
 
+    def test_unreachable_but_configured_app_still_shows_the_path_and_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist"
+            config = inbox.ReportsConfig(
+                apps=[inbox.ConfiguredApp("app-a", "アプリA", str(missing), "repo")], notices=[])
+            window = self.make_window(reports_config_fn=lambda: config)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            status = window.app_status_vars["app-a"].get()
+            self.assertIn("接続できません", status)
+            self.assertIn(inbox.truncate_path_for_display(str(missing)), status)
+            self.assertIn("リポジトリ設定", status)
+
     def test_unconfigured_app_shows_未設定_without_affecting_others(self):
         with tempfile.TemporaryDirectory() as tmp:
             share = make_shared_folder(Path(tmp) / "share")
@@ -445,8 +462,88 @@ class LoadAndDisplayTests(ReportsInboxWindowCase):
             apps = [("ok", "OKアプリ", str(share)), ("missing", "未設定アプリ", "")]
             window = self.make_window(apps=apps)
             self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
-            self.assertEqual(window.app_status_vars["ok"].get(), "接続できました")
+            self.assertEqual(window.app_status_vars["ok"].get(),
+                              f"接続できました（{inbox.truncate_path_for_display(str(share))}）")
             self.assertIn("未設定", window.app_status_vars["missing"].get())
+
+
+class ConfigNoticeAndSourceDisplayTests(ReportsInboxWindowCase):
+    """DCC Task 8c: the window must open and show config-mistake notices even when the local or
+    repo toml is broken (4c), must warn about an unknown [reports.<name>] without adding it to
+    the app list (4b), and must show which source (local/repo) supplied a reachable app's path
+    (5), all with fake widgets and no real Tk, shared folder, or LOCALAPPDATA."""
+
+    def test_window_opens_and_shows_notices_when_config_is_broken(self):
+        config = inbox.ReportsConfig(apps=[], notices=["ローカル設定を読めません: bad toml",
+                                                         "リポジトリ設定を読めません: bad toml"])
+        window = self.make_window(reports_config_fn=lambda: config)
+        self.assertTrue(window.exists())
+        self.assertIn("ローカル設定を読めません: bad toml", window.config_notice_var.get())
+        self.assertIn("リポジトリ設定を読めません: bad toml", window.config_notice_var.get())
+
+    def test_unknown_config_name_warns_and_is_not_in_the_app_list(self):
+        config = inbox.ReportsConfig(
+            apps=[inbox.ConfiguredApp("app-a", "アプリA", "", "")],
+            notices=["未知の設定名: totally-unknown-app（綴りを確認してください）"],
+        )
+        window = self.make_window(reports_config_fn=lambda: config)
+        self.assertIn("未知の設定名: totally-unknown-app（綴りを確認してください）", window.config_notice_var.get())
+        self.assertEqual(set(window.app_status_vars), {"app-a"})
+
+    def test_window_opens_and_shows_a_notice_when_the_local_toml_is_not_valid_utf8(self):
+        # Exercises the real loader (inbox.load_reports_config), not an injected ReportsConfig:
+        # tomllib.load() decodes as UTF-8 internally, and a malformed-encoding local file must
+        # become a notice, not an uncaught UnicodeDecodeError that aborts window construction.
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "registry.toml"
+            registry.write_text('[branches]\napp-a = "main"\n\n[reports.app-a]\nshared_root = ""\n',
+                                 encoding="utf-8")
+            local = Path(tmp) / "local.toml"
+            local.write_bytes(b"\xff\xfe\x00\x01not valid utf-8")
+            window = self.make_window(
+                reports_config_fn=lambda: inbox.load_reports_config(registry, local))
+        self.assertTrue(window.exists())
+        self.assertIn("ローカル設定を読めません", window.config_notice_var.get())
+
+    def test_window_opens_and_shows_a_notice_when_the_repo_toml_is_not_valid_utf8(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = Path(tmp) / "registry.toml"
+            registry.write_bytes(b"\xff\xfe\x00\x01not valid utf-8")
+            local = Path(tmp) / "local.toml"
+            window = self.make_window(
+                reports_config_fn=lambda: inbox.load_reports_config(registry, local))
+        self.assertTrue(window.exists())
+        self.assertIn("リポジトリ設定を読めません", window.config_notice_var.get())
+
+    def test_reachable_app_status_shows_the_used_path_and_its_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            config = inbox.ReportsConfig(
+                apps=[inbox.ConfiguredApp("app-a", "アプリA", str(share), "local")], notices=[])
+            window = self.make_window(reports_config_fn=lambda: config)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window.app_status_vars["app-a"].get(),
+                              f"接続できました（{inbox.truncate_path_for_display(str(share))}）（ローカル設定）")
+
+    def test_a_very_long_path_and_control_characters_do_not_break_the_status_display(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            nasty_root = str(share) + "\x00\x1b" + "x" * 500
+            config = inbox.ReportsConfig(
+                apps=[inbox.ConfiguredApp("app-a", "アプリA", nasty_root, "repo")], notices=[])
+            # scan_app itself only ever reads the real (clean) `share` path; what's under test
+            # here is that the *displayed* status text for the (fake, nasty) configured value
+            # never breaks, independent of whether that value happens to be reachable.
+            window = self.make_window(reports_config_fn=lambda: config,
+                                       scan_fn=lambda apps: [inbox.AppInbox("app-a", "アプリA", True, "")])
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            status = window.app_status_vars["app-a"].get()
+            self.assertNotIn("\x00", status)
+            self.assertNotIn("\x1b", status)
+            self.assertIn("リポジトリ設定", status)
+            self.assertLess(len(status), 200)
 
 
 class BackgroundLoadSafetyTests(ReportsInboxWindowCase):
