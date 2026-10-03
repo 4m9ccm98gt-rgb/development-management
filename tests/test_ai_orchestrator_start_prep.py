@@ -298,6 +298,46 @@ class RepoAutoResolutionTests(HostCase):
         self.assertEqual(rs.list_runs(), [])
 
 
+class ResolveTargetRepoPreviewTests(HostCase):
+    """DCC Task 10: the start-confirmation screen needs the target repo decided before any run
+    or lock exists. resolve_target_repo exposes exactly prepare_run's own decision, standalone."""
+
+    def registry(self, *names):
+        return mock.patch.object(orch, "_registry_definitions", lambda: [SimpleNamespace(name=n) for n in names])
+
+    def test_explicit_repo_is_returned_unchanged_when_consistent_with_the_task(self):
+        resolved = orch.resolve_target_repo("Create feature.txt", None, str(self.repo))
+        self.assertEqual(resolved, Path(self.repo))
+        self.assertEqual(rs.list_runs(), [])
+
+    def test_explicit_repo_mismatched_with_the_task_line_raises_before_any_run_or_lock(self):
+        with self.assertRaises(OrchestratorError) as ctx:
+            orch.resolve_target_repo("対象リポジトリ: some-other-repo\nCreate feature.txt", None, str(self.repo))
+        self.assertEqual(ctx.exception.code, "TASK_REPO_MISMATCH")
+        self.assertEqual(rs.list_runs(), [])
+        self.assertFalse(list(rs.locks_root().glob("*.json")) if rs.locks_root().exists() else [])
+
+    def test_auto_resolves_from_the_task_line_against_the_registry(self):
+        with self.registry(self.repo.name):
+            resolved = orch.resolve_target_repo(f"対象リポジトリ: {self.repo.name}\nCreate feature.txt", None, None)
+        self.assertEqual(resolved.name, self.repo.name)
+        self.assertEqual(rs.list_runs(), [])
+
+    def test_auto_with_no_target_anywhere_is_unresolved_and_lists_candidates(self):
+        with self.registry(self.repo.name):
+            with self.assertRaises(OrchestratorError) as ctx:
+                orch.resolve_target_repo("Create feature.txt", None, None)
+        self.assertEqual(ctx.exception.code, "TASK_REPO_UNRESOLVED")
+        self.assertIn(self.repo.name, str(ctx.exception))
+        self.assertEqual(rs.list_runs(), [])
+
+    def test_agrees_with_prepare_run_for_the_same_inputs(self):
+        task = f"対象リポジトリ: {self.repo.name}\nCreate feature.txt"
+        resolved = orch.resolve_target_repo(task, None, str(self.repo))
+        run_dir, record = orch.prepare_run(self.request(task=task))
+        self.assertEqual(resolved.name, Path(record["repo"]).name)
+
+
 class DefaultTestsTests(unittest.TestCase):
     def test_next_day_setup_default_tests_come_from_the_repo_registry(self):
         definitions = {d.name: d for d in load_repo_definitions(

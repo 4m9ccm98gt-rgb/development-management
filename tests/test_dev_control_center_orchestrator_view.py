@@ -137,7 +137,8 @@ class RoleAndStartTests(ViewCase):
                     return Path("C:/runs/20260925-000000-000000")
 
                 with mock.patch.object(orch, "start_run", side_effect=fake_start):
-                    self.window.start_run()
+                    self.window.start_run()  # shows the start-confirmation screen first (Task 10)
+                    self.window._confirm_start()
                     self.pump(lambda: bool(captured))
                 request = captured[0]
                 self.assertEqual((request.main_agent, request.review_agent), names)
@@ -171,7 +172,8 @@ class RoleAndStartTests(ViewCase):
         with mock.patch.object(orch, "start_run", side_effect=orch.OrchestratorError("このrepoには実行中のrunがあります")), \
              mock.patch.object(view.messagebox, "showerror") as error:
             self.window.task_text.insert("1.0", "x")
-            self.window.start_run()
+            self.window.start_run()  # shows the start-confirmation screen first (Task 10)
+            self.window._confirm_start()
             self.pump(lambda: (self.window._tick(), error.called)[1])
         self.assertIn("実行中のrun", error.call_args.args[1])
 
@@ -187,7 +189,8 @@ class RoleAndStartTests(ViewCase):
         captured = []
         self.window.task_text.insert("1.0", "x")
         with mock.patch.object(orch, "start_run", side_effect=lambda r, **k: captured.append(r) or Path("C:/runs/r1")):
-            self.window.start_run()
+            self.window.start_run()  # shows the start-confirmation screen first (Task 10)
+            self.window._confirm_start()
             self.pump(lambda: bool(captured))
         self.assertEqual(captured[0].tests, ["python -m unittest discover -s tests -p 'test_*.py' -q"])
         self.assertTrue(captured[0].prepare_source)
@@ -610,6 +613,508 @@ class RunMonitorTests(unittest.TestCase):
         finally:
             monitor.stop()
 
+
+
+class _FakeVar:
+    """Stand-in for tk.StringVar/BooleanVar: no Tcl interpreter needed to hold a value."""
+
+    def __init__(self, value=None, **_kwargs):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value):
+        self._value = value
+
+
+class _FakeTkWidget:
+    def __init__(self, master=None, **_kwargs):
+        self.master = master
+
+    def pack(self, **_kwargs):
+        pass
+
+    def grid(self, **_kwargs):
+        pass
+
+    def columnconfigure(self, *_args, **_kwargs):
+        pass
+
+    def rowconfigure(self, *_args, **_kwargs):
+        pass
+
+    def configure(self, **_kwargs):
+        pass
+
+    def bind(self, *_args, **_kwargs):
+        pass
+
+    def option_add(self, *_args, **_kwargs):
+        pass
+
+
+class _FakeFrame(_FakeTkWidget):
+    """Tracks only what the confirmation screen's show/hide toggle needs: grid()/grid_remove()
+    flip a flag, grid_info() reports it the same way real Tk does (truthy iff gridded)."""
+
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self._gridded = False
+
+    def grid(self, **_kwargs):
+        self._gridded = True
+
+    def grid_remove(self):
+        self._gridded = False
+
+    def grid_info(self):
+        return {"in": self.master} if self._gridded else {}
+
+
+class _FakeButton(_FakeTkWidget):
+    def __init__(self, master=None, *, command=None, text=None, textvariable=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.command = command
+        self.text = text
+        self.textvariable = textvariable
+        self._disabled = False
+
+    def instate(self, states):
+        for s in states:
+            if s == "disabled" and not self._disabled:
+                return False
+            if s == "!disabled" and self._disabled:
+                return False
+        return True
+
+    def state(self, states):
+        for s in states:
+            if s == "disabled":
+                self._disabled = True
+            elif s == "!disabled":
+                self._disabled = False
+
+    def cget(self, key):
+        if key == "text":
+            return self.text
+        raise KeyError(key)
+
+
+class _FakeCombobox(_FakeTkWidget):
+    def __init__(self, master=None, *, textvariable=None, values=None, state=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.textvariable = textvariable
+        self._values = list(values) if values is not None else []
+        self.state_ = state
+
+    def __getitem__(self, key):
+        if key == "values":
+            return self._values
+        raise KeyError(key)
+
+
+class _FakeStartFormListbox(_FakeTkWidget):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.items: list = []
+        self.selection = None
+        self.focused = False
+
+    def delete(self, _start, _end):
+        self.items = []
+
+    def insert(self, _index, value):
+        self.items.append(value)
+
+    def get(self, _start, _end):
+        return tuple(self.items)
+
+    def size(self):
+        return len(self.items)
+
+    def selection_clear(self, _start, _end):
+        self.selection = None
+
+    def selection_set(self, index):
+        self.selection = index
+
+    def focus_set(self):
+        self.focused = True
+
+    def nearest(self, _y):
+        return 0
+
+    def bbox(self, _index):
+        return None
+
+    def curselection(self):
+        return (self.selection,) if self.selection is not None else ()
+
+
+class _FakeStartFormText(_FakeTkWidget):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.content = ""
+
+    def delete(self, _start, _end):
+        self.content = ""
+
+    def insert(self, _index, text):
+        self.content += text
+
+    def get(self, _start, _end):
+        return self.content
+
+    def see(self, _index):
+        pass
+
+
+class _FakeStyle:
+    def __init__(self, master=None):
+        self.master = master
+
+    def configure(self, *_args, **_kwargs):
+        pass
+
+    def map(self, *_args, **_kwargs):
+        pass
+
+
+class _FakeStartFormToplevel(_FakeTkWidget):
+    def __init__(self, master=None):
+        super().__init__(master)
+        self._destroyed = False
+        self._after_calls: dict[int, object] = {}
+        self._after_seq = 0
+
+    def title(self, _text):
+        pass
+
+    def geometry(self, _spec):
+        pass
+
+    def minsize(self, _w, _h):
+        pass
+
+    def protocol(self, _name, _func):
+        pass
+
+    def after(self, _ms, func):
+        self._after_seq += 1
+        self._after_calls[self._after_seq] = func
+        return self._after_seq
+
+    def after_cancel(self, token):
+        self._after_calls.pop(token, None)
+
+    def winfo_exists(self):
+        return not self._destroyed
+
+    def deiconify(self):
+        pass
+
+    def lift(self):
+        pass
+
+    def destroy(self):
+        self._destroyed = True
+
+    def clipboard_clear(self):
+        pass
+
+    def clipboard_append(self, _text):
+        pass
+
+
+class _FakeCharacterView:
+    """Stands in for character.CharacterView: a real one builds a tk.Canvas, which needs a real
+    Tk master. None of the Task 10 start-form tests touch the character, only the start form."""
+
+    def __init__(self, master=None, *, background=None, **_kwargs):
+        self.widget = _FakeTkWidget(master)
+        self.available = False
+        self.mood = None
+        self._destroyed = False
+        self._after_id = None
+
+    def set_mood(self, mood):
+        self.mood = mood
+
+    def destroy(self):
+        self._destroyed = True
+
+
+_FAKE_START_FORM_TK_MODULE = SimpleNamespace(
+    Toplevel=_FakeStartFormToplevel, StringVar=_FakeVar, BooleanVar=_FakeVar,
+    Listbox=_FakeStartFormListbox, Text=_FakeStartFormText, TclError=tk.TclError,
+)
+_FAKE_START_FORM_TTK_MODULE = SimpleNamespace(
+    Frame=_FakeFrame, LabelFrame=_FakeFrame, Label=_FakeTkWidget, Entry=_FakeTkWidget,
+    Button=_FakeButton, Combobox=_FakeCombobox, Style=_FakeStyle,
+)
+
+
+class FakeOrchestratorWindowCase(unittest.TestCase):
+    """DCC Task 10: start-form / confirmation-flow / auto-repo / spec-file coverage, built
+    without any real Tk widget. OrchestratorWindow's own `tk` / `ttk` module references (and the
+    CharacterView it builds) are swapped for the small fake widget set above for the duration of
+    each test -- the same technique test_dev_control_center_reports_inbox_view.py already uses
+    for ReportsInboxWindow -- so the window's real __init__ / start_run / _confirm_start code
+    runs unmodified against fakes instead of a live display."""
+
+    def setUp(self):
+        tk_patch = mock.patch.object(view, "tk", _FAKE_START_FORM_TK_MODULE)
+        tk_patch.start()
+        self.addCleanup(tk_patch.stop)
+        ttk_patch = mock.patch.object(view, "ttk", _FAKE_START_FORM_TTK_MODULE)
+        ttk_patch.start()
+        self.addCleanup(ttk_patch.stop)
+        character_patch = mock.patch.object(view, "CharacterView", _FakeCharacterView)
+        character_patch.start()
+        self.addCleanup(character_patch.stop)
+        self.monitor = FakeMonitor()
+        self.drafts = {}
+        self.on_apply = mock.MagicMock()
+        self.definitions = [SimpleNamespace(name="app", branch="main", initial_ai_task="", initial_test="python -m unittest"),
+                            SimpleNamespace(name="other", branch="main", initial_ai_task="", initial_test="")]
+        self.window = self.make_window(initial_repo="app")
+
+    def make_window(self, *, initial_repo, monitor=None, drafts=None, definitions=None):
+        return view.OrchestratorWindow(
+            object(), definitions if definitions is not None else self.definitions, initial_repo=initial_repo,
+            drafts=drafts if drafts is not None else self.drafts, on_apply=self.on_apply,
+            monitor=monitor or self.monitor, repos_root=Path("C:/repos"), auto_usage=False)
+
+    def confirm_visible(self) -> bool:
+        return bool(self.window.confirm_frame.grid_info())
+
+    def pump(self, condition, timeout=5):
+        deadline = time.monotonic() + timeout
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(condition())
+
+
+class AutoRepoDefaultTests(FakeOrchestratorWindowCase):
+    """DCC Task 10: the start form offers 自動 as a repo choice and defaults to it unless the
+    window is explicitly told to preselect a repo. app.py's normal open_orchestrator path no
+    longer passes DCC's current repo here (see test_dev_control_center_phase1.py's
+    OpenOrchestratorDefaultRepoTests for that caller-side regression test) — 自動 stays the
+    default even with a repo already selected in DCC."""
+
+    def test_auto_is_offered_and_is_the_default_when_no_initial_repo_is_given(self):
+        definitions = [SimpleNamespace(name="app", branch="main", initial_ai_task="", initial_test="python -m unittest")]
+        window = self.make_window(initial_repo=None, drafts={}, definitions=definitions)
+        self.assertEqual(window.repo_var.get(), view.AUTO_LABEL)
+        self.assertIn(view.AUTO_LABEL, window.repo_box["values"])
+
+    def test_an_explicit_initial_repo_is_still_preselected(self):
+        # The window itself still honours an explicit initial_repo when a caller passes one
+        # (setUp passes initial_repo="app"); only the normal app.py caller stopped doing so.
+        self.assertEqual(self.window.repo_var.get(), "app")
+
+
+class StartConfirmationTests(FakeOrchestratorWindowCase):
+    """DCC Task 10: pressing 開始 shows a confirmation (resolved repo / criteria source /
+    criteria / tests command) and only 確認画面の「開始」 actually calls orch.start_run."""
+
+    def test_start_shows_confirmation_before_any_run_is_created(self):
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+            self.assertTrue(self.confirm_visible())
+            self.assertFalse(self.window.input_frame.grid_info())
+            start.assert_not_called()
+        self.assertIn("app", self.window.confirm_repo_var.get())
+        self.assertEqual(self.window.confirm_tests_var.get(), "python -m unittest")
+
+    def test_back_returns_to_the_form_with_inputs_preserved_and_creates_nothing(self):
+        self.window.repo_var.set("app")
+        self.window.task_text.delete("1.0", "end")
+        self.window.task_text.insert("1.0", "keep me")
+        with mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+            self.assertTrue(self.confirm_visible())
+            self.window._cancel_confirm()
+            start.assert_not_called()
+        self.assertFalse(self.confirm_visible())
+        self.assertTrue(self.window.input_frame.grid_info())
+        self.assertEqual(self.window.task_text.get("1.0", "end").strip(), "keep me")
+        self.assertEqual(self.window.repo_var.get(), "app")
+
+    def test_confirm_start_is_the_only_path_that_creates_a_run(self):
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        captured = []
+        with mock.patch.object(orch, "start_run", side_effect=lambda r, **k: captured.append(r) or Path("C:/runs/r1")):
+            self.window.start_run()
+            self.assertEqual(captured, [])
+            self.window._confirm_start()
+            self.pump(lambda: bool(captured))
+        self.assertFalse(self.confirm_visible())
+        self.assertTrue(self.window.input_frame.grid_info())
+
+    def test_task_only_criteria_are_extracted_for_the_confirmation(self):
+        self.window.repo_var.set("app")
+        self.window.task_text.delete("1.0", "end")
+        self.window.task_text.insert("1.0", "do the thing\n受入条件\n- 条件A\n- 条件B\n")
+        self.window.start_run()
+        self.assertEqual(self.window.confirm_source_var.get(), "依頼文の文章")
+        text = self.window.confirm_criteria_text.get("1.0", "end")
+        self.assertIn("条件A", text)
+        self.assertIn("条件B", text)
+
+    def test_missing_task_criteria_section_shows_a_note_instead_of_a_crash(self):
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        self.window.start_run()
+        text = self.window.confirm_criteria_text.get("1.0", "end")
+        self.assertIn("Reviewer AIが作成します", text)
+
+
+class RepoMismatchAndUnresolvedTests(FakeOrchestratorWindowCase):
+    """DCC Task 10 / C1, C4: a target mismatch or an unresolved 自動 target is shown as a
+    Japanese error and never reaches orch.start_run (faked resolver, as the TaskSpec asks)."""
+
+    def test_explicit_repo_mismatch_blocks_start_and_shows_the_message(self):
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        mismatch = orch.OrchestratorError(
+            "対象リポジトリが食い違っています。依頼文の「対象リポジトリ:」行は「other」を指していますが、"
+            "選ばれたリポジトリは「app」です。", "TASK_REPO_MISMATCH")
+        with mock.patch.object(orch, "resolve_target_repo", side_effect=mismatch), \
+             mock.patch.object(view.messagebox, "showerror") as error, \
+             mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+        error.assert_called_once()
+        self.assertIn("食い違っています", error.call_args.args[1])
+        start.assert_not_called()
+        self.assertFalse(self.window.confirm_frame.grid_info())
+        self.assertTrue(self.window.input_frame.grid_info())
+
+    def test_auto_mode_resolves_the_repo_from_the_task_line_and_starts(self):
+        self.window.repo_var.set(view.AUTO_LABEL)
+        self.window.task_text.delete("1.0", "end")
+        self.window.task_text.insert("1.0", "対象リポジトリ: app\nDo it")
+        with mock.patch.object(orch, "_registry_definitions",
+                               lambda: [SimpleNamespace(name="app"), SimpleNamespace(name="other")]):
+            self.window.start_run()
+        self.assertTrue(self.window.confirm_frame.grid_info())
+        self.assertIn("app", self.window.confirm_repo_var.get())
+        self.assertIn("自動決定", self.window.confirm_repo_var.get())
+        captured = []
+        with mock.patch.object(orch, "start_run", side_effect=lambda r, **k: captured.append(r) or Path("C:/runs/r1")):
+            self.window._confirm_start()
+            self.pump(lambda: bool(captured))
+        self.assertIsNone(captured[0].repo)  # Task 9's own auto-resolution runs inside prepare_run
+        self.assertEqual(captured[0].expected_branch, "main")  # looked up from the registry for prepare_source
+
+    def test_auto_mode_with_no_resolvable_target_shows_unresolved_candidates(self):
+        self.window.repo_var.set(view.AUTO_LABEL)
+        self.window.task_text.delete("1.0", "end")
+        self.window.task_text.insert("1.0", "no target line here")
+        with mock.patch.object(orch, "_registry_definitions",
+                               lambda: [SimpleNamespace(name="app"), SimpleNamespace(name="other")]), \
+             mock.patch.object(view.messagebox, "showerror") as error, \
+             mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+        error.assert_called_once()
+        self.assertIn("app", error.call_args.args[1])
+        self.assertIn("other", error.call_args.args[1])
+        start.assert_not_called()
+        self.assertFalse(self.window.confirm_frame.grid_info())
+
+
+class SpecFileTests(FakeOrchestratorWindowCase):
+    """DCC Task 10: an optional fixed-format spec file feeds criteria into the confirmation
+    and the StartRequest, with the same Japanese validation errors taskspec.py already raises."""
+
+    def write_spec(self, text: str) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "spec.json"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_choosing_a_valid_spec_shows_the_criteria_count(self):
+        path = self.write_spec('{"criteria": [{"text": "a"}, {"text": "b"}]}')
+        self.window._load_spec_file(path)
+        self.assertEqual(self.window.spec_var.get(), "spec.json")
+        self.assertIn("2", self.window.spec_notice_var.get())
+        self.assertIsNotNone(self.window.spec)
+
+    def test_confirmation_uses_the_spec_criteria_and_passes_it_to_start_request(self):
+        path = self.write_spec('{"criteria": [{"text": "a"}, {"text": "b"}]}')
+        self.window._load_spec_file(path)
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        self.window.start_run()
+        self.assertEqual(self.window.confirm_source_var.get(), "仕様ファイル")
+        text = self.window.confirm_criteria_text.get("1.0", "end")
+        self.assertIn("a", text)
+        self.assertIn("b", text)
+        captured = []
+        with mock.patch.object(orch, "start_run", side_effect=lambda r, **k: captured.append(r) or Path("C:/runs/r1")):
+            self.window._confirm_start()
+            self.pump(lambda: bool(captured))
+        self.assertEqual(len(captured[0].spec.criteria), 2)
+
+    def test_invalid_json_spec_shows_a_japanese_error_and_blocks_start(self):
+        path = self.write_spec("{not json")
+        self.window._load_spec_file(path)
+        self.assertIn("仕様ファイルが不正です", self.window.spec_notice_var.get())
+        self.assertIsNone(self.window.spec)
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+        start.assert_not_called()
+        self.assertFalse(self.window.confirm_frame.grid_info())
+
+    def test_out_of_range_spec_is_rejected_the_same_way(self):
+        path = self.write_spec('{"criteria": [{"text": ""}]}')  # empty text: out of the fixed format
+        self.window._load_spec_file(path)
+        self.assertIn("仕様ファイルが不正です", self.window.spec_notice_var.get())
+        self.assertIsNone(self.window.spec)
+
+    def test_clearing_the_spec_restores_task_only_behaviour(self):
+        path = self.write_spec('{"criteria": [{"text": "a"}]}')
+        self.window._load_spec_file(path)
+        self.window.clear_spec_file()
+        self.assertIsNone(self.window.spec)
+        self.assertEqual(self.window.spec_var.get(), "(未選択)")
+        self.assertEqual(self.window.spec_notice_var.get(), "")
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x\n受入条件\n- 条件A\n")
+        self.window.start_run()
+        self.assertEqual(self.window.confirm_source_var.get(), "依頼文の文章")
+
+    def write_spec_bytes(self, data: bytes) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "broken.json"
+        path.write_bytes(data)
+        return path
+
+    def test_selecting_an_invalid_utf8_file_after_a_valid_spec_discards_it_and_blocks_start(self):
+        # taskspec.load_spec_file previously let UnicodeDecodeError escape uncaught, which left
+        # the earlier valid spec in place and able to start a run with stale criteria (DCC Task 10).
+        good = self.write_spec('{"criteria": [{"text": "a"}, {"text": "b"}]}')
+        self.window._load_spec_file(good)
+        self.assertIsNotNone(self.window.spec)
+        broken = self.write_spec_bytes(b"\xff\xfe\x00broken")
+        self.window._load_spec_file(broken)
+        self.assertIsNone(self.window.spec)
+        self.assertTrue(self.window._spec_invalid)
+        self.assertIn("仕様ファイルを読み込めません", self.window.spec_notice_var.get())
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+        start.assert_not_called()
+        self.assertFalse(self.window.confirm_frame.grid_info())
 
 
 class CharacterMoodTests(ViewCase):

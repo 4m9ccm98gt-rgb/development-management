@@ -496,6 +496,18 @@ def _resolve_repo_path(task: str, spec: Spec | None) -> Path:
     return DM_ROOT.parent / matches[0]
 
 
+def resolve_target_repo(task: str, spec: Spec | None, repo: str | None = None) -> Path:
+    """What prepare_run will pick as the target repository, and whether it agrees with the
+    task's own "対象リポジトリ:" line / the spec's target_repo -- without creating a run or
+    taking the repo lock, so a start-confirmation screen can show it first. Raises the same
+    TASK_REPO_MISMATCH / TASK_REPO_UNRESOLVED errors prepare_run raises for the same inputs.
+    Deliberately skips repo_toplevel's git call (prepare_run still does that once a run is
+    actually prepared): a path given by the caller is already the repo root here."""
+    repo_arg = Path(repo) if repo else _resolve_repo_path(task, spec)
+    _check_target_repo(task, spec, repo_arg)
+    return repo_arg
+
+
 def prepare_run(request: StartRequest) -> tuple[Path, dict]:
     """Validate everything that can be validated without AI, take the repo lock, and write
     the initial run record. Raises before anything is created if the request is unsafe."""

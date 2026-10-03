@@ -109,6 +109,16 @@ class ParseSpecTests(unittest.TestCase):
         with self.assertRaises(SpecError):
             load_spec_file(Path(tempfile.mkdtemp()) / "missing.json")
 
+    def test_load_spec_file_invalid_utf8_is_refused_in_japanese(self):
+        # A UnicodeDecodeError must become the same SpecError as any other unreadable file:
+        # a raw exception here would reach the DCC start form uncaught (DCC Task 10).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "spec.json"
+            path.write_bytes(b"\xff\xfe\x00broken")
+            with self.assertRaises(SpecError) as ctx:
+                load_spec_file(path)
+            self.assertIn("仕様ファイルを読み込めません", str(ctx.exception))
+
 
 class ExtractTargetRepoNameTests(unittest.TestCase):
     def test_half_width_colon(self):

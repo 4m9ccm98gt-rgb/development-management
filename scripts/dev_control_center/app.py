@@ -368,7 +368,17 @@ class App(ttk.Frame):
         right.columnconfigure(0, weight=1)
         right.rowconfigure(7, weight=1)
         self.main_panel = right
-        ttk.Label(right, textvariable=self.title_var, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
+        title_bar = ttk.Frame(right)
+        title_bar.grid(row=0, column=0, sticky="ew")
+        title_bar.columnconfigure(0, weight=1)
+        ttk.Label(title_bar, textvariable=self.title_var, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
+        # Repo-independent: these open their own windows regardless of which repo (if any) is selected.
+        top_buttons = ttk.Frame(title_bar)
+        top_buttons.grid(row=0, column=1, sticky="e")
+        self.orchestrator_button = ttk.Button(top_buttons, textvariable=self.orchestrator_button_var, command=self.open_orchestrator)
+        self.orchestrator_button.pack(side="left", padx=(0, 6))
+        self.reports_button = ttk.Button(top_buttons, text="報告", command=self.open_reports_inbox)
+        self.reports_button.pack(side="left")
         ttk.Label(right, textvariable=self.meta_var, wraplength=580).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
         # Local and GitHub state side by side: the candidate flow needs the vertical space at 1080x720.
@@ -449,10 +459,6 @@ class App(ttk.Frame):
         self.discard_button = ttk.Button(flow_box, text="candidateを破棄", command=self.discard_candidate)
         self.discard_button.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
 
-        self.orchestrator_button = ttk.Button(lifecycle, textvariable=self.orchestrator_button_var, command=self.open_orchestrator)
-        self.orchestrator_button.grid(row=1, column=3, sticky="ew", padx=(3, 0), pady=(8, 0))
-        self.reports_button = ttk.Button(lifecycle, text="報告", command=self.open_reports_inbox)
-        self.reports_button.grid(row=2, column=3, sticky="ew", padx=(3, 0), pady=(4, 0))
         self.operation_stop_button = ttk.Button(lifecycle, text="このrepoの実行を停止", command=self.stop_lifecycle)
         self.operation_stop_button.grid(row=0, column=0, columnspan=2, sticky="w")
         # Common UPDATE engine: revert the latest engine release from its changed-only backup (dry-run first).
@@ -489,8 +495,10 @@ class App(ttk.Frame):
                 window.select_repo(self.current.name)
             window.focus()
             return
+        # Task 10: 自動 stays the start form's default even when DCC already has a repo
+        # selected (the normal case after startup) — the form no longer preselects it.
         self.orchestrator_window = OrchestratorWindow(
-            self.master, self.definitions, initial_repo=self.current.name if self.current else None,
+            self.master, self.definitions, initial_repo=None,
             drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT)
 
     def open_reports_inbox(self) -> None:

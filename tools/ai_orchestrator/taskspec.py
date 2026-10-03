@@ -97,7 +97,7 @@ def parse_spec_text(text: str) -> Spec:
 def load_spec_file(path: Path) -> Spec:
     try:
         text = Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise SpecError(f"仕様ファイルを読み込めません: {path} ({exc})") from exc
     return parse_spec_text(text)
 

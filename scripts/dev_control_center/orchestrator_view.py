@@ -16,11 +16,13 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from tools.ai_orchestrator import orchestrator as orch
+from tools.ai_orchestrator import review
 from tools.ai_orchestrator import runstate as rs
+from tools.ai_orchestrator import taskspec
 from tools.ai_orchestrator import usage as usage_mod
 from tools.ai_orchestrator.common import OrchestratorError
 from tools.ai_orchestrator.providers import DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_CLASSES
@@ -48,6 +50,7 @@ STAGE_TEXT = {
 LIVE_MARK = {rs.LIVE_RUNNING: "●", rs.LIVE_STARTING: "◐", rs.LIVE_UNRESPONSIVE: "?", rs.LIVE_LOST: "✕",
              rs.LIVE_FINISHED: "○", rs.LIVE_UNKNOWN: "-"}
 ROLE_LABEL = {"claude": "Claude", "codex": "Codex"}
+AUTO_LABEL = "自動"
 
 
 def role_label(name: str) -> str:
@@ -218,6 +221,10 @@ class OrchestratorWindow:
         self.on_apply = on_apply
         self.repos_root = repos_root
         self._closed = False
+        self.spec: taskspec.Spec | None = None
+        self.spec_path: Path | None = None
+        self._spec_invalid = False
+        self._pending_start: dict | None = None
         # Worker threads must never hold `self`: a Tk object released on a non-main thread aborts Tcl.
         self._closed_event = threading.Event()
         self.snapshot: dict = {}
@@ -246,6 +253,11 @@ class OrchestratorWindow:
         self.result_var = tk.StringVar(value="-")
         self.roles_var = tk.StringVar(value="-")
         self.prep_var = tk.StringVar(value="-")
+        self.spec_var = tk.StringVar(value="(未選択)")
+        self.spec_notice_var = tk.StringVar(value="")
+        self.confirm_repo_var = tk.StringVar(value="-")
+        self.confirm_source_var = tk.StringVar(value="-")
+        self.confirm_tests_var = tk.StringVar(value="-")
         self.usage_vars = {name: tk.StringVar(value="取得不能（未取得）") for name in ("claude", "codex")}
         self.usage_role_vars = {name: tk.StringVar(value="") for name in ("claude", "codex")}
 
@@ -275,28 +287,51 @@ class OrchestratorWindow:
         right = ttk.Frame(outer)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(1, weight=1)
-        right.rowconfigure(9, weight=1)
+        right.rowconfigure(4, weight=1)
 
         row = 0
-        ttk.Label(right, text="対象repo", width=12).grid(row=row, column=0, sticky="w")
-        self.repo_box = ttk.Combobox(right, textvariable=self.repo_var, state="readonly",
-                                     values=[d.name for d in self.definitions])
-        self.repo_box.grid(row=row, column=1, sticky="ew", columnspan=3)
+        self.input_frame = ttk.Frame(right)
+        self.input_frame.grid(row=row, column=0, columnspan=4, sticky="ew")
+        self.input_frame.columnconfigure(1, weight=1)
+        self.confirm_frame = ttk.Frame(right)
+        self.confirm_frame.grid(row=row, column=0, columnspan=4, sticky="nsew")
+        self.confirm_frame.columnconfigure(1, weight=1)
+        self.confirm_frame.grid_remove()
+        row += 1
+
+        form = self.input_frame
+        frow = 0
+        ttk.Label(form, text="対象repo", width=12).grid(row=frow, column=0, sticky="w")
+        self.repo_box = ttk.Combobox(form, textvariable=self.repo_var, state="readonly",
+                                     values=[AUTO_LABEL] + [d.name for d in self.definitions])
+        self.repo_box.grid(row=frow, column=1, sticky="ew", columnspan=3)
         self.repo_box.bind("<<ComboboxSelected>>", lambda _e: self._on_repo_changed())
 
-        row += 1
-        ttk.Label(right, text="Task", width=12).grid(row=row, column=0, sticky="nw", pady=(6, 0))
-        self.task_text = tk.Text(right, height=6, wrap="word")
+        frow += 1
+        ttk.Label(form, text="Task", width=12).grid(row=frow, column=0, sticky="nw", pady=(6, 0))
+        self.task_text = tk.Text(form, height=6, wrap="word")
         configure_dark_text(self.task_text)
-        self.task_text.grid(row=row, column=1, columnspan=3, sticky="ew", pady=(6, 0))
+        self.task_text.grid(row=frow, column=1, columnspan=3, sticky="ew", pady=(6, 0))
 
-        row += 1
-        ttk.Label(right, text="Tests", width=12).grid(row=row, column=0, sticky="w", pady=(6, 0))
-        ttk.Entry(right, textvariable=self.tests_var).grid(row=row, column=1, columnspan=3, sticky="ew", pady=(6, 0))
+        frow += 1
+        ttk.Label(form, text="Tests", width=12).grid(row=frow, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(form, textvariable=self.tests_var).grid(row=frow, column=1, columnspan=3, sticky="ew", pady=(6, 0))
 
-        row += 1
-        roles = ttk.Frame(right)
-        roles.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        frow += 1
+        ttk.Label(form, text="仕様ファイル", width=12).grid(row=frow, column=0, sticky="w", pady=(6, 0))
+        spec_row = ttk.Frame(form)
+        spec_row.grid(row=frow, column=1, columnspan=3, sticky="ew", pady=(6, 0))
+        ttk.Button(spec_row, text="ファイルを選ぶ...", command=self.choose_spec_file).pack(side="left")
+        ttk.Label(spec_row, textvariable=self.spec_var).pack(side="left", padx=(8, 8))
+        ttk.Button(spec_row, text="解除", command=self.clear_spec_file).pack(side="left")
+
+        frow += 1
+        ttk.Label(form, textvariable=self.spec_notice_var, wraplength=800, foreground="#e3b341").grid(
+            row=frow, column=0, columnspan=4, sticky="w")
+
+        frow += 1
+        roles = ttk.Frame(form)
+        roles.grid(row=frow, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         ttk.Label(roles, text="Main AI").pack(side="left")
         self.main_box = ttk.Combobox(roles, textvariable=self.main_var, state="readonly", width=10,
                                      values=[role_label(n) for n in PROVIDER_CLASSES if n in ROLE_LABEL])
@@ -313,11 +348,31 @@ class OrchestratorWindow:
         self.stop_button.pack(side="left", padx=6)
         self.usage_button = ttk.Button(roles, text="残量更新", command=self.refresh_usage)
         self.usage_button.pack(side="left", padx=6)
-        ttk.Label(right, textvariable=self.notice_var, wraplength=800, foreground=DARK_MUTED).grid(
-            row=row + 1, column=0, columnspan=4, sticky="w")
-        ttk.Label(right, textvariable=self.warn_var, wraplength=800, foreground="#e3b341").grid(
-            row=row + 2, column=0, columnspan=4, sticky="w")
-        row += 3
+        ttk.Label(form, textvariable=self.notice_var, wraplength=800, foreground=DARK_MUTED).grid(
+            row=frow + 1, column=0, columnspan=4, sticky="w")
+        ttk.Label(form, textvariable=self.warn_var, wraplength=800, foreground="#e3b341").grid(
+            row=frow + 2, column=0, columnspan=4, sticky="w")
+
+        confirm = self.confirm_frame
+        ttk.Label(confirm, text="開始前の確認", font=("Segoe UI", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        for crow, (label, var) in enumerate([
+            ("対象リポジトリ", self.confirm_repo_var), ("完了条件の出どころ", self.confirm_source_var),
+            ("テストコマンド", self.confirm_tests_var),
+        ], start=1):
+            ttk.Label(confirm, text=label, width=14).grid(row=crow, column=0, sticky="nw", pady=(4, 0))
+            ttk.Label(confirm, textvariable=var, wraplength=760, justify="left").grid(
+                row=crow, column=1, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(confirm, text="完了条件の一覧", width=14).grid(row=4, column=0, sticky="nw", pady=(4, 0))
+        self.confirm_criteria_text = tk.Text(confirm, height=8, wrap="word", state="disabled")
+        configure_dark_text(self.confirm_criteria_text)
+        self.confirm_criteria_text.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(4, 0))
+        confirm_buttons = ttk.Frame(confirm)
+        confirm_buttons.grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.confirm_start_button = ttk.Button(confirm_buttons, text="開始", command=self._confirm_start)
+        self.confirm_start_button.pack(side="left", padx=(0, 6))
+        self.confirm_back_button = ttk.Button(confirm_buttons, text="戻る", command=self._cancel_confirm)
+        self.confirm_back_button.pack(side="left")
 
         usage_frame = ttk.Frame(right)
         usage_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
@@ -355,13 +410,14 @@ class OrchestratorWindow:
             row=row, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self.log = tk.Text(right, height=10, state="disabled", wrap="word")
         configure_dark_text(self.log)
-        # `right.rowconfigure(9, weight=1)` targets this row
-        self.log.grid(row=9, column=0, columnspan=4, sticky="nsew")
+        row += 1
+        # `right.rowconfigure(4, weight=1)` targets this row
+        self.log.grid(row=row, column=0, columnspan=4, sticky="nsew")
 
         self.monitor = monitor or RunMonitor()
         self._own_monitor = monitor is None
         self.monitor.start()
-        self._select_repo(initial_repo or (self.definitions[0].name if self.definitions else ""))
+        self._select_repo(initial_repo or AUTO_LABEL)
         self._on_role_changed("main")
         self._tick_id = self.window.after(UI_TICK_MS, self._tick)
         if auto_usage:
@@ -473,14 +529,46 @@ class OrchestratorWindow:
                 lines += usage_mod.warnings(data, f"{role}（{role_label(name)}）")
         self.warn_var.set("\n".join(lines))
 
+    # ---------------------------------------------------------------- spec file
+    def choose_spec_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="仕様ファイル（JSON）を選択", parent=self.window,
+            filetypes=[("JSON", "*.json"), ("すべてのファイル", "*.*")])
+        if not path:
+            return
+        self._load_spec_file(Path(path))
+
+    def _load_spec_file(self, path: Path) -> None:
+        try:
+            spec = taskspec.load_spec_file(path)
+        except taskspec.SpecError as exc:
+            self.spec = None
+            self.spec_path = path
+            self._spec_invalid = True
+            self.spec_var.set(path.name)
+            self.spec_notice_var.set(str(exc))
+            return
+        self.spec = spec
+        self.spec_path = path
+        self._spec_invalid = False
+        self.spec_var.set(path.name)
+        self.spec_notice_var.set(f"完了条件 {len(spec.criteria)} 件を読み込みました。")
+
+    def clear_spec_file(self) -> None:
+        self.spec = None
+        self.spec_path = None
+        self._spec_invalid = False
+        self.spec_var.set("(未選択)")
+        self.spec_notice_var.set("")
+
     # ---------------------------------------------------------------- actions
     def start_run(self) -> None:
         self._save_draft()
         name = self.repo_var.get()
-        definition = next((d for d in self.definitions if d.name == name), None)
         task = self.task_text.get("1.0", "end").strip()
         tests = self.tests_var.get().strip()
-        if definition is None:
+        if self._spec_invalid:
+            self.notice_var.set(self.spec_notice_var.get())
             return
         if not task:
             messagebox.showinfo("AI Orchestrator", "Taskを入力してください。", parent=self.window)
@@ -488,13 +576,71 @@ class OrchestratorWindow:
         if not tests:
             messagebox.showerror("AI Orchestrator", "独立Testsコマンドが未設定です。Tests欄へ入力してください。", parent=self.window)
             return
+        auto = name == AUTO_LABEL
+        if auto:
+            repo_for_request = None
+            repo_for_check = None
+        else:
+            definition = next((d for d in self.definitions if d.name == name), None)
+            if definition is None:
+                return
+            repo_root = (self.repos_root or Path(__file__).resolve().parents[3]) / name
+            repo_for_request = str(repo_root)
+            repo_for_check = repo_for_request
+        try:
+            resolved = orch.resolve_target_repo(task, self.spec, repo_for_check)
+        except OrchestratorError as exc:
+            self.notice_var.set(str(exc))
+            messagebox.showerror("AI Orchestrator", str(exc), parent=self.window)
+            return
+        resolved_name = resolved.name
+        resolved_definition = next((d for d in self.definitions if d.name == resolved_name), None)
+        branch = getattr(resolved_definition, "branch", None)
         main, reviewer = self._names()
-        repo_root = (self.repos_root or Path(__file__).resolve().parents[3]) / name
-        request = orch.StartRequest(repo=str(repo_root), task=task, tests=[tests], main_agent=main,
-                                    review_agent=reviewer, expected_branch=definition.branch,
-                                    prepare_source=True)
+        self._pending_start = {
+            "task": task, "tests": tests, "main": main, "reviewer": reviewer,
+            "repo_for_request": repo_for_request, "expected_branch": branch, "spec": self.spec,
+        }
+        self._show_confirm(resolved_name, auto, tests)
+
+    def _show_confirm(self, resolved_name: str, auto: bool, tests: str) -> None:
+        self.confirm_repo_var.set((resolved_name + "（自動決定）") if auto else resolved_name)
+        if self.spec is not None:
+            self.confirm_source_var.set("仕様ファイル")
+            criteria = list(self.spec.criteria)
+        else:
+            self.confirm_source_var.set("依頼文の文章")
+            task = self.task_text.get("1.0", "end").strip()
+            block = review.extract_acceptance(task)
+            criteria = review.criteria_from_acceptance(block) if block else []
+        self.confirm_tests_var.set(tests)
+        self.confirm_criteria_text.configure(state="normal")
+        self.confirm_criteria_text.delete("1.0", "end")
+        self.confirm_criteria_text.insert("1.0", review.format_criteria(criteria) if criteria else
+                                          "（依頼文からは抽出されませんでした。開始後にReviewer AIが作成します）")
+        self.confirm_criteria_text.configure(state="disabled")
+        self.input_frame.grid_remove()
+        self.confirm_frame.grid()
+
+    def _cancel_confirm(self) -> None:
+        self._pending_start = None
+        self.confirm_frame.grid_remove()
+        self.input_frame.grid()
+
+    def _confirm_start(self) -> None:
+        pending = self._pending_start
+        if pending is None:
+            return
+        self._pending_start = None
+        request = orch.StartRequest(
+            repo=pending["repo_for_request"], task=pending["task"], tests=[pending["tests"]],
+            main_agent=pending["main"], review_agent=pending["reviewer"],
+            expected_branch=pending["expected_branch"], prepare_source=True, spec=pending["spec"])
+        self.confirm_frame.grid_remove()
+        self.input_frame.grid()
         self.start_button.state(["disabled"])
-        self.notice_var.set(f"source repoを{definition.branch}の最新へ揃え（clean時のみ）、独立したrun workerを起動しています...")
+        branch_text = pending["expected_branch"] or "対象branch"
+        self.notice_var.set(f"source repoを{branch_text}の最新へ揃え（clean時のみ）、独立したrun workerを起動しています...")
 
         events, closed = self._events, self._closed_event
 

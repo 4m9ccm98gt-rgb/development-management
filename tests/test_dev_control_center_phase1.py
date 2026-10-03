@@ -1,5 +1,6 @@
 """Phase 1 acceptance: direct development, separated UI, build/release integrity."""
 from pathlib import Path
+import inspect
 import json
 import os
 import subprocess
@@ -7,6 +8,7 @@ import tempfile
 import time
 import tkinter as tk
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from scripts.dev_control_center import app as dcc
@@ -391,6 +393,52 @@ class UiTests(unittest.TestCase):
             self.ui.launch("build")
             self.pump_until(lambda: "未push" in self.ui.banner_var.get())
         launch.assert_not_called()
+
+
+class OrchestratorAndReportsButtonPlacementTests(unittest.TestCase):
+    """DCC Task 10: the Orchestrator/報告 buttons move beside the title (top-right), independent
+    of repo selection and of the run/build/release enable logic that only ever touches the
+    lifecycle row. Verified by source inspection, not a real Tk window: App extends ttk.Frame
+    itself (`class App(ttk.Frame)`), so -- unlike OrchestratorWindow or ReportsInboxWindow,
+    which only read tk/ttk as module-level references their own tests can swap for fakes --
+    App's widget tree can't be rebuilt against fakes once scripts.dev_control_center.app is
+    already imported."""
+
+    def test_buttons_are_built_in_their_own_frame_separate_from_the_lifecycle_row(self):
+        source = inspect.getsource(dcc.App._build)
+        top_buttons_block = source.split("top_buttons = ttk.Frame(title_bar)", 1)[1].split(
+            "lifecycle = ttk.LabelFrame", 1)[0]
+        self.assertIn("self.orchestrator_button = ttk.Button(top_buttons,", top_buttons_block)
+        self.assertIn("self.reports_button = ttk.Button(top_buttons,", top_buttons_block)
+        self.assertNotIn("self.run_button", top_buttons_block)
+        self.assertNotIn("self.build_button", top_buttons_block)
+        self.assertNotIn("self.release_button", top_buttons_block)
+
+    def test_lifecycle_enable_sweep_never_touches_the_orchestrator_or_reports_buttons(self):
+        source = inspect.getsource(dcc.App._apply_lifecycle_state) + inspect.getsource(dcc.App._set_button_states)
+        self.assertNotIn("orchestrator_button", source)
+        self.assertNotIn("reports_button", source)
+
+
+class OpenOrchestratorDefaultRepoTests(unittest.TestCase):
+    """DCC Task 10: open_orchestrator() must pass initial_repo=None (自動 stays the start
+    form's default) even though DCC always has a repo selected after a normal startup. Tk-free:
+    App.__init__ is bypassed via __new__ (it would build the real main screen with its own
+    treeview/combobox widgets, see OrchestratorAndReportsButtonPlacementTests above); only the
+    handful of attributes open_orchestrator itself reads are set, and OrchestratorWindow is
+    mocked so no real window is ever built (same technique as
+    test_dev_control_center_reports_inbox_view.AppReportsButtonTests)."""
+
+    def test_opening_orchestrator_from_a_normal_dcc_session_still_defaults_to_auto(self):
+        ui = dcc.App.__new__(dcc.App)
+        ui.orchestrator_window = None
+        ui.selection = SimpleNamespace(current=SimpleNamespace(name="app"))  # current is a read-only property
+        ui.definitions = []
+        ui.ai_drafts = {}
+        ui.master = object()
+        with patch.object(orch_view, "OrchestratorWindow") as window_cls:
+            ui.open_orchestrator()
+        self.assertIsNone(window_cls.call_args.kwargs["initial_repo"])
 
 
 if __name__ == "__main__":
