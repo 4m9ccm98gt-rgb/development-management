@@ -161,6 +161,10 @@ class RoleAndStartTests(ViewCase):
             self.window.start_run()
             info.assert_called_once()
             start.assert_not_called()
+        # "other" has no configured default test command (DCC Task 12), so an empty Tests
+        # field here still has nothing to fall back to and must still warn.
+        self.window.repo_var.set("other")
+        self.window._on_repo_changed()
         with mock.patch.object(view.messagebox, "showerror") as error, mock.patch.object(orch, "start_run") as start:
             self.window.task_text.insert("1.0", "x")
             self.window.tests_var.set("")
@@ -972,6 +976,71 @@ class StartConfirmationTests(FakeOrchestratorWindowCase):
         self.window.start_run()
         text = self.window.confirm_criteria_text.get("1.0", "end")
         self.assertIn("Reviewer AIが作成します", text)
+
+
+class TestsFieldDefaultFallbackTests(FakeOrchestratorWindowCase):
+    """DCC Task 12: an empty Tests field falls back to the resolved repo's configured default
+    test command instead of blocking with a warning; an entered value still wins. The
+    confirmation screen shows which one was actually used."""
+
+    def test_empty_tests_uses_the_resolved_repos_default_and_is_labelled_as_such(self):
+        self.window.repo_var.set("app")
+        self.window.tests_var.set("")
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(view.messagebox, "showerror") as error:
+            self.window.start_run()
+        error.assert_not_called()
+        self.assertTrue(self.confirm_visible())
+        self.assertEqual(self.window.confirm_tests_var.get(), "python -m unittest")
+        self.assertEqual(self.window.confirm_tests_source_var.get(), "リポジトリの既定")
+
+    def test_entered_tests_wins_over_the_default_and_is_labelled_as_input(self):
+        self.window.repo_var.set("app")
+        self.window.tests_var.set("python -m unittest discover -s tests -q")
+        self.window.task_text.insert("1.0", "x")
+        self.window.start_run()
+        self.assertTrue(self.confirm_visible())
+        self.assertEqual(self.window.confirm_tests_var.get(), "python -m unittest discover -s tests -q")
+        self.assertEqual(self.window.confirm_tests_source_var.get(), "入力")
+
+    def test_empty_tests_with_no_repo_default_still_warns_and_blocks(self):
+        self.window.repo_var.set("other")
+        self.window._on_repo_changed()
+        self.window.tests_var.set("")
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(view.messagebox, "showerror") as error:
+            self.window.start_run()
+        error.assert_called_once()
+        self.assertIn("Tests欄", error.call_args.args[1])
+        self.assertFalse(self.confirm_visible())
+        self.assertTrue(self.window.input_frame.grid_info())
+
+    def test_auto_mode_with_empty_tests_uses_the_auto_resolved_repos_default(self):
+        self.window.repo_var.set(view.AUTO_LABEL)
+        self.window.tests_var.set("")
+        self.window.task_text.delete("1.0", "end")
+        self.window.task_text.insert("1.0", "対象リポジトリ: app\nDo it")
+        with mock.patch.object(orch, "_registry_definitions",
+                               lambda: [SimpleNamespace(name="app"), SimpleNamespace(name="other")]), \
+             mock.patch.object(view.messagebox, "showerror") as error:
+            self.window.start_run()
+        error.assert_not_called()
+        self.assertTrue(self.confirm_visible())
+        self.assertIn("自動決定", self.window.confirm_repo_var.get())
+        self.assertEqual(self.window.confirm_tests_var.get(), "python -m unittest")
+        self.assertEqual(self.window.confirm_tests_source_var.get(), "リポジトリの既定")
+
+    def test_back_after_default_fallback_keeps_the_empty_tests_field_as_the_user_left_it(self):
+        self.window.repo_var.set("app")
+        self.window.tests_var.set("")
+        self.window.task_text.insert("1.0", "x")
+        self.window.start_run()
+        self.assertTrue(self.confirm_visible())
+        self.window._cancel_confirm()
+        self.assertFalse(self.confirm_visible())
+        self.assertTrue(self.window.input_frame.grid_info())
+        self.assertEqual(self.window.tests_var.get(), "")
+        self.assertEqual(self.window.repo_var.get(), "app")
 
 
 class RepoMismatchAndUnresolvedTests(FakeOrchestratorWindowCase):

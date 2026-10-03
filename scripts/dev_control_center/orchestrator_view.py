@@ -258,6 +258,7 @@ class OrchestratorWindow:
         self.confirm_repo_var = tk.StringVar(value="-")
         self.confirm_source_var = tk.StringVar(value="-")
         self.confirm_tests_var = tk.StringVar(value="-")
+        self.confirm_tests_source_var = tk.StringVar(value="-")
         self.usage_vars = {name: tk.StringVar(value="取得不能（未取得）") for name in ("claude", "codex")}
         self.usage_role_vars = {name: tk.StringVar(value="") for name in ("claude", "codex")}
 
@@ -358,17 +359,17 @@ class OrchestratorWindow:
             row=0, column=0, columnspan=2, sticky="w")
         for crow, (label, var) in enumerate([
             ("対象リポジトリ", self.confirm_repo_var), ("完了条件の出どころ", self.confirm_source_var),
-            ("テストコマンド", self.confirm_tests_var),
+            ("テストコマンド", self.confirm_tests_var), ("テストコマンドの由来", self.confirm_tests_source_var),
         ], start=1):
             ttk.Label(confirm, text=label, width=14).grid(row=crow, column=0, sticky="nw", pady=(4, 0))
             ttk.Label(confirm, textvariable=var, wraplength=760, justify="left").grid(
                 row=crow, column=1, columnspan=3, sticky="w", pady=(4, 0))
-        ttk.Label(confirm, text="完了条件の一覧", width=14).grid(row=4, column=0, sticky="nw", pady=(4, 0))
+        ttk.Label(confirm, text="完了条件の一覧", width=14).grid(row=5, column=0, sticky="nw", pady=(4, 0))
         self.confirm_criteria_text = tk.Text(confirm, height=8, wrap="word", state="disabled")
         configure_dark_text(self.confirm_criteria_text)
-        self.confirm_criteria_text.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(4, 0))
+        self.confirm_criteria_text.grid(row=5, column=1, columnspan=3, sticky="ew", pady=(4, 0))
         confirm_buttons = ttk.Frame(confirm)
-        confirm_buttons.grid(row=5, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        confirm_buttons.grid(row=6, column=0, columnspan=4, sticky="w", pady=(8, 0))
         self.confirm_start_button = ttk.Button(confirm_buttons, text="開始", command=self._confirm_start)
         self.confirm_start_button.pack(side="left", padx=(0, 6))
         self.confirm_back_button = ttk.Button(confirm_buttons, text="戻る", command=self._cancel_confirm)
@@ -584,9 +585,6 @@ class OrchestratorWindow:
         if not task:
             messagebox.showinfo("AI Orchestrator", "Taskを入力してください。", parent=self.window)
             return
-        if not tests:
-            messagebox.showerror("AI Orchestrator", "独立Testsコマンドが未設定です。Tests欄へ入力してください。", parent=self.window)
-            return
         auto = name == AUTO_LABEL
         if auto:
             repo_for_request = None
@@ -607,14 +605,23 @@ class OrchestratorWindow:
         resolved_name = resolved.name
         resolved_definition = next((d for d in self.definitions if d.name == resolved_name), None)
         branch = getattr(resolved_definition, "branch", None)
+        if tests:
+            tests_source = "入力"
+        else:
+            tests = getattr(resolved_definition, "initial_test", "") if resolved_definition else ""
+            if not tests:
+                messagebox.showerror(
+                    "AI Orchestrator", "独立Testsコマンドが未設定です。Tests欄へ入力してください。", parent=self.window)
+                return
+            tests_source = "リポジトリの既定"
         main, reviewer = self._names()
         self._pending_start = {
             "task": task, "tests": tests, "main": main, "reviewer": reviewer,
             "repo_for_request": repo_for_request, "expected_branch": branch, "spec": self.spec,
         }
-        self._show_confirm(resolved_name, auto, tests)
+        self._show_confirm(resolved_name, auto, tests, tests_source)
 
-    def _show_confirm(self, resolved_name: str, auto: bool, tests: str) -> None:
+    def _show_confirm(self, resolved_name: str, auto: bool, tests: str, tests_source: str) -> None:
         self.confirm_repo_var.set((resolved_name + "（自動決定）") if auto else resolved_name)
         if self.spec is not None:
             self.confirm_source_var.set("仕様ファイル")
@@ -625,6 +632,7 @@ class OrchestratorWindow:
             block = review.extract_acceptance(task)
             criteria = review.criteria_from_acceptance(block) if block else []
         self.confirm_tests_var.set(tests)
+        self.confirm_tests_source_var.set(tests_source)
         self.confirm_criteria_text.configure(state="normal")
         self.confirm_criteria_text.delete("1.0", "end")
         self.confirm_criteria_text.insert("1.0", review.format_criteria(criteria) if criteria else
