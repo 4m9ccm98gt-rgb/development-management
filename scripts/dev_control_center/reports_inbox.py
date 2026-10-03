@@ -24,6 +24,8 @@ import time
 import tomllib
 from typing import Iterable
 
+from tools.ai_orchestrator import taskspec
+
 REGISTRY = Path(__file__).resolve().parents[1] / "dev_control_center_repos.toml"
 
 MAX_REPORT_BYTES = 64 * 1024
@@ -583,3 +585,110 @@ def build_investigate_draft(report: Report) -> str:
         + _quote_block(report)
         + "\n"
     )
+
+
+# --------------------------------------------------------------------------- Orchestrator spec file (DCC Task 11)
+
+class SpecCreateError(ValueError):
+    """Japanese-only message shown to the user; never includes a path or raw exception text."""
+
+
+SPEC_CRITERIA_TEMPLATE = (
+    "報告された不具合が起きなくなる（報告にある手順で確認できる）",
+    "関連する既存の動作が変わらない",
+    "既存のテストが成功し、この修正に対するテストが追加されている",
+)
+
+SPEC_SUMMARY_BODY_CHARS = 400
+
+
+def spec_summary_quote(report: Report) -> str:
+    """Read-only summary for the top of the acceptance-criteria edit dialog: kind, app, title and
+    the first SPEC_SUMMARY_BODY_CHARS characters of the body, sanitized for display only. Never
+    used to build the spec file; only what the human types into the criteria box goes into it."""
+    body_head = sanitize_text(report.body)[:SPEC_SUMMARY_BODY_CHARS]
+    return (
+        f"種別: {report.kind_label}\n"
+        f"アプリ: {report.app_display_name}\n"
+        f"タイトル: {sanitize_text(report.title)}\n"
+        f"本文（先頭{SPEC_SUMMARY_BODY_CHARS}文字）:\n{body_head}"
+    )
+
+
+def parse_criteria_lines(text: str) -> list[str]:
+    """One criterion per non-blank line; blank lines (after stripping) are dropped."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def validate_criteria_lines(lines: list[str]) -> str | None:
+    """None when `lines` satisfies taskspec's fixed-format limits; else a Japanese reason to show
+    next to the edit box (same limits taskspec.parse_spec_text itself enforces)."""
+    if not lines:
+        return "受入条件を1件以上入力してください。"
+    if len(lines) > taskspec.MAX_SPEC_CRITERIA:
+        return f"受入条件は{taskspec.MAX_SPEC_CRITERIA}件までにしてください（現在{len(lines)}件）。"
+    if any(len(line) > taskspec.MAX_CRITERION_CHARS for line in lines):
+        return f"1件の受入条件が長すぎます（{taskspec.MAX_CRITERION_CHARS}文字まで）。"
+    return None
+
+
+def specs_root() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ShizenDev" / "DCC" / "specs"
+
+
+def spec_file_name(report_identity: tuple[str, str]) -> str:
+    """report_identity is (app_key, report_id), both untrusted free-form text: hashed, never used
+    as a path component or substring of the file name."""
+    app_key, report_id = report_identity
+    digest = hashlib.sha256(f"{app_key}\n{report_id}".encode("utf-8")).hexdigest()
+    return f"{digest}.json"
+
+
+def _write_new_file_exclusive(directory: Path, base_name: str, text: str) -> Path:
+    """Write `text` to a new file under `directory`, never overwriting an existing file: if
+    `base_name` is already taken, a numbered sibling (`-2`, `-3`, ...) is tried instead. UTF-8,
+    no BOM."""
+    directory.mkdir(parents=True, exist_ok=True)
+    stem = Path(base_name).stem
+    suffix = Path(base_name).suffix
+    name = base_name
+    counter = 2
+    while True:
+        path = directory / name
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            name = f"{stem}-{counter}{suffix}"
+            counter += 1
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+
+def create_spec_file(criteria_lines: list[str], target_repo: str, report_identity: tuple[str, str],
+                      *, specs_dir: Path | None = None) -> Path:
+    """Build and write a fixed-format spec file (taskspec.py) from human-confirmed criteria lines
+    only — report content never reaches it. Validates with taskspec.parse_spec_text itself (the
+    same function the Orchestrator uses to load the file) before writing, so a written file is
+    always loadable. Raises SpecCreateError (Japanese message only) on any failure; never raises
+    a bare OSError or taskspec.SpecError."""
+    reason = validate_criteria_lines(criteria_lines)
+    if reason:
+        raise SpecCreateError(reason)
+    record = {
+        "schema_version": 1,
+        "criteria": [{"text": line} for line in criteria_lines],
+        "target_repo": target_repo,
+    }
+    text = json.dumps(record, ensure_ascii=False, indent=2)
+    try:
+        taskspec.parse_spec_text(text)
+    except taskspec.SpecError:
+        raise SpecCreateError("受入条件を仕様として確認できませんでした。内容を見直してください。") from None
+    directory = specs_dir if specs_dir is not None else specs_root()
+    name = spec_file_name(report_identity)
+    try:
+        return _write_new_file_exclusive(directory, name, text)
+    except OSError:
+        raise SpecCreateError("仕様ファイルを保存できませんでした。") from None

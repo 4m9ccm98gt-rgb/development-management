@@ -806,6 +806,105 @@ class ConnectionStatusTextTests(unittest.TestCase):
         self.assertEqual(text, "接続できました（\\\\server\\share）")
 
 
+class SpecCreationTests(unittest.TestCase):
+    """DCC Task 11: pure spec-file-creation logic (no Tk). The dialog (reports_spec_dialog.py)
+    is a thin client of these functions; see test_dev_control_center_reports_spec_dialog.py for
+    the widget-level coverage."""
+
+    def make_report(self, **overrides) -> inbox.Report:
+        fields = dict(GOOD_FIELDS)
+        fields.update(overrides)
+        return inbox.Report(
+            app_key="next-day-setup", app_display_name="夕食料飲システム", file_name="r.json",
+            schema_version=fields["schema_version"], report_id=fields["report_id"],
+            created_at=fields["created_at"], kind=fields["kind"], severity=fields["severity"],
+            title=fields["title"], body=fields["body"], reporter=fields["reporter"],
+            app_id=fields["app_id"], display_name=fields["display_name"], release_id=fields["release_id"],
+            git_commit=fields["git_commit"], version_source=fields["version_source"], pc_name=fields["pc_name"],
+        )
+
+    def test_template_has_between_one_and_twenty_lines(self):
+        self.assertGreaterEqual(len(inbox.SPEC_CRITERIA_TEMPLATE), 1)
+        self.assertLessEqual(len(inbox.SPEC_CRITERIA_TEMPLATE), inbox.taskspec.MAX_SPEC_CRITERIA)
+
+    def test_parse_criteria_lines_drops_blank_lines(self):
+        lines = inbox.parse_criteria_lines("a\n\n  b  \n\n\nc\n")
+        self.assertEqual(lines, ["a", "b", "c"])
+
+    def test_validate_criteria_lines_rejects_zero_lines(self):
+        self.assertIsNotNone(inbox.validate_criteria_lines([]))
+
+    def test_validate_criteria_lines_rejects_too_many_lines(self):
+        reason = inbox.validate_criteria_lines([f"c{i}" for i in range(inbox.taskspec.MAX_SPEC_CRITERIA + 1)])
+        self.assertIsNotNone(reason)
+        self.assertIn("21", reason)
+
+    def test_validate_criteria_lines_rejects_a_too_long_line(self):
+        reason = inbox.validate_criteria_lines(["x" * (inbox.taskspec.MAX_CRITERION_CHARS + 1)])
+        self.assertIsNotNone(reason)
+
+    def test_validate_criteria_lines_accepts_the_template(self):
+        self.assertIsNone(inbox.validate_criteria_lines(list(inbox.SPEC_CRITERIA_TEMPLATE)))
+
+    def test_spec_summary_quote_shows_fields_and_truncates_the_body_but_excludes_it_from_the_spec(self):
+        report = self.make_report(body="特徴的な本文マーカー" + "x" * 1000, title="タイトルX")
+        summary = inbox.spec_summary_quote(report)
+        self.assertIn("タイトルX", summary)
+        self.assertIn("特徴的な本文マーカー", summary)
+        self.assertLessEqual(len(summary), 600)
+
+    def test_create_spec_file_writes_a_loadable_utf8_no_bom_file_without_report_body_text(self):
+        report = self.make_report(body="唯一無二のマーカー文字列XYZ123", report_id="r-abc")
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp)
+            path = inbox.create_spec_file(
+                ["条件1", "条件2"], "next-day-setup", report.identity, specs_dir=specs_dir)
+            self.assertTrue(path.is_relative_to(specs_dir))
+            raw = path.read_bytes()
+            self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))  # no BOM
+            text = raw.decode("utf-8")
+            self.assertNotIn("唯一無二のマーカー文字列XYZ123", text)
+            self.assertNotIn("r-abc", text)
+            spec = inbox.taskspec.load_spec_file(path)
+            self.assertEqual([c["text"] for c in spec.criteria], ["条件1", "条件2"])
+            self.assertEqual(spec.target_repo, "next-day-setup")
+
+    def test_create_spec_file_rejects_invalid_criteria_without_writing(self):
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp)
+            with self.assertRaises(inbox.SpecCreateError):
+                inbox.create_spec_file([], "next-day-setup", report.identity, specs_dir=specs_dir)
+            self.assertEqual(list(specs_dir.iterdir()), [])
+
+    def test_create_spec_file_never_overwrites_an_existing_file(self):
+        report = self.make_report(report_id="same-id")
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp)
+            first = inbox.create_spec_file(["条件A"], "next-day-setup", report.identity, specs_dir=specs_dir)
+            second = inbox.create_spec_file(["条件B"], "next-day-setup", report.identity, specs_dir=specs_dir)
+            self.assertNotEqual(first, second)
+            self.assertEqual(inbox.taskspec.load_spec_file(first).criteria[0]["text"], "条件A")
+            self.assertEqual(inbox.taskspec.load_spec_file(second).criteria[0]["text"], "条件B")
+
+    def test_spec_file_name_never_contains_the_raw_report_id_or_app_key(self):
+        name = inbox.spec_file_name(("next-day-setup", "../../etc/passwd"))
+        self.assertNotIn("next-day-setup", name)
+        self.assertNotIn("passwd", name)
+        self.assertNotIn("..", name)
+
+    def test_create_spec_file_reports_a_japanese_message_without_path_on_write_failure(self):
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp)
+            with mock.patch.object(inbox.os, "open", side_effect=OSError("disk full")):
+                with self.assertRaises(inbox.SpecCreateError) as ctx:
+                    inbox.create_spec_file(["条件1"], "next-day-setup", report.identity, specs_dir=specs_dir)
+            message = str(ctx.exception)
+            self.assertNotIn(str(specs_dir), message)
+            self.assertNotIn("disk full", message)
+
+
 class ConfiguredAppsBackwardCompatTests(unittest.TestCase):
     """The legacy configured_apps() wrapper must keep resolving through the same local-override
     rule as load_reports_config, for any caller that still uses the older 3-tuple API."""

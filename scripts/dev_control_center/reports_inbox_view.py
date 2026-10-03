@@ -68,7 +68,8 @@ class ReportsInboxWindow:
     def __init__(self, master: tk.Misc, *, configured_apps: Callable[[], list] | None = None,
                  scan_fn: Callable[[list], list] | None = None,
                  copy_to_clipboard: Callable[[str], None] | None = None,
-                 reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None) -> None:
+                 reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None,
+                 on_spec_ready: Callable[[object], None] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         if reports_config_fn is not None:
@@ -85,6 +86,7 @@ class ReportsInboxWindow:
             self._reports_config_fn = inbox.load_reports_config
         self._scan_fn = scan_fn or inbox.scan_all
         self._copy_to_clipboard = copy_to_clipboard
+        self._on_spec_ready = on_spec_ready
         self._source_by_key: dict[str, str] = {}
         self._shared_root_by_key: dict[str, str] = {}
         self._events: queue.Queue = queue.Queue()
@@ -177,6 +179,13 @@ class ReportsInboxWindow:
             button.pack(side="left", padx=(0, 6))
             _set_enabled(button, False)
             self.decision_buttons[key] = button
+        # DCC Task 11: opens an acceptance-criteria edit dialog that, on confirm, builds a spec
+        # file and hands it to the Orchestrator start form. Separate widget/command from
+        # decision_buttons["handle"] above (which only records a local decision + copyable draft,
+        # Task 8a) — neither changes the other's behaviour.
+        self.handle_spec_button = ttk.Button(decision_frame, text="対応する", command=self._open_handle_spec_dialog)
+        self.handle_spec_button.pack(side="left", padx=(12, 0))
+        _set_enabled(self.handle_spec_button, False)
 
         ttk.Label(right, text="依頼文の下書き（コピーして編集してください）").grid(row=3, column=0, sticky="w", pady=(8, 0))
         self.draft_text = tk.Text(right, height=10, wrap="word")
@@ -352,12 +361,14 @@ class ReportsInboxWindow:
         self._set_draft("")
         for button in self.decision_buttons.values():
             _set_enabled(button, True)
+        _set_enabled(self.handle_spec_button, True)
 
     def _clear_detail(self) -> None:
         self._set_readonly_text(self.detail_text, "")
         self._set_draft("")
         for button in self.decision_buttons.values():
             _set_enabled(button, False)
+        _set_enabled(self.handle_spec_button, False)
 
     def _selected_row(self) -> inbox.ReportRow | None:
         if self.selected_identity is None:
@@ -380,6 +391,18 @@ class ReportsInboxWindow:
         else:
             draft = ""
         self._set_draft(draft)
+
+    def _open_handle_spec_dialog(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        from .reports_spec_dialog import ReportSpecDialog
+
+        ReportSpecDialog(self.window, row.report, target_repo=row.report.app_key, on_created=self._on_spec_created)
+
+    def _on_spec_created(self, path) -> None:
+        if self._on_spec_ready is not None:
+            self._on_spec_ready(path)
 
     def _set_draft(self, text: str) -> None:
         """text is Task 8a's full, untruncated draft. It is kept in self._draft_full for

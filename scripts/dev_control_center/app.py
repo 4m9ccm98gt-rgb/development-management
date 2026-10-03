@@ -510,7 +510,26 @@ class App(ttk.Frame):
         if window is not None and window.exists():
             window.focus()
             return
-        self.reports_window = ReportsInboxWindow(self.master)
+        self.reports_window = ReportsInboxWindow(self.master, on_spec_ready=self._send_spec_to_orchestrator)
+
+    def _send_spec_to_orchestrator(self, spec_path) -> None:
+        """DCC Task 11: open (or focus, never duplicate) the Orchestrator start form and load the
+        freshly created spec file into it. The human still presses 開始 themselves (Task 10's own
+        confirmation flow); this never starts a run."""
+        from .orchestrator_view import AUTO_LABEL, OrchestratorWindow
+
+        window = self.orchestrator_window
+        if window is None or not window.exists():
+            window = OrchestratorWindow(
+                self.master, self.definitions, initial_repo=None,
+                drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT)
+            self.orchestrator_window = window
+        else:
+            # An existing window may already have a specific repo selected (Task 10 default);
+            # a spec handed off from the inbox should still start from 自動, same as a fresh window.
+            window.select_repo(AUTO_LABEL)
+        window.focus()
+        window.load_spec_file(spec_path)
 
     def _repo_busy(self) -> bool:
         if self.active_process is not None:

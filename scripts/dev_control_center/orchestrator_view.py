@@ -554,6 +554,17 @@ class OrchestratorWindow:
         self.spec_var.set(path.name)
         self.spec_notice_var.set(f"完了条件 {len(spec.criteria)} 件を読み込みました。")
 
+    def load_spec_file(self, path: Path) -> None:
+        """Public entry point for another DCC window to pre-fill the spec file field (DCC Task
+        11's reports-inbox hand-off); same validation/display path as choosing it in the file
+        dialog. Never starts a run by itself.
+
+        Drops any confirmation that was waiting on a previous spec first (review fix — otherwise
+        a stale `_pending_start` could still be started with the old spec after a new one was
+        handed off), so the human always sees the start form with the newly loaded spec."""
+        self._cancel_confirm()
+        self._load_spec_file(Path(path))
+
     def clear_spec_file(self) -> None:
         self.spec = None
         self.spec_path = None

@@ -1117,6 +1117,58 @@ class SpecFileTests(FakeOrchestratorWindowCase):
         self.assertFalse(self.window.confirm_frame.grid_info())
 
 
+class SpecHandoffResetsPendingConfirmTests(FakeOrchestratorWindowCase):
+    """DCC Task 11 review fix: handing a new spec file to an existing Orchestrator window (via
+    the public load_spec_file(), as app.py's reports-inbox hand-off calls it) must drop any
+    confirmation that was still waiting on the previous spec -- otherwise pressing the confirm
+    screen's 開始 afterwards would start a run against the stale spec instead of the new one."""
+
+    def write_spec(self, text: str) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "spec.json"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_loading_a_new_spec_while_confirming_returns_to_the_form_and_drops_the_old_pending(self):
+        spec_a = self.write_spec('{"criteria": [{"text": "A"}]}')
+        self.window.load_spec_file(spec_a)
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        with mock.patch.object(orch, "start_run") as start:
+            self.window.start_run()
+            self.assertTrue(self.confirm_visible())
+            self.assertIsNotNone(self.window._pending_start)
+
+            spec_b = self.write_spec('{"criteria": [{"text": "B"}]}')
+            self.window.load_spec_file(spec_b)
+
+            self.assertFalse(self.confirm_visible())
+            self.assertTrue(self.window.input_frame.grid_info())
+            self.assertIsNone(self.window._pending_start)
+            start.assert_not_called()
+        self.assertEqual(self.window.spec.criteria[0]["text"], "B")
+
+    def test_the_next_manual_confirm_after_a_handoff_uses_the_new_spec(self):
+        spec_a = self.write_spec('{"criteria": [{"text": "A"}]}')
+        self.window.load_spec_file(spec_a)
+        self.window.repo_var.set("app")
+        self.window.task_text.insert("1.0", "x")
+        self.window.start_run()  # confirm pending on spec A
+
+        spec_b = self.write_spec('{"criteria": [{"text": "B"}]}')
+        self.window.load_spec_file(spec_b)  # drops the pending confirm on A
+
+        self.window.repo_var.set("app")
+        self.window.start_run()
+        self.assertTrue(self.confirm_visible())
+        captured = []
+        with mock.patch.object(orch, "start_run", side_effect=lambda r, **k: captured.append(r) or Path("C:/runs/r1")):
+            self.window._confirm_start()
+            self.pump(lambda: bool(captured))
+        self.assertEqual(captured[0].spec.criteria[0]["text"], "B")
+
+
 class CharacterMoodTests(ViewCase):
     def test_character_follows_the_selected_run(self):
         character = self.window.character

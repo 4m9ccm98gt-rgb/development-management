@@ -397,15 +397,15 @@ class ReportsInboxWindowCase(unittest.TestCase):
         if self.window is not None and self.window.exists():
             self.window.close()
 
-    def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None):
+    def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None, on_spec_ready=None):
         scan_fn = scan_fn or inbox.scan_all
         if reports_config_fn is not None:
             self.window = view.ReportsInboxWindow(self.master, scan_fn=scan_fn, copy_to_clipboard=clipboard,
-                                                  reports_config_fn=reports_config_fn)
+                                                  reports_config_fn=reports_config_fn, on_spec_ready=on_spec_ready)
             return self.window
         apps = apps if apps is not None else [("app-a", "アプリA", "configured")]
         self.window = view.ReportsInboxWindow(self.master, configured_apps=lambda: apps, scan_fn=scan_fn,
-                                              copy_to_clipboard=clipboard)
+                                              copy_to_clipboard=clipboard, on_spec_ready=on_spec_ready)
         return self.window
 
     def pump(self, condition, timeout=5):
@@ -684,6 +684,90 @@ class DecisionAndDraftTests(ReportsInboxWindowCase):
             self.assertEqual(copied, [full_draft])
 
 
+class _FakeReportSpecDialog:
+    """Stands in for reports_spec_dialog.ReportSpecDialog: records how it was constructed so the
+    wiring (selected report, target_repo, on_created callback) is an actual assertion, without
+    ever building a real dialog window."""
+
+    instances: list["_FakeReportSpecDialog"] = []
+
+    def __init__(self, master, report, *, target_repo, on_created=None):
+        self.master = master
+        self.report = report
+        self.target_repo = target_repo
+        self.on_created = on_created
+        _FakeReportSpecDialog.instances.append(self)
+
+
+class HandleSpecButtonTests(ReportsInboxWindowCase):
+    """DCC Task 11: the new 対応する button (separate from decision_buttons["handle"]) opens an
+    acceptance-criteria edit dialog for the selected report, and hands a created spec file path
+    to the on_spec_ready callback (app.py wires this to opening/focusing the Orchestrator)."""
+
+    def setUp(self):
+        super().setUp()
+        _FakeReportSpecDialog.instances.clear()
+        patcher = mock.patch("scripts.dev_control_center.reports_spec_dialog.ReportSpecDialog",
+                              _FakeReportSpecDialog)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_button_is_disabled_until_a_report_is_selected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            window = self.make_window(apps=[("app-a", "アプリA", str(share))])
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertTrue(window.handle_spec_button.instate(["disabled"]))
+
+            window._on_report_selected(0)
+            self.assertTrue(window.handle_spec_button.instate(["!disabled"]))
+
+    def test_pressing_the_button_with_no_selection_opens_nothing(self):
+        window = self.make_window()
+        window._open_handle_spec_dialog()
+        self.assertEqual(_FakeReportSpecDialog.instances, [])
+
+    def test_pressing_the_button_opens_the_dialog_for_the_selected_report_with_its_app_key_as_target_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            window = self.make_window(apps=[("next-day-setup", "夕食料飲システム", str(share))])
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            window._on_report_selected(0)
+
+            window._open_handle_spec_dialog()
+            self.assertEqual(len(_FakeReportSpecDialog.instances), 1)
+            created = _FakeReportSpecDialog.instances[0]
+            self.assertEqual(created.report.report_id, "r1")
+            self.assertEqual(created.target_repo, "next-day-setup")
+
+    def test_a_created_spec_path_reaches_the_on_spec_ready_callback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            received = []
+            window = self.make_window(apps=[("app-a", "アプリA", str(share))], on_spec_ready=received.append)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            window._on_report_selected(0)
+            window._open_handle_spec_dialog()
+            dialog = _FakeReportSpecDialog.instances[0]
+
+            dialog.on_created(Path("C:/fake/spec.json"))
+            self.assertEqual(received, [Path("C:/fake/spec.json")])
+
+    def test_existing_handle_decision_button_is_unaffected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            window = self.make_window(apps=[("app-a", "アプリA", str(share))])
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            window._on_report_selected(0)
+            window._decide("handle")
+            self.assertEqual(inbox.load_decision("app-a", "r1").decision, "handle")
+            self.assertEqual(_FakeReportSpecDialog.instances, [])
+
+
 class _FakeInboxWindow:
     """Stands in for reports_inbox_view.ReportsInboxWindow in the entrance test: it must never
     construct a real ReportsInboxWindow, since that would read the *real*
@@ -767,6 +851,106 @@ class AppReportsButtonTests(unittest.TestCase):
         self.assertTrue(self.app._closed)
         self.assertFalse(window.exists())  # the inbox is closed along with DCC
         self.assertTrue(self.destroyed)
+
+
+class _FakeOrchestratorWindowForHandoff:
+    """Stands in for orchestrator_view.OrchestratorWindow in the spec-handoff test: records
+    construction, focus() calls, select_repo() calls and load_spec_file() calls, so
+    "opened/focused exactly once, never duplicated, start never called automatically, repo reset
+    to 自動 on reuse" are actual assertions."""
+
+    instances: list["_FakeOrchestratorWindowForHandoff"] = []
+
+    def __init__(self, master, definitions, *, initial_repo, drafts, on_apply, repos_root, **_kwargs):
+        self.master = master
+        self._exists = True
+        self.focus_calls = 0
+        self.loaded_specs: list = []
+        self.selected_repos: list = []
+        _FakeOrchestratorWindowForHandoff.instances.append(self)
+
+    def exists(self) -> bool:
+        return self._exists
+
+    def focus(self) -> None:
+        self.focus_calls += 1
+
+    def select_repo(self, name) -> None:
+        self.selected_repos.append(name)
+
+    def load_spec_file(self, path) -> None:
+        self.loaded_specs.append(path)
+
+
+class AppSpecHandoffTests(unittest.TestCase):
+    """DCC Task 11: a spec file created from the inbox is handed to the Orchestrator start form
+    by opening (or focusing, never duplicating) it and loading the spec path — never pressing
+    開始 itself. App.__init__ is bypassed via __new__ (same technique as AppReportsButtonTests
+    above); OrchestratorWindow is mocked so no real window, run, or orchestrator.start_run call
+    can ever happen here."""
+
+    def setUp(self):
+        _FakeOrchestratorWindowForHandoff.instances.clear()
+        patcher = mock.patch("scripts.dev_control_center.orchestrator_view.OrchestratorWindow",
+                              _FakeOrchestratorWindowForHandoff)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        start_patch = mock.patch("tools.ai_orchestrator.orchestrator.start_run")
+        self.start_run = start_patch.start()
+        self.addCleanup(start_patch.stop)
+        self.app = dcc.App.__new__(dcc.App)
+        self.app.master = object()
+        self.app.orchestrator_window = None
+        self.app.definitions = []
+        self.app.ai_drafts = {}
+        self.app.apply_ai_candidate = lambda *a, **k: None
+
+    def test_opens_a_new_orchestrator_window_and_loads_the_spec_path(self):
+        path = Path("C:/fake/spec.json")
+        self.app._send_spec_to_orchestrator(path)
+        self.assertEqual(len(_FakeOrchestratorWindowForHandoff.instances), 1)
+        window = _FakeOrchestratorWindowForHandoff.instances[0]
+        self.assertIs(self.app.orchestrator_window, window)
+        self.assertEqual(window.focus_calls, 1)
+        self.assertEqual(window.loaded_specs, [path])
+        self.start_run.assert_not_called()
+
+    def test_an_already_open_window_is_focused_and_reloaded_not_duplicated(self):
+        first_path = Path("C:/fake/first.json")
+        self.app._send_spec_to_orchestrator(first_path)
+        window = self.app.orchestrator_window
+
+        second_path = Path("C:/fake/second.json")
+        self.app._send_spec_to_orchestrator(second_path)
+
+        self.assertEqual(len(_FakeOrchestratorWindowForHandoff.instances), 1)
+        self.assertIs(self.app.orchestrator_window, window)
+        self.assertEqual(window.focus_calls, 2)
+        self.assertEqual(window.loaded_specs, [first_path, second_path])
+        self.start_run.assert_not_called()
+
+    def test_reusing_an_existing_window_resets_its_repo_selection_to_auto(self):
+        """Review fix: a window reused from the inbox must reset repo selection to 自動 even if
+        the human had already picked a specific repo in it (Task 10's own default), otherwise
+        the handed-off spec would be started against the wrong repo."""
+        from scripts.dev_control_center.orchestrator_view import AUTO_LABEL
+
+        self.app._send_spec_to_orchestrator(Path("C:/fake/first.json"))
+        window = self.app.orchestrator_window
+        self.assertEqual(window.selected_repos, [])  # fresh window: initial_repo=None already defaults to 自動
+
+        self.app._send_spec_to_orchestrator(Path("C:/fake/second.json"))
+        self.assertEqual(window.selected_repos, [AUTO_LABEL])
+
+    def test_a_closed_window_is_replaced_not_reused(self):
+        self.app._send_spec_to_orchestrator(Path("C:/fake/first.json"))
+        old_window = self.app.orchestrator_window
+        old_window._exists = False
+
+        self.app._send_spec_to_orchestrator(Path("C:/fake/second.json"))
+        self.assertEqual(len(_FakeOrchestratorWindowForHandoff.instances), 2)
+        self.assertIsNot(self.app.orchestrator_window, old_window)
+        self.start_run.assert_not_called()
 
 
 if __name__ == "__main__":
