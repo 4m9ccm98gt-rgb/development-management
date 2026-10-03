@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 
 from .common import (
     CommandResult, OrchestratorError, ProcessHooks, StopRequested, resolved_command, run_streaming,
@@ -33,6 +34,7 @@ ERR_TRANSIENT = "transient"
 ERR_TIMEOUT = "timeout"
 ERR_PROCESS = "process"
 ERR_PROTOCOL = "protocol"
+ERR_TOKEN_LIMIT = "token_limit"  # caller-supplied run_review(max_tokens=...) was exceeded mid-run
 
 # Non-interactive acceptEdits denies Bash unless allowed. Inspection, tests and
 # interpreters only; git write commands are deliberately absent.
@@ -148,6 +150,41 @@ def _short(text: object, limit: int = 160) -> str:
 _SESSION_UUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 
 
+def _claude_turn_tokens(line: str) -> tuple[str | None, int] | None:
+    """Tokens spent by the single assistant turn reported in one stdout line of Claude's
+    stream-json output, paired with that turn's message id (for de-duplicating a turn the
+    stream reports more than once), or None if `line` is not a top-level assistant message
+    carrying usage. The token amount is per-turn, not a running total -- callers must
+    accumulate it across turns themselves to track the whole run's spend while the child is
+    still streaming."""
+    try:
+        item = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(item, dict) or item.get("type") != "assistant" or item.get("parent_tool_use_id"):
+        return None
+    message = item.get("message") or {}
+    usage = message.get("usage") or {}
+    total = sum(int(usage.get(k) or 0) for k in (
+        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+    if not total:
+        return None
+    message_id = message.get("id")
+    return (message_id if isinstance(message_id, str) and message_id else None, total)
+
+
+class _OrStop:
+    """`.is_set()` true once either wrapped event is -- lets a caller-supplied stop and an
+    internally-detected budget overrun share one `ProcessHooks.stop` slot."""
+
+    def __init__(self, primary: threading.Event | None, secondary: threading.Event) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    def is_set(self) -> bool:
+        return bool(self._primary and self._primary.is_set()) or self._secondary.is_set()
+
+
 class Provider:
     name = ""
     display = ""
@@ -166,7 +203,8 @@ class Provider:
                  session_id: str | None = None) -> AgentResult:
         raise NotImplementedError
 
-    def run_review(self, worktree: Path, prompt: str, *, timeout: int, hooks: ProcessHooks) -> AgentResult:
+    def run_review(self, worktree: Path, prompt: str, *, timeout: int, hooks: ProcessHooks,
+                   max_tokens: int | None = None) -> AgentResult:
         raise NotImplementedError
 
     def preflight(self) -> None:
@@ -206,25 +244,47 @@ class ClaudeProvider(Provider):
     def run_main(self, worktree, prompt, *, timeout, hooks, session_id=None):
         return self._call("main", self._main_command(session_id), worktree, prompt, timeout, hooks)
 
-    def run_review(self, worktree, prompt, *, timeout, hooks):
-        return self._call("review", self._review_command(), worktree, prompt, timeout, hooks)
+    def run_review(self, worktree, prompt, *, timeout, hooks, max_tokens: int | None = None):
+        return self._call("review", self._review_command(), worktree, prompt, timeout, hooks,
+                           max_tokens=max_tokens)
 
-    def _call(self, role, command, worktree, prompt, timeout, hooks) -> AgentResult:
+    def _call(self, role, command, worktree, prompt, timeout, hooks, max_tokens: int | None = None) -> AgentResult:
         events: list[str] = []
         live = hooks.on_line
+        budget_exceeded = threading.Event()
+        running_tokens = {"total": 0}
+        counted_message_ids: set[str] = set()
 
         def relay(stream: str, line: str) -> None:
+            if max_tokens is not None and stream == "stdout":
+                parsed = _claude_turn_tokens(line)
+                if parsed is not None:
+                    message_id, tokens = parsed
+                    # A message id already counted is a duplicate notification of the same
+                    # turn (e.g. a relay retry), not a new turn's spend -- skip it. A missing
+                    # id can't be deduplicated, so it's always counted.
+                    if message_id is None or message_id not in counted_message_ids:
+                        if message_id is not None:
+                            counted_message_ids.add(message_id)
+                        running_tokens["total"] += tokens
+                        if running_tokens["total"] > max_tokens:
+                            budget_exceeded.set()
             summary = self._summarize_line(line) if stream == "stdout" else _short(line)
             if summary:
                 events.append(summary)
                 if live:
                     live(stream, summary)
 
-        proc_hooks = ProcessHooks(on_line=relay, stop=hooks.stop, registry=hooks.registry, label=f"claude-{role}")
+        stop = _OrStop(hooks.stop, budget_exceeded) if max_tokens is not None else hooks.stop
+        proc_hooks = ProcessHooks(on_line=relay, stop=stop, registry=hooks.registry, label=f"claude-{role}")
         try:
             result = run_streaming(command, cwd=worktree, input_text=prompt, timeout=timeout,
                                    env=self.child_env(role), hooks=proc_hooks)
         except StopRequested:
+            if max_tokens is not None and budget_exceeded.is_set():
+                return AgentResult(self.name, role, False, error_kind=ERR_TOKEN_LIMIT,
+                                    error_detail="token budget exceeded mid-run",
+                                    tokens=running_tokens["total"], events=events)
             raise
         except OrchestratorError as exc:
             kind = ERR_TIMEOUT if exc.code == "COMMAND_TIMEOUT" else ERR_PROCESS

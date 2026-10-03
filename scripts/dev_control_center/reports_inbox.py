@@ -531,9 +531,11 @@ UNTRUSTED_WARNING = (
 )
 
 
-def _quote_block(report: Report) -> str:
+def quote_block(report: Report) -> str:
     """Wrap every report field in a boundary whose token is random per call, so nothing already
-    present in the (attacker-controlled) report text can predict and forge the closing line."""
+    present in the (attacker-controlled) report text can predict and forge the closing line.
+    Public: reused as-is by reports_triage.py (DCC Task 14) to quote the same report into an
+    AI investigation prompt."""
     token = secrets.token_hex(16)
     while token in report.body:  # defensive; a collision with a random 128-bit token is not realistic
         token = secrets.token_hex(16)
@@ -570,7 +572,7 @@ def build_handle_draft(report: Report) -> str:
         + _tk_frame("目的")
         + _tk_frame("受入条件")
         + "## 参考情報（報告の引用）\n\n"
-        + _quote_block(report)
+        + quote_block(report)
         + "\n"
     )
 
@@ -582,7 +584,7 @@ def build_investigate_draft(report: Report) -> str:
         "## 調査方針\n\nコードは変更しないこと。原因と再現条件を調べて報告すること。\n\n"
         + _tk_frame("目的")
         + "## 参考情報（報告の引用）\n\n"
-        + _quote_block(report)
+        + quote_block(report)
         + "\n"
     )
 

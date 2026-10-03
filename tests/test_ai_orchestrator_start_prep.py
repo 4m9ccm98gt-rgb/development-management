@@ -298,6 +298,29 @@ class RepoAutoResolutionTests(HostCase):
         self.assertEqual(rs.list_runs(), [])
 
 
+class ResolveRepoDirForAppTests(HostCase):
+    """DCC Task 14: reports_triage.py's AI investigation picks its working folder from an inbox
+    report's app_key against this same registry -- never from report text or AI output, which
+    this function never even sees."""
+
+    def registry(self, *names):
+        return mock.patch.object(orch, "_registry_definitions", lambda: [SimpleNamespace(name=n) for n in names])
+
+    def test_known_app_with_an_existing_folder_resolves(self):
+        with self.registry(self.repo.name), mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
+            resolved = orch.resolve_repo_dir_for_app(self.repo.name)
+        self.assertEqual(resolved, self.repo)
+
+    def test_unregistered_app_key_is_none(self):
+        with self.registry(self.repo.name):
+            self.assertIsNone(orch.resolve_repo_dir_for_app("not-a-registered-name"))
+
+    def test_registered_name_with_a_missing_folder_is_none(self):
+        with self.registry("some-other-app"), \
+                mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
+            self.assertIsNone(orch.resolve_repo_dir_for_app("some-other-app"))
+
+
 class ResolveTargetRepoPreviewTests(HostCase):
     """DCC Task 10: the start-confirmation screen needs the target repo decided before any run
     or lock exists. resolve_target_repo exposes exactly prepare_run's own decision, standalone."""

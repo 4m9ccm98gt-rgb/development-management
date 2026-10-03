@@ -94,6 +94,100 @@ class ClaudeParseTests(unittest.TestCase):
         self.assertNotIn("acceptEdits", command)
         self.assertNotIn("Bash", " ".join(command))
 
+    def test_run_review_stops_the_child_mid_stream_once_max_tokens_is_exceeded(self):
+        """DCC Task 14 review fix: max_tokens must be enforced while the child is still
+        streaming output, not only against the finished result -- a fake run_streaming plays
+        back growing per-turn usage line by line and must see the stop flag set (and the call
+        aborted) before the last, clearly-over-budget line."""
+        lines = [
+            json.dumps({"type": "assistant", "parent_tool_use_id": None,
+                        "message": {"usage": {"input_tokens": 10, "output_tokens": 0}}}),
+            json.dumps({"type": "assistant", "parent_tool_use_id": None,
+                        "message": {"usage": {"input_tokens": 1000, "output_tokens": 0}}}),
+            json.dumps({"type": "assistant", "parent_tool_use_id": None,
+                        "message": {"usage": {"input_tokens": 2000, "output_tokens": 0}}}),
+        ]
+        seen_after_stop = []
+
+        def fake_run_streaming(args, *, cwd, input_text, timeout, env, hooks):
+            for line in lines:
+                if hooks.stop is not None and hooks.stop.is_set():
+                    seen_after_stop.append(line)
+                    raise p.StopRequested("stopped for test")
+                hooks.on_line("stdout", line)
+            return p.CommandResult(tuple(args) if not isinstance(args, str) else (args,), 0, "", "")
+
+        with mock.patch.object(p, "resolved_command", lambda name: [name]), \
+             mock.patch.object(p, "run_streaming", fake_run_streaming):
+            result = p.ClaudeProvider().run_review(
+                Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks(), max_tokens=500)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_kind, p.ERR_TOKEN_LIMIT)
+        self.assertGreaterEqual(result.tokens, 1000)
+        self.assertEqual(seen_after_stop, [lines[2]])  # stopped before the third, unneeded line
+
+    def test_run_review_stops_once_tokens_accumulated_across_turns_exceed_max_tokens(self):
+        """Review fix: the budget must be tracked as a running total across turns, not compared
+        turn-by-turn -- four turns of 200 tokens each are individually under max_tokens=500, but
+        their sum (800) is not, and the call must still be aborted."""
+        turn = lambda msg_id, tokens: json.dumps({"type": "assistant", "parent_tool_use_id": None,
+                                          "message": {"id": msg_id, "usage": {"input_tokens": tokens, "output_tokens": 0}}})
+        lines = [turn("msg_1", 200), turn("msg_2", 200), turn("msg_3", 200), turn("msg_4", 200)]
+        seen_after_stop = []
+
+        def fake_run_streaming(args, *, cwd, input_text, timeout, env, hooks):
+            for line in lines:
+                if hooks.stop is not None and hooks.stop.is_set():
+                    seen_after_stop.append(line)
+                    raise p.StopRequested("stopped for test")
+                hooks.on_line("stdout", line)
+            return p.CommandResult(tuple(args) if not isinstance(args, str) else (args,), 0, "", "")
+
+        with mock.patch.object(p, "resolved_command", lambda name: [name]), \
+             mock.patch.object(p, "run_streaming", fake_run_streaming):
+            result = p.ClaudeProvider().run_review(
+                Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks(), max_tokens=500)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_kind, p.ERR_TOKEN_LIMIT)
+        self.assertGreaterEqual(result.tokens, 600)
+        self.assertEqual(seen_after_stop, [lines[3]])  # stopped once the running total (600) passed 500
+
+    def test_run_review_does_not_double_count_a_duplicate_stream_line(self):
+        """Review fix: a duplicate notification of the same stream-json message (e.g. a relay
+        retry resending the same message id) must not be counted twice toward the budget -- 300
+        tokens counted once stays under max_tokens=500, but counting the duplicate too (600)
+        would wrongly abort the call."""
+        line = json.dumps({"type": "assistant", "parent_tool_use_id": None,
+                           "message": {"id": "msg_1", "usage": {"input_tokens": 300, "output_tokens": 0}}})
+
+        def fake_run_streaming(args, *, cwd, input_text, timeout, env, hooks):
+            hooks.on_line("stdout", line)
+            hooks.on_line("stdout", line)  # duplicate notification of the same message id
+            return p.CommandResult(tuple(args) if not isinstance(args, str) else (args,), 0, claude_stream(), "")
+
+        with mock.patch.object(p, "resolved_command", lambda name: [name]), \
+             mock.patch.object(p, "run_streaming", fake_run_streaming):
+            result = p.ClaudeProvider().run_review(
+                Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks(), max_tokens=500)
+        self.assertTrue(result.ok)
+
+    def test_run_review_without_max_tokens_never_stops_for_usage(self):
+        """Backward compatibility: the engine's real Reviewer calls (engine.py) never pass
+        max_tokens, so they must behave exactly as before -- no stop, even with arbitrarily
+        large per-turn usage, and the call runs to completion."""
+        huge_usage_line = json.dumps({"type": "assistant", "parent_tool_use_id": None,
+                                       "message": {"usage": {"input_tokens": 999_999, "output_tokens": 0}}})
+
+        def fake_run_streaming(args, *, cwd, input_text, timeout, env, hooks):
+            hooks.on_line("stdout", huge_usage_line)
+            self.assertFalse(hooks.stop is not None and hooks.stop.is_set())
+            return p.CommandResult(tuple(args) if not isinstance(args, str) else (args,), 0, claude_stream(), "")
+
+        with mock.patch.object(p, "resolved_command", lambda name: [name]), \
+             mock.patch.object(p, "run_streaming", fake_run_streaming):
+            result = p.ClaudeProvider().run_review(Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks())
+        self.assertTrue(result.ok)
+
     def test_main_command_never_allows_git_writes(self):
         allowed = " ".join(p.CLAUDE_ALLOWED_BASH_TOOLS)
         for word in ("git commit", "git push", "git add", "git reset", "git checkout"):
