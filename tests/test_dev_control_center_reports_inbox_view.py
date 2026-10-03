@@ -700,9 +700,12 @@ class _FakeReportSpecDialog:
 
 
 class HandleSpecButtonTests(ReportsInboxWindowCase):
-    """DCC Task 11: the new 対応する button (separate from decision_buttons["handle"]) opens an
-    acceptance-criteria edit dialog for the selected report, and hands a created spec file path
-    to the on_spec_ready callback (app.py wires this to opening/focusing the Orchestrator)."""
+    """DCC Task 13: 対応する is now the single handle button (decision_buttons no longer has a
+    "handle" entry — DECISIONS only lists investigate/skip). Pressing it only opens the Task 11
+    acceptance-criteria edit dialog for the selected report; it saves the "handle" decision (and
+    hands the created spec path to on_spec_ready) only once that dialog actually creates a spec
+    file. Opening the dialog, cancelling it, or a failed creation must never save a decision or
+    touch the clipboard/draft box."""
 
     def setUp(self):
         super().setUp()
@@ -712,12 +715,13 @@ class HandleSpecButtonTests(ReportsInboxWindowCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_button_is_disabled_until_a_report_is_selected(self):
+    def test_there_is_only_one_handle_button_and_it_is_disabled_until_a_report_is_selected(self):
         with tempfile.TemporaryDirectory() as tmp:
             share = make_shared_folder(Path(tmp) / "share")
             write_report(share / "reports" / "pending", "r1")
             window = self.make_window(apps=[("app-a", "アプリA", str(share))])
             self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertNotIn("handle", window.decision_buttons)
             self.assertTrue(window.handle_spec_button.instate(["disabled"]))
 
             window._on_report_selected(0)
@@ -742,7 +746,48 @@ class HandleSpecButtonTests(ReportsInboxWindowCase):
             self.assertEqual(created.report.report_id, "r1")
             self.assertEqual(created.target_repo, "next-day-setup")
 
-    def test_a_created_spec_path_reaches_the_on_spec_ready_callback(self):
+            # Opening the dialog alone must not save a decision or touch the clipboard/draft.
+            self.assertIsNone(inbox.load_decision("next-day-setup", "r1"))
+            self.assertEqual(window.draft_text.get("1.0", "end-1c"), "")
+            self.assertTrue(window.copy_button.instate(["disabled"]))
+
+    def test_cancelling_or_a_failed_creation_saves_no_decision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            window = self.make_window(apps=[("app-a", "アプリA", str(share))])
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            window._on_report_selected(0)
+            window._open_handle_spec_dialog()
+            # The dialog's on_created is simply never invoked on cancel or a failed creation.
+            self.assertIsNone(inbox.load_decision("app-a", "r1"))
+            self.assertEqual(window.report_list.get(0, "end")[0].count("未対応"), 1)
+
+    def test_two_open_dialogs_for_different_reports_save_to_the_report_each_was_opened_for(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            share = make_shared_folder(Path(tmp) / "share")
+            write_report(share / "reports" / "pending", "r1")
+            write_report(share / "reports" / "pending", "r2")
+            window = self.make_window(apps=[("app-a", "アプリA", str(share))])
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+
+            window._on_report_selected(0)
+            window._open_handle_spec_dialog()
+            dialog_a = _FakeReportSpecDialog.instances[0]
+
+            window._on_report_selected(1)
+            window._open_handle_spec_dialog()
+            dialog_b = _FakeReportSpecDialog.instances[1]
+
+            self.assertNotEqual(dialog_a.report.report_id, dialog_b.report.report_id)
+
+            # Dialog A's own callback fires after dialog B was opened (B still pending/cancelled).
+            dialog_a.on_created(Path("C:/fake/a.json"))
+            self.assertEqual(inbox.load_decision(dialog_a.target_repo, dialog_a.report.report_id).decision,
+                              "handle")
+            self.assertIsNone(inbox.load_decision(dialog_b.target_repo, dialog_b.report.report_id))
+
+    def test_a_created_spec_path_saves_the_handle_decision_updates_the_row_and_reaches_the_callback(self):
         with tempfile.TemporaryDirectory() as tmp:
             share = make_shared_folder(Path(tmp) / "share")
             write_report(share / "reports" / "pending", "r1")
@@ -755,17 +800,11 @@ class HandleSpecButtonTests(ReportsInboxWindowCase):
 
             dialog.on_created(Path("C:/fake/spec.json"))
             self.assertEqual(received, [Path("C:/fake/spec.json")])
-
-    def test_existing_handle_decision_button_is_unaffected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            share = make_shared_folder(Path(tmp) / "share")
-            write_report(share / "reports" / "pending", "r1")
-            window = self.make_window(apps=[("app-a", "アプリA", str(share))])
-            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
-            window._on_report_selected(0)
-            window._decide("handle")
             self.assertEqual(inbox.load_decision("app-a", "r1").decision, "handle")
-            self.assertEqual(_FakeReportSpecDialog.instances, [])
+            self.assertIn("対応する", window.report_list.get(0, "end")[0])
+            # Still no clipboard/draft side effect — Task 13 drops that from 対応する entirely.
+            self.assertEqual(window.draft_text.get("1.0", "end-1c"), "")
+            self.assertTrue(window.copy_button.instate(["disabled"]))
 
 
 class _FakeInboxWindow:

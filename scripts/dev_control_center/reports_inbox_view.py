@@ -23,7 +23,7 @@ MAX_LINE_CHARS = 2_000
 ROW_TITLE_MAX = 60
 TRUNCATION_MARK = "…(切り詰め)"
 
-DECISIONS = (("handle", "対応する"), ("investigate", "実機で調べる"), ("skip", "見送る"))
+DECISIONS = (("investigate", "実機で調べる"), ("skip", "見送る"))
 
 
 def truncate_for_display(text: str, *, max_line_chars: int = MAX_LINE_CHARS, max_chars: int = MAX_DISPLAY_CHARS) -> str:
@@ -173,19 +173,24 @@ class ReportsInboxWindow:
 
         decision_frame = ttk.Frame(right)
         decision_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        buttons_row = ttk.Frame(decision_frame)
+        buttons_row.pack(side="top", fill="x")
+        # DCC Task 13: 対応する opens the Task 11 acceptance-criteria edit dialog; it no longer
+        # records a decision or copies a draft by itself. Each dialog's on_created closure is
+        # bound to the report that was selected when it opened (see _open_handle_spec_dialog),
+        # so opening dialogs for different reports can never save a decision to the wrong one.
+        self.handle_spec_button = ttk.Button(buttons_row, text="対応する", command=self._open_handle_spec_dialog)
+        self.handle_spec_button.pack(side="left", padx=(0, 6))
+        _set_enabled(self.handle_spec_button, False)
         self.decision_buttons: dict[str, ttk.Button] = {}
         for key, label in DECISIONS:
-            button = ttk.Button(decision_frame, text=label, command=lambda k=key: self._decide(k))
+            button = ttk.Button(buttons_row, text=label, command=lambda k=key: self._decide(k))
             button.pack(side="left", padx=(0, 6))
             _set_enabled(button, False)
             self.decision_buttons[key] = button
-        # DCC Task 11: opens an acceptance-criteria edit dialog that, on confirm, builds a spec
-        # file and hands it to the Orchestrator start form. Separate widget/command from
-        # decision_buttons["handle"] above (which only records a local decision + copyable draft,
-        # Task 8a) — neither changes the other's behaviour.
-        self.handle_spec_button = ttk.Button(decision_frame, text="対応する", command=self._open_handle_spec_dialog)
-        self.handle_spec_button.pack(side="left", padx=(12, 0))
-        _set_enabled(self.handle_spec_button, False)
+        ttk.Label(decision_frame, foreground=DARK_MUTED, wraplength=520, justify="left",
+                  text="対応する: 受入条件を作って Orchestrator に渡す / 実機で調べる: 判断を記録し下書きを表示 / 見送る: 判断を記録"
+                  ).pack(side="top", anchor="w", pady=(4, 0))
 
         ttk.Label(right, text="依頼文の下書き（コピーして編集してください）").grid(row=3, column=0, sticky="w", pady=(8, 0))
         self.draft_text = tk.Text(right, height=10, wrap="word")
@@ -398,9 +403,18 @@ class ReportsInboxWindow:
             return
         from .reports_spec_dialog import ReportSpecDialog
 
-        ReportSpecDialog(self.window, row.report, target_repo=row.report.app_key, on_created=self._on_spec_created)
+        report = row.report
 
-    def _on_spec_created(self, path) -> None:
+        def on_created(path: object) -> None:
+            self._on_spec_created(report, path)
+
+        ReportSpecDialog(self.window, report, target_repo=report.app_key, on_created=on_created)
+
+    def _on_spec_created(self, report: inbox.Report, path) -> None:
+        decision = inbox.save_decision(report.app_key, report.report_id, "handle")
+        self.rows = [inbox.ReportRow(r.report, decision) if r.report.identity == report.identity else r
+                     for r in self.rows]
+        self._render_rows()
         if self._on_spec_ready is not None:
             self._on_spec_ready(path)
 
