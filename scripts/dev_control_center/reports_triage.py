@@ -14,8 +14,11 @@ picks the investigation working folder from DCC's own registry and the report's 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
+import secrets
 import shutil
 import tempfile
 import threading
@@ -51,9 +54,46 @@ MAX_REPLY_CHARS = 4000
 # legitimate answer that happens to be long.
 MAX_RAW_OUTPUT_CHARS = 60_000
 
+# DCC Task 14.1, 仕様B: local triage_logs folder caps, consolidated into constants as required.
+TRIAGE_LOG_MAX_FILES = 20
+TRIAGE_LOG_MAX_CHARS = 100_000
+
+# Failure-kind labels (DCC Task 14.1, 仕様B): fixed, short, never built from AI output -- used
+# both as the triage_logs file's first line and to choose the on-screen message below.
+FAILURE_KIND_NO_JSON = "no_json"
+FAILURE_KIND_MULTIPLE_JSON = "multiple_json"
+FAILURE_KIND_MISSING_FIELD = "missing_field"
+FAILURE_KIND_INVALID_VALUE = "invalid_value"
+FAILURE_KIND_TOO_LONG = "too_long"
+
+_LOG_HEADERS = {
+    FAILURE_KIND_NO_JSON: "JSONオブジェクトが見つかりません",
+    FAILURE_KIND_MULTIPLE_JSON: "JSONオブジェクトが複数見つかりました",
+    FAILURE_KIND_MISSING_FIELD: "必須の項目がありません",
+    FAILURE_KIND_INVALID_VALUE: "値が不正です",
+    FAILURE_KIND_TOO_LONG: "出力が長すぎます",
+}
+
+_SCREEN_MESSAGES = {
+    FAILURE_KIND_NO_JSON: "調査結果を読み取れませんでした（返事の形が合いません）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_MULTIPLE_JSON:
+        "調査結果を読み取れませんでした（返事の中にJSONが複数あり、判別できません）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_MISSING_FIELD:
+        "調査結果を読み取れませんでした（必須の項目が足りません）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_INVALID_VALUE: "調査結果を読み取れませんでした（値が不正です）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_TOO_LONG: "調査結果を読み取れませんでした（返事が長すぎます）。詳細はDCCのログに残しました。",
+}
+
 
 class TriageParseError(ValueError):
-    """Japanese-only message shown to the user; never the raw AI output or exception text."""
+    """Japanese-only message shown to the user; never the raw AI output or exception text.
+
+    `kind` is one of the FAILURE_KIND_* constants above (DCC Task 14.1, 仕様B): it names which
+    triage_logs header to write and is never derived from the AI's own text."""
+
+    def __init__(self, message: str, kind: str = FAILURE_KIND_INVALID_VALUE) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass(frozen=True)
@@ -117,7 +157,8 @@ def build_triage_prompt(report: inbox.Report, *, code_available: bool) -> str:
         "コードは変更しないこと。実行して試すことは求めません。推測は推測であると明記してください。\n\n"
         + inbox.quote_block(report)
         + "\n\n"
-        "出力は、説明文やコード片を前後に付けず、次のJSON形式だけで返してください。\n"
+        "出力は、次のJSON形式のオブジェクトを1つだけ返してください。前後に説明文を書かないこと。"
+        "```などのコードフェンスで囲まないこと。JSON以外の文字を一切含めないこと。\n"
         "{\n"
         '  "classification": "bug" | "spec_misunderstanding" | "feature_request" | "insufficient_info",\n'
         '  "confidence": "high" | "medium" | "low",\n'
@@ -129,54 +170,98 @@ def build_triage_prompt(report: inbox.Report, *, code_available: bool) -> str:
     )
 
 
-_MISSING = object()
+REQUIRED_PAYLOAD_KEYS = (
+    "classification", "confidence", "evidence", "suspected_locations", "criteria_draft", "reply_draft",
+)
 
 
-def parse_triage_output(raw_text: str) -> TriageResult:
-    """Strict validation of the AI's JSON (DCC Task 14, 仕様4): any shape/value/length/JSON
-    violation raises TriageParseError with a Japanese-only reason, never a partial result.
+def _extract_top_level_json_objects(text: str) -> list[str]:
+    """Every balanced, top-level `{...}` span in `text` (DCC Task 14.1, 仕様A-2), aware of JSON
+    string literals (quotes and backslash-escapes) so a brace or quote inside a string never
+    throws off the brace count. Standard library only (no regex): a plain character scan that
+    tracks nesting depth and in-string state. Candidates are returned as raw substrings -- the
+    caller still runs json.loads (and the full 仕様4 validation) on each one; nothing here
+    decides whether a span is actually valid JSON."""
+    spans: list[str] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        start = i
+        closed_at = None
+        j = i
+        while j < n:
+            ch = text[j]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        closed_at = j
+                        break
+            j += 1
+        if closed_at is None:
+            break  # an unterminated span from here on; nothing further can close correctly
+        spans.append(text[start:closed_at + 1])
+        i = closed_at + 1
+    return spans
 
-    The whole trimmed response must parse as one JSON object -- unlike
-    tools.ai_orchestrator.review.extract_json_object (which tolerates surrounding prose and
-    ```-fenced text for the looser Reviewer-verdict contract), 仕様4 here requires rejecting
-    exactly that: leading/trailing text, code fences, or anything that is not JSON on its own."""
-    if len(raw_text) > MAX_RAW_OUTPUT_CHARS:
-        raise TriageParseError("調査結果を読み取れませんでした（出力が長すぎます）。")
-    try:
-        data = json.loads(raw_text.strip())
-    except ValueError:
-        raise TriageParseError("調査結果を読み取れませんでした（JSON形式で返っていません）。") from None
-    if not isinstance(data, dict):
-        raise TriageParseError("調査結果を読み取れませんでした（JSON形式で返っていません）。")
 
-    classification = data.get("classification")
+def _validate_payload(data: dict) -> TriageResult:
+    """The fixed-shape check (DCC Task 14, 仕様4 / Task 14.1, 仕様A-3): unchanged required
+    fields, types, enum values and length limits. Raises TriageParseError tagged with
+    FAILURE_KIND_MISSING_FIELD when a required key is absent, else FAILURE_KIND_INVALID_VALUE
+    for any type/enum/length violation -- the two categories DCC Task 14.1, 仕様B logs by."""
+    missing = [key for key in REQUIRED_PAYLOAD_KEYS if key not in data]
+    if missing:
+        raise TriageParseError(_SCREEN_MESSAGES[FAILURE_KIND_MISSING_FIELD], FAILURE_KIND_MISSING_FIELD)
+
+    def invalid() -> TriageParseError:
+        return TriageParseError(_SCREEN_MESSAGES[FAILURE_KIND_INVALID_VALUE], FAILURE_KIND_INVALID_VALUE)
+
+    classification = data["classification"]
     if classification not in CLASSIFICATIONS:
-        raise TriageParseError("調査結果を読み取れませんでした（仕分けの値が不正です）。")
+        raise invalid()
 
-    confidence = data.get("confidence")
+    confidence = data["confidence"]
     if confidence not in CONFIDENCE_LEVELS:
-        raise TriageParseError("調査結果を読み取れませんでした（確信度の値が不正です）。")
+        raise invalid()
 
-    evidence = data.get("evidence")
+    evidence = data["evidence"]
     if not isinstance(evidence, str):
-        raise TriageParseError("調査結果を読み取れませんでした（根拠が文字列ではありません）。")
+        raise invalid()
 
-    locations = data.get("suspected_locations", _MISSING)
-    if (locations is _MISSING or not isinstance(locations, list) or len(locations) > MAX_SUSPECTED_LOCATIONS
+    locations = data["suspected_locations"]
+    if (not isinstance(locations, list) or len(locations) > MAX_SUSPECTED_LOCATIONS
             or not all(isinstance(x, str) for x in locations)):
-        raise TriageParseError("調査結果を読み取れませんでした（修正箇所の候補の形式が不正です）。")
+        raise invalid()
 
-    criteria = data.get("criteria_draft", _MISSING)
-    if criteria is _MISSING or not isinstance(criteria, list) or not all(isinstance(x, str) for x in criteria):
-        raise TriageParseError("調査結果を読み取れませんでした（受入条件の下書きの形式が不正です）。")
+    criteria = data["criteria_draft"]
+    if not isinstance(criteria, list) or not all(isinstance(x, str) for x in criteria):
+        raise invalid()
     if len(criteria) > taskspec.MAX_SPEC_CRITERIA:
-        raise TriageParseError("調査結果を読み取れませんでした（受入条件の下書きが多すぎます）。")
+        raise invalid()
     if any(len(x) > taskspec.MAX_CRITERION_CHARS for x in criteria):
-        raise TriageParseError("調査結果を読み取れませんでした（受入条件の下書きが長すぎます）。")
+        raise invalid()
 
-    reply_draft = data.get("reply_draft")
+    reply_draft = data["reply_draft"]
     if not isinstance(reply_draft, str):
-        raise TriageParseError("調査結果を読み取れませんでした（返信の下書きが文字列ではありません）。")
+        raise invalid()
 
     return TriageResult(
         classification=classification,
@@ -186,6 +271,139 @@ def parse_triage_output(raw_text: str) -> TriageResult:
         criteria_draft=tuple(_clean(x, taskspec.MAX_CRITERION_CHARS) for x in criteria),
         reply_draft=_clean(reply_draft, MAX_REPLY_CHARS),
     )
+
+
+def parse_triage_output(raw_text: str) -> TriageResult:
+    """Extract and validate the AI's JSON (DCC Task 14.1, 仕様A): looser extraction than Task 14
+    -- the AI's object may be the whole response, ```-fenced, or wrapped in short prose -- but the
+    same strict 仕様4 validation (_validate_payload) runs on whatever is extracted. Any failure
+    raises TriageParseError with a Japanese-only reason and a `.kind` for the triage_logs header;
+    never the raw AI output or an exception's own text.
+
+    仕様A-2: a top-level `{...}` span (see _extract_top_level_json_objects) is accepted only when
+    it is valid JSON, a dict, and passes _validate_payload. Exactly one such span must qualify --
+    zero or two-or-more is ambiguous and fails (the same rule for "found nothing" and "found too
+    much")."""
+    if len(raw_text) > MAX_RAW_OUTPUT_CHARS:
+        raise TriageParseError(_SCREEN_MESSAGES[FAILURE_KIND_TOO_LONG], FAILURE_KIND_TOO_LONG)
+
+    dict_candidates: list[dict] = []
+    for span in _extract_top_level_json_objects(raw_text):
+        try:
+            value = json.loads(span)
+        except ValueError:
+            continue
+        except RecursionError:
+            # Pathologically deep nesting (e.g. thousands of "[" within the MAX_RAW_OUTPUT_CHARS
+            # budget) overflows the C JSON scanner's own stack before it can raise ValueError --
+            # treat it the same as "this span is not valid JSON" rather than letting it escape
+            # as an uncaught error that would bypass the FAILURE_KIND_* / triage_logs path below.
+            continue
+        if isinstance(value, dict):
+            dict_candidates.append(value)
+
+    if not dict_candidates:
+        raise TriageParseError(_SCREEN_MESSAGES[FAILURE_KIND_NO_JSON], FAILURE_KIND_NO_JSON)
+
+    successes: list[TriageResult] = []
+    last_error: TriageParseError | None = None
+    for data in dict_candidates:
+        try:
+            successes.append(_validate_payload(data))
+        except TriageParseError as exc:
+            last_error = exc
+
+    if len(successes) == 1:
+        return successes[0]
+    if len(successes) >= 2:
+        raise TriageParseError(_SCREEN_MESSAGES[FAILURE_KIND_MULTIPLE_JSON], FAILURE_KIND_MULTIPLE_JSON)
+    if len(dict_candidates) == 1 and last_error is not None:
+        raise last_error
+    raise TriageParseError(_SCREEN_MESSAGES[FAILURE_KIND_NO_JSON], FAILURE_KIND_NO_JSON)
+
+
+_LOG_SEQUENCE_LOCK = threading.Lock()
+_LOG_SEQUENCE_COUNTER = 0
+
+
+def _next_log_sequence() -> int:
+    """A process-wide, monotonically increasing counter embedded in each triage_logs file name
+    (see _write_new_log_file below), so that name order stays creation order even when several
+    logs are written within the same wall-clock second -- Windows' clock tick (~15ms) means
+    datetime.now() alone can return the same value for many consecutive calls, which would make
+    a name sort built from the timestamp alone effectively random for same-tick writes."""
+    global _LOG_SEQUENCE_COUNTER
+    with _LOG_SEQUENCE_LOCK:
+        _LOG_SEQUENCE_COUNTER += 1
+        return _LOG_SEQUENCE_COUNTER
+
+
+def _prune_old_triage_logs(directory: Path, keep: int) -> None:
+    """Delete the oldest triage_logs files beyond `keep` (DCC Task 14.1, 仕様B-5): file names
+    start with a sortable UTC timestamp followed by the _next_log_sequence() counter, so name
+    order is creation order even for several files written within the same second."""
+    try:
+        files = sorted((p for p in directory.iterdir() if p.is_file()), key=lambda p: p.name)
+    except OSError:
+        return
+    for stale in files[:-keep] if len(files) > keep else []:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+
+def _write_new_log_file(directory: Path, base_name: str, text: str) -> None:
+    """Same new-file-only convention as reports_inbox._write_new_file_exclusive: never overwrites
+    an existing file, trying a numbered sibling instead. UTF-8, no BOM."""
+    stem = Path(base_name).stem
+    suffix = Path(base_name).suffix
+    name = base_name
+    counter = 2
+    while True:
+        path = directory / name
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            name = f"{stem}-{counter}{suffix}"
+            counter += 1
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return
+
+
+def triage_logs_root() -> Path:
+    """Same placement convention as reports_inbox.specs_root(): LOCALAPPDATA when set, else the
+    home folder."""
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ShizenDev" / "DCC" / "triage_logs"
+
+
+def write_triage_failure_log(kind: str, raw_text: str, *, logs_dir: Path | None = None) -> None:
+    """Best-effort local record of one unreadable AI response (DCC Task 14.1, 仕様B): never
+    raises and never changes the caller's outcome -- a logging failure must not worsen an
+    already-failed investigation. The file name (UTC timestamp + a monotonic sequence number +
+    random suffix) carries no report id, app name, report text or AI text; the AI's own text
+    only ever lands in the file body, never in a path or in the on-screen message. The sequence
+    number (see _next_log_sequence) keeps name order equal to creation order even for several
+    logs written within the same second, which the timestamp alone cannot guarantee."""
+    try:
+        directory = logs_dir if logs_dir is not None else triage_logs_root()
+        directory.mkdir(parents=True, exist_ok=True)
+        header = _LOG_HEADERS.get(kind, kind)
+        body = raw_text
+        note = ""
+        if len(body) > TRIAGE_LOG_MAX_CHARS:
+            body = body[:TRIAGE_LOG_MAX_CHARS]
+            note = "\n\n(長さ上限のため、以降を切り詰めました)"
+        content = f"[{header}]\n{body}{note}"
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        seq = _next_log_sequence()
+        name = f"{stamp}-{seq:010d}-{secrets.token_hex(8)}.log"
+        _write_new_log_file(directory, name, content)
+        _prune_old_triage_logs(directory, TRIAGE_LOG_MAX_FILES)
+    except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
+        pass
 
 
 def _default_resolve_repo_dir(app_key: str) -> Path | None:
@@ -216,17 +434,26 @@ def investigate(
     timeout: float = TRIAGE_TIMEOUT_SECONDS,
     max_tokens: int = TRIAGE_MAX_TOKENS,
     stop_event: threading.Event | None = None,
+    write_failure_log: Callable[[str, str], None] | None = None,
 ) -> TriageOutcome:
     """Run one read-only AI investigation for `report` and return a TriageOutcome, never
     raising for any ordinary failure (AI unavailable, timeout, over the token limit, unreadable
     output) -- callers (reports_spec_dialog.py) always get something to show. Only a cooperative
     stop (StopRequested, from `stop_event` while an AI call is in flight) propagates, so a
-    caller whose dialog has already closed can let the whole investigation unwind quietly."""
+    caller whose dialog has already closed can let the whole investigation unwind quietly.
+
+    `write_failure_log` (DCC Task 14.1, 仕様B) is called only when the AI answered but its output
+    could not be read (parse/validation failure) -- never on AI-unavailable/timeout/token-limit
+    (仕様B-7) and never on success (仕様B-8). It defaults to write_triage_failure_log; tests
+    inject a fake (or a real one pointed at a temp dir) so nothing is ever written under the
+    real %LOCALAPPDATA%. Any exception from it is swallowed here too (仕様B-6: a logging failure
+    must never change the outcome already computed)."""
     from tools.ai_orchestrator.common import StopRequested
     from tools.ai_orchestrator import providers
 
     resolve_repo_dir = resolve_repo_dir or _default_resolve_repo_dir
     call_ai = call_ai or _default_call_ai
+    write_failure_log = write_failure_log or write_triage_failure_log
 
     try:
         repo_dir = resolve_repo_dir(report.app_key)
@@ -267,6 +494,10 @@ def investigate(
     try:
         parsed = parse_triage_output(result.text)
     except TriageParseError as exc:
+        try:
+            write_failure_log(exc.kind, result.text)
+        except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
+            pass
         return TriageOutcome(None, str(exc), code_available)
 
     return TriageOutcome(parsed, "", code_available)
