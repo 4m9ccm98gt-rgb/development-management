@@ -6,6 +6,7 @@ food-cost-calculation-system = "main"
 inventory-reconciliation-system = "main"
 menu-sheet-generator = "main"
 next-day-setup = "main"
+photo-capture-relay = "main"
 qr-supply-ordering-system = "main"
 shizen-launcher = "main"
 
@@ -28,6 +29,7 @@ OPERATING_CONTRACT.mdを正本とし、関連する自動テストも追加・�
 [initial_tests]
 development-management = "python -m unittest discover -s tests -v"
 next-day-setup = "python -m pytest -q"
+photo-capture-relay = "python -m pytest -q"
 shizen-launcher = "python -m unittest discover -s tests -v"
 
 # DCC RUN (non-interactive body of each repo's RUN_DEV.cmd). One table per repo:
@@ -138,6 +140,14 @@ retain = ["README.txt"]
 cwd = "."
 module = "food_cost_app.main"
 probe = "import PySide6; import cv2; import PIL; import pytesseract; import flask; import qrcode"
+env = { PYTHONPATH = "src" }
+
+# Resident poller (Ctrl+C / close to stop). Uses %LOCALAPPDATA%\PhotoCaptureRelay\config\settings.json;
+# production runs on the office PC as the logon task from INSTALL_TASK_CLICK_ME.cmd.
+[run.photo-capture-relay]
+cwd = "."
+module = "photo_capture_relay"
+probe = "import PIL; import qrcode"
 env = { PYTHONPATH = "src" }
 
 [run.inventory-reconciliation-system]

@@ -20,6 +20,7 @@ food-cost-calculation-system       = "desktop"   # 俺伝。EXEビルド + HDD�
 inventory-reconciliation-system    = "service"   # PMS照合の自動実行、実運用中
 menu-sheet-generator               = "desktop"   # PMS CSV取込 → 帳票生成・印刷の対話型アプリ
 next-day-setup                     = "desktop"   # 翌日準備。BUILD_EXE_CLICK_ME + UPDATE_SHARED_FOLDER
+photo-capture-relay                = "service"   # スマホ写真→Google一時受信箱→共有フォルダの日付フォルダ。事務所PCで常駐
 qr-supply-ordering-system          = "web"       # Flask系の独立Webアプリ
 development-management            = "management" # DCC / AI Orchestrator / 運用契約。AI依頼欄から変更する
 shizen-launcher                    = "desktop"   # PySide6ランチャーのデモ

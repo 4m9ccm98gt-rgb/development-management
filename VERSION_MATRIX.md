@@ -2,7 +2,7 @@
 
 実運用中の版、GitHub上の版、ローカルの作業状態を混同しないための確認表です。
 
-最終調査日: 2026-09-04（JST）。GitHub コミット値はこの日に `git log -1` で確認。
+最終調査日: 2026-09-04（JST）。GitHub コミット値はこの日に `git log -1` で確認（photo-capture-relay は 2026-10-04 追加）。
 
 ## 判定上の注意
 
@@ -176,6 +176,22 @@
 | 正式ソースのローカルパス | `C:\Users\suisy\Documents\Development\repos\hospitality-review-reply`（旧 clone は `C:\Users\suisy\Documents\hospitality-review-reply`、behind のため正規パスへ新規 clone）|
 | 確認済み機能 | `README.md` / `AI_HANDOFF.md` あり。tracked ファイルに秘密パターンなし。CI は warning-only |
 | 備考 | `check_standards.py` は `knowledge` に実行・ビルド標準を課さず、秘密情報チェックのみ。[docs/pc_repo_audit.md](docs/pc_repo_audit.md) #4 |
+
+## photo-capture-relay
+
+| 項目 | 内容 |
+|---|---|
+| GitHubリポジトリ名 | `photo-capture-relay`（private） |
+| 種別 | **service**（事務所PCでログオン時常駐） |
+| 最新確認タグ | なし |
+| `main` の最新コミット | `b28560c` — `Initial commit: photo-capture-relay`（2026-10-04） |
+| 実運用中バージョン | 未配置（事務所PCへの配置前） |
+| Apps Script デプロイ版 | 未デプロイ（ユーザー作業） |
+| 正式ソースのローカルパス | `C:\Users\suisy\Documents\Development\repos\photo-capture-relay` |
+| 使用Python | Python 3.13（開発PC）、リポジトリ直下の`.venv`。要件は 3.11+ |
+| 主要依存関係 | `Pillow 12.3.0`、`qrcode 8.2`（開発: `pytest 9.1.1`） |
+| 確認済み機能 | pytest 52件（Google通信モック）PASS、`RUN_DEV.cmd check` 起動確認（2026-10-04） |
+| 最終動作確認日 | 実機未確認（GAS実デプロイ・スマホ実機・事務所PC常駐） |
 
 ## 更新手順
 

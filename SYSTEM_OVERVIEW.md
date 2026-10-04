@@ -52,6 +52,7 @@
 | beverage-inventory-ordering-system | desktop | 飲料在庫管理、飲料発注サブシステム（`apps/ordering/`）、Python/PySide6 移行 | 実業者名、実 FAX 番号、実発注履歴 |
 | qr-supply-ordering-system | web | QR 生成、物品発注 Web アプリ、LAN 運用手順 | 実発注データ、SECRET_KEY、DB 実体 |
 | call-reception-assistant | desktop | 対話受付の設計・初期試作方針 | 電話回線、PMS 自動入力、実在庫変更（すべて対象外） |
+| photo-capture-relay | service | スマホ写真の転送（Apps Script ＋ 非公開Drive一時受信箱）、共有フォルダの日付フォルダ保存、常駐登録 | 実写真、Web App URL、bridge_secret、Drive フォルダID |
 | hospitality-review-reply | knowledge | 旅館口コミ返信のテンプレート・知識 | 実行・ビルド標準（課さない）、実顧客レビュー |
 | kitchen-calendar | archived | （なし。統合済み） | すべて |
 

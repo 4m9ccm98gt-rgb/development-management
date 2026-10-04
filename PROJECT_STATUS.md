@@ -1,6 +1,6 @@
 # プロジェクト状況
 
-最終更新: 2026-09-25（JST）
+最終更新: 2026-10-04（JST）
 
 ## Phase 2: AI Orchestrator自動運転（2026-09-25）
 
@@ -90,7 +90,7 @@ AI依頼
   実際に持つ**能力**で判定する（[CAPABILITIES.md](CAPABILITIES.md) が正本）。
 - 非コーダーのユーザーが単独で日常運用できるよう、[docs/operator_runbook.md](docs/operator_runbook.md) を用意した。
 
-## 管理対象リポジトリ（10）
+## 管理対象リポジトリ（11）
 
 種別の唯一の正は [scripts/repo_types.toml](scripts/repo_types.toml)。正式ソースは
 すべて `C:\Users\suisy\Documents\Development\repos\<name>` 配下。
@@ -104,6 +104,7 @@ AI依頼
 | menu-sheet-generator（料理説明書、.NET） | desktop | `main` | 実運用中。tag `v1.0.0`、main `12eaa31`。`BUILD_RELEASE.cmd` → `UPDATE.cmd`。2026-09-07 に Windows CI を追加し PMS CSV aggregation / GDI pre-spool の両回帰ハーネス green。実プリンター出力は別確認。 |
 | qr-supply-ordering-system（QR 物品発注） | web | `main` | 社内 LAN の 1 ホストで Flask 常駐。main `0a2230a`。`RUN_DEV.cmd` + `DEPLOY.md`。2026-09-07 に Windows pytest CI を追加し **18 passed**。 |
 | call-reception-assistant（電話受付） | desktop | `main` | 初期管理文書のみ。**アプリ本体は未実装**。main `ae78cf5`。 |
+| photo-capture-relay（写真転送） | service | `main` | 2026-10-04 新規作成（プロジェクト化進行中）。GitHub private repo 作成、初回commit `b28560c` を `main` へ push 済み。俺伝の Google 受信方式を切り出し、スマホ写真を共有フォルダの日付フォルダへ保存。pytest 52件 PASS。Apps Script 実デプロイ・スマホ実機・事務所PC常駐は未確認（[projects/photo-capture-relay.md](projects/photo-capture-relay.md)）。 |
 | kitchen-calendar（調理場カレンダー） | archived | `main` | next-day-setup へ統合済み。**今後開発しない**（[docs/pc_repo_audit.md](docs/pc_repo_audit.md) #2）。 |
 | hospitality-review-reply（口コミ返信） | knowledge | `main` | 旅館口コミ返信のテンプレート／知識 repo。アプリではない。main `f6e1e74`。CI は warning-only、実行・ビルド標準は課さない。 |
 | development-management | （管理repo自身） | `main` | 本知識ベース。2026-09-07 に Agent Efficiency Policy、ティア別開始ゲート、branch別 automated regression CI 表を整備。moving tag `ci-v1`。 |

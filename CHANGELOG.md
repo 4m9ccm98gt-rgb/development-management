@@ -1,5 +1,9 @@
 # 変更履歴
 
+## 2026-10-04 — photo-capture-relay を新規プロジェクトとして登録
+
+スマホ写真を Google Apps Script ＋ 非公開Drive一時受信箱経由で事務所PCへ届け、共有フォルダの `<保存先>\yyyy-MM-dd\`（送信日JST、同名は連番、書き込み成功後だけ取込済み）へ保存する `service` 種別の新repoを作成。方式・安全境界は俺伝（food-cost-calculation-system）の Google 4G/5G 受信をコピーして独立（俺伝repoは無変更）。ユーザー決定: 実行は事務所の別PC、保存先は共有フォルダ、入口は48時間セッション（常駐側が自動更新しQRページを出力）、状態管理はDrive説明欄のみ（スプレッドシート不使用）、ack後はゴミ箱。GitHub private repo へ初回commit `b28560c` を push。`repo_types.toml`（service）、`dev_control_center_repos.toml`（branch / initial_tests / `[run.photo-capture-relay]`）、REPOSITORIES / PROJECT_STATUS / SYSTEM_OVERVIEW / VERSION_MATRIX / `projects/photo-capture-relay.md` に登録。確認状況: photo-capture-relay の pytest 52件成功、`RUN_DEV.cmd check` 起動確認、development-management の unittest 886件成功・`check_standards.py` ERROR 0。Apps Script 実デプロイ・スマホ実機・事務所PCのタスク登録は未確認。BUILD / UPDATE / DEPLOYなし。
+
 ## 2026-09-29 — 共通UPDATE engineの独立レビュー対応とrelease単位の戻し
 
 GPT-6 Astraのread-onlyレビュー Round 1〜6 の指摘（計27件）をすべて修正し、各指摘に回帰テスト（修正前コミットでFAILを確認）を追加。主な強化: 実行中EXEの検出（読み書き・共有なしで判定）と置換中の起動防止、unchanged全ファイルのexecute時SHA-256確認、書き込み・削除時の親フォルダまでのreparse point再検証、失効SHAのfail closed（revoked.json・不変のrollback履歴・restore intent）、restore intentと配布先の完全なファイル一覧による中断解決、BUILD成果物ロックの保持とstaging後のprovenance再確認、production.jsonを唯一の確定点に。`release_revert`（直前のengine releaseを変更分backupから戻す。dry-run → 確認 → execute）を追加。**レビュー状態: REVIEW_PENDING**（Round 7はCodex残量不足で未実施。独立レビュー完了まで本番への初回UPDATE / DEPLOYは保留）。BUILD / UPDATE / DEPLOYなし。本番（v1.4.0 / 1a03178）は不変。

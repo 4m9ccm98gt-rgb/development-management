@@ -6,7 +6,7 @@
 GitHub は `https://github.com/4m9ccm98gt-rgb/<name>`（すべて private）。
 種別の唯一の正は [scripts/repo_types.toml](scripts/repo_types.toml)。
 
-## 管理対象（10）
+## 管理対象（11）
 
 | リポジトリ | 種別 | 既定ブランチ | GitHub 既定ブランチ HEAD（2026-09-04） | タグ | 備考 |
 |---|---|---|---|---|---|
@@ -17,6 +17,7 @@ GitHub は `https://github.com/4m9ccm98gt-rgb/<name>`（すべて private）。
 | menu-sheet-generator | desktop | `main` | `fa4fdf7` | `v1.0.0` | 料理説明書。.NET / WPF。GitHub Release 公開済み。 |
 | qr-supply-ordering-system | web | `main` | `790fff5` | なし | QR 物品発注。社内 LAN の 1 ホストで Flask 常駐。`DEPLOY.md`。 |
 | call-reception-assistant | desktop | `main` | `ae78cf5` | なし | 電話受付。**アプリ本体は未実装**。無課金・ローカル完結の初期試作方針。 |
+| photo-capture-relay | service | `main` | `b28560c`（2026-10-04 初回commit） | なし | スマホ写真 → Apps Script ＋ 非公開Drive一時受信箱 → 共有フォルダの日付フォルダ。事務所PCでログオン時常駐。2026-10-04 新規作成。[projects/photo-capture-relay.md](projects/photo-capture-relay.md) |
 | kitchen-calendar | archived | `main` | `2362043` | なし | 調理場カレンダー。next-day-setup へ統合済み。**今後開発しない**。 |
 | hospitality-review-reply | knowledge | `main` | `f6e1e74` | なし | 旅館口コミ返信のテンプレート／知識 repo。アプリではない。CI は warning-only、実行・ビルド標準は課さない。 |
 | development-management | — | `main` | `d45c0c9` | `ci-v1`（moving）/ `ci-v1.0.x`（固定） | 本知識ベース。共通 CI アクション（`.github/actions/check-standards`）を各 repo が `@ci-v1` で参照。 |
