@@ -73,6 +73,7 @@ class AgentResult:
     rate_limit: dict | None = None   # Claude: rate_limit_event.rate_limit_info
     context: dict | None = None      # {"used_tokens", "window_tokens", "model"}
     tokens: int = 0                  # tokens this whole call consumed (Claude: input+cache-creation+output; Codex: input+output)
+    token_breakdown: dict | None = None  # Claude only: {"input_tokens", "cache_creation_input_tokens", "output_tokens"} -- the same fields `tokens` sums, never cache_read_input_tokens (see _claude_turn_tokens)
     events: list = field(default_factory=list)  # short human log lines already emitted
 
 
@@ -150,13 +151,23 @@ def _short(text: object, limit: int = 160) -> str:
 _SESSION_UUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 
 
-def _claude_turn_tokens(line: str) -> tuple[str | None, int] | None:
-    """Tokens spent by the single assistant turn reported in one stdout line of Claude's
-    stream-json output, paired with that turn's message id (for de-duplicating a turn the
-    stream reports more than once), or None if `line` is not a top-level assistant message
-    carrying usage. The token amount is per-turn, not a running total -- callers must
-    accumulate it across turns themselves to track the whole run's spend while the child is
-    still streaming."""
+# The usage fields accumulated turn-over-turn to track a run's budget while it is still
+# streaming (DCC Task 14.2 fix). Deliberately excludes cache_read_input_tokens: that field is
+# the prior turns' context being re-sent and re-billed-at-a-discount on *every* turn, so a
+# multi-turn tool-using call reports roughly the same large value again and again -- summing it
+# across turns counts the same context repeatedly instead of the run's actual new spend, and was
+# why short reports still tripped TRIAGE_MAX_TOKENS (reports_triage.py) every time. This matches
+# the finished-call total ClaudeProvider.parse already computes from `final["usage"]` below.
+CLAUDE_BUDGET_USAGE_FIELDS: tuple[str, ...] = ("input_tokens", "cache_creation_input_tokens", "output_tokens")
+
+
+def _claude_turn_tokens(line: str) -> tuple[str | None, dict[str, int]] | None:
+    """Per-field usage (CLAUDE_BUDGET_USAGE_FIELDS) spent by the single assistant turn reported
+    in one stdout line of Claude's stream-json output, paired with that turn's message id (for
+    de-duplicating a turn the stream reports more than once), or None if `line` is not a
+    top-level assistant message carrying usage. The amounts are per-turn, not a running total --
+    callers must accumulate them across turns themselves to track the whole run's spend while
+    the child is still streaming."""
     try:
         item = json.loads(line)
     except ValueError:
@@ -165,12 +176,11 @@ def _claude_turn_tokens(line: str) -> tuple[str | None, int] | None:
         return None
     message = item.get("message") or {}
     usage = message.get("usage") or {}
-    total = sum(int(usage.get(k) or 0) for k in (
-        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
-    if not total:
+    counted = {k: int(usage.get(k) or 0) for k in CLAUDE_BUDGET_USAGE_FIELDS}
+    if not any(counted.values()):
         return None
     message_id = message.get("id")
-    return (message_id if isinstance(message_id, str) and message_id else None, total)
+    return (message_id if isinstance(message_id, str) and message_id else None, counted)
 
 
 class _OrStop:
@@ -252,21 +262,23 @@ class ClaudeProvider(Provider):
         events: list[str] = []
         live = hooks.on_line
         budget_exceeded = threading.Event()
-        running_tokens = {"total": 0}
+        running_tokens = {"total": 0, **{k: 0 for k in CLAUDE_BUDGET_USAGE_FIELDS}}
         counted_message_ids: set[str] = set()
 
         def relay(stream: str, line: str) -> None:
             if max_tokens is not None and stream == "stdout":
                 parsed = _claude_turn_tokens(line)
                 if parsed is not None:
-                    message_id, tokens = parsed
+                    message_id, counted = parsed
                     # A message id already counted is a duplicate notification of the same
                     # turn (e.g. a relay retry), not a new turn's spend -- skip it. A missing
                     # id can't be deduplicated, so it's always counted.
                     if message_id is None or message_id not in counted_message_ids:
                         if message_id is not None:
                             counted_message_ids.add(message_id)
-                        running_tokens["total"] += tokens
+                        for key, amount in counted.items():
+                            running_tokens[key] += amount
+                        running_tokens["total"] += sum(counted.values())
                         if running_tokens["total"] > max_tokens:
                             budget_exceeded.set()
             summary = self._summarize_line(line) if stream == "stdout" else _short(line)
@@ -284,7 +296,9 @@ class ClaudeProvider(Provider):
             if max_tokens is not None and budget_exceeded.is_set():
                 return AgentResult(self.name, role, False, error_kind=ERR_TOKEN_LIMIT,
                                     error_detail="token budget exceeded mid-run",
-                                    tokens=running_tokens["total"], events=events)
+                                    tokens=running_tokens["total"],
+                                    token_breakdown={k: running_tokens[k] for k in CLAUDE_BUDGET_USAGE_FIELDS},
+                                    events=events)
             raise
         except OrchestratorError as exc:
             kind = ERR_TIMEOUT if exc.code == "COMMAND_TIMEOUT" else ERR_PROCESS
@@ -343,10 +357,12 @@ class ClaudeProvider(Provider):
         if not (isinstance(session, str) and _SESSION_UUID.fullmatch(session)):
             session = None
         spent = final.get("usage") if isinstance(final.get("usage"), dict) else {}
-        tokens = sum(int(spent.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens", "output_tokens"))
+        token_breakdown = {k: int(spent.get(k) or 0) for k in CLAUDE_BUDGET_USAGE_FIELDS}
+        tokens = sum(token_breakdown.values())
         common = dict(provider="claude", role=role, session_id=session.lower() if session else None,
                       returncode=result.returncode, raw=result.stdout + "\n" + result.stderr,
-                      rate_limit=rate, context=context, events=events or [], tokens=tokens)
+                      rate_limit=rate, context=context, events=events or [], tokens=tokens,
+                      token_breakdown=token_breakdown)
         max_turns = final.get("subtype") == "error_max_turns" or "maximum number of turns" in (
             json.dumps(final.get("errors", "")) + result.stderr).lower()
         if max_turns:

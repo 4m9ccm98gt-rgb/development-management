@@ -70,6 +70,20 @@ class BuildPromptTests(unittest.TestCase):
                     "criteria_draft", "reply_draft"):
             self.assertIn(f'"{key}"', prompt)
 
+    def test_prompt_narrows_the_reading_scope_and_keeps_the_report_quoted(self):
+        """DCC Task 14.2, C4: the request must tell the AI to limit itself to files that look
+        relevant to the report (not explore the whole repository) and to return what it found,
+        marking guesses as guesses, if it cannot finish -- while the report body stays inside
+        reports_inbox.quote_block's own boundary, unchanged."""
+        report = make_report(body="短い本文の報告")
+        prompt = triage.build_triage_prompt(report, code_available=True)
+        self.assertIn("リポジトリ全体を探索しない", prompt)
+        self.assertIn("推測は推測と明記", prompt)
+        body_index = prompt.index("短い本文の報告")
+        quote_start = prompt.index("----- 報告の引用 開始")
+        quote_end = prompt.rindex("----- 報告の引用 終了")  # the footer; the header mentions "終了" too, in its own description text
+        self.assertTrue(quote_start < body_index < quote_end)
+
 
 class ParseTriageOutputTests(unittest.TestCase):
     def test_valid_payload_parses(self):
@@ -370,6 +384,44 @@ class InvestigateTests(unittest.TestCase):
         )
         self.assertIsNone(outcome.result)
         self.assertIn("トークン", outcome.reason)
+
+    def test_mid_run_token_limit_logs_a_numbers_only_breakdown_without_report_or_ai_text(self):
+        """DCC Task 14.2, 仕様3: when the budget is hit, one line goes to DCC's own module
+        logger (not triage_logs) carrying only the per-field usage numbers -- never the report
+        body or the AI's text. A missing token_breakdown (as on this SimpleNamespace fake) must
+        not raise; it just logs zeros."""
+        secret_text = "SECRET-REPORT-BODY-MUST-NEVER-BE-LOGGED"
+
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_TOKEN_LIMIT, text=secret_text)
+
+        with self.assertLogs(triage.__name__, level="WARNING") as captured:
+            outcome = triage.investigate(
+                make_report(body=secret_text), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            )
+        self.assertIsNone(outcome.result)
+        joined = "\n".join(captured.output)
+        self.assertIn("token limit exceeded", joined)
+        self.assertNotIn(secret_text, joined)
+
+    def test_over_token_budget_logs_the_reported_breakdown(self):
+        """The post-hoc result.tokens check (AI finished, but over budget) also logs a
+        breakdown -- here using a real token_breakdown-bearing object, not the bare fake."""
+        fake_result = SimpleNamespace(
+            ok=True, text=json.dumps(VALID_PAYLOAD), tokens=triage.TRIAGE_MAX_TOKENS + 1, error_kind=None,
+            token_breakdown={"input_tokens": 10, "cache_creation_input_tokens": triage.TRIAGE_MAX_TOKENS, "output_tokens": 1},
+        )
+
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return fake_result
+
+        with self.assertLogs(triage.__name__, level="WARNING") as captured:
+            outcome = triage.investigate(
+                make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            )
+        self.assertIsNone(outcome.result)
+        joined = "\n".join(captured.output)
+        self.assertIn(f"cache_creation_input_tokens={triage.TRIAGE_MAX_TOKENS}", joined)
 
     def test_other_process_failure_is_reported_in_japanese(self):
         def call_ai(worktree, prompt, timeout, stop_event):

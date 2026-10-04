@@ -171,6 +171,52 @@ class ClaudeParseTests(unittest.TestCase):
                 Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks(), max_tokens=500)
         self.assertTrue(result.ok)
 
+    def test_run_review_does_not_count_cache_read_input_tokens_toward_the_budget(self):
+        """DCC Task 14.2 fix: cache_read_input_tokens is the prior turns' context being re-sent
+        and re-billed-at-a-discount on every turn -- a single turn reporting a huge cache-read
+        figure (bigger than max_tokens on its own) alongside tiny genuine usage must not trip
+        the budget; only input/cache-creation/output tokens count."""
+        line = json.dumps({"type": "assistant", "parent_tool_use_id": None, "message": {
+            "id": "msg_1",
+            "usage": {"input_tokens": 10, "cache_creation_input_tokens": 0,
+                      "cache_read_input_tokens": 50_000, "output_tokens": 5}}})
+
+        def fake_run_streaming(args, *, cwd, input_text, timeout, env, hooks):
+            hooks.on_line("stdout", line)
+            return p.CommandResult(tuple(args) if not isinstance(args, str) else (args,), 0, claude_stream(), "")
+
+        with mock.patch.object(p, "resolved_command", lambda name: [name]), \
+             mock.patch.object(p, "run_streaming", fake_run_streaming):
+            result = p.ClaudeProvider().run_review(
+                Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks(), max_tokens=500)
+        self.assertTrue(result.ok)
+
+    def test_run_review_a_realistic_multi_turn_investigation_stays_under_budget(self):
+        """DCC Task 14.2 fix, C3: several turns each re-reading a large, growing cache (as a
+        real multi-file investigation would) must not accumulate that re-read cost -- only the
+        modest genuinely-new tokens per turn (a few file reads plus output) do, which stays
+        under a realistic TRIAGE_MAX_TOKENS-sized budget. Before the fix, summing the ballooning
+        cache_read_input_tokens across turns alone would have exceeded it."""
+        turn = lambda msg_id, cache_read, new_tokens: json.dumps({
+            "type": "assistant", "parent_tool_use_id": None,
+            "message": {"id": msg_id, "usage": {
+                "input_tokens": 5, "cache_creation_input_tokens": new_tokens,
+                "cache_read_input_tokens": cache_read, "output_tokens": 50}}})
+        # Each turn re-reads the whole context so far (cache_read grows turn over turn) while
+        # only adding ~1,500 genuinely new tokens (one more file read).
+        lines = [turn(f"msg_{i}", cache_read=i * 20_000, new_tokens=1_500) for i in range(1, 9)]
+
+        def fake_run_streaming(args, *, cwd, input_text, timeout, env, hooks):
+            for line in lines:
+                hooks.on_line("stdout", line)
+            return p.CommandResult(tuple(args) if not isinstance(args, str) else (args,), 0, claude_stream(), "")
+
+        with mock.patch.object(p, "resolved_command", lambda name: [name]), \
+             mock.patch.object(p, "run_streaming", fake_run_streaming):
+            result = p.ClaudeProvider().run_review(
+                Path("w"), "prompt", timeout=10, hooks=p.ProcessHooks(), max_tokens=300_000)
+        self.assertTrue(result.ok)
+
     def test_run_review_without_max_tokens_never_stops_for_usage(self):
         """Backward compatibility: the engine's real Reviewer calls (engine.py) never pass
         max_tokens, so they must behave exactly as before -- no stop, even with arbitrarily

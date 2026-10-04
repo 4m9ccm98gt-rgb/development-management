@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -26,6 +27,8 @@ from typing import Callable
 
 from . import reports_inbox as inbox
 from tools.ai_orchestrator import taskspec
+
+_log = logging.getLogger(__name__)
 
 # A one-shot background investigation kicked off the moment the dialog opens, not a full code
 # review a human is watching -- shorter than runstate.Limits.review_timeout (1200s), same idea
@@ -140,6 +143,8 @@ def build_triage_prompt(report: inbox.Report, *, code_available: bool) -> str:
     by reports_inbox.MAX_REPORT_BYTES), then asks for a strict-JSON-only triage draft."""
     scope_note = (
         "対象アプリのリポジトリのコード・README・docsを読んで調べてください。"
+        "読むファイルは、報告に関係しそうなものに絞り、リポジトリ全体を探索しないこと。"
+        "調べきれない場合は、分かった範囲でJSONを返し、推測は推測と明記すること。"
         if code_available else
         "対象アプリのコードは読めません（作業フォルダが見つかりません）。報告の文面だけから判断してください。"
     )
@@ -406,6 +411,25 @@ def write_triage_failure_log(kind: str, raw_text: str, *, logs_dir: Path | None 
         pass
 
 
+def _log_token_limit_breakdown(result: object, max_tokens: int) -> None:
+    """DCC Task 14.2: one line in DCC's own module logger (the convention already used by
+    scripts/dev_control_center/selection.py), recording only the numeric usage breakdown that
+    tripped the budget -- never the report text or the AI's own text (`result.text`/`.raw` are
+    never read here). `result.token_breakdown` is an optional attribute (real AgentResult only;
+    absent on the SimpleNamespace fakes some tests use), so a missing one just logs zeros.
+    Best-effort: a logging failure must never worsen an already-failed investigation."""
+    try:
+        breakdown = getattr(result, "token_breakdown", None) or {}
+        _log.warning(
+            "triage investigate: token limit exceeded total=%s max=%s input_tokens=%s "
+            "cache_creation_input_tokens=%s output_tokens=%s",
+            getattr(result, "tokens", 0), max_tokens, breakdown.get("input_tokens", 0),
+            breakdown.get("cache_creation_input_tokens", 0), breakdown.get("output_tokens", 0),
+        )
+    except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
+        pass
+
+
 def _default_resolve_repo_dir(app_key: str) -> Path | None:
     from tools.ai_orchestrator.orchestrator import resolve_repo_dir_for_app
 
@@ -484,11 +508,13 @@ def investigate(
             reason = "調査が時間切れになりました。"
         elif result.error_kind == providers.ERR_TOKEN_LIMIT:
             reason = "調査できませんでした（トークンの上限を超えました）。"
+            _log_token_limit_breakdown(result, max_tokens)
         else:
             reason = "調査できませんでした。"
         return TriageOutcome(None, reason, code_available)
 
     if result.tokens and result.tokens > max_tokens:
+        _log_token_limit_breakdown(result, max_tokens)
         return TriageOutcome(None, "調査できませんでした（トークンの上限を超えました）。", code_available)
 
     try:
