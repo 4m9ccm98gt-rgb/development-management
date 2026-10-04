@@ -166,7 +166,8 @@ class ReportSpecDialog:
         self._triage_outcome = outcome
         if outcome.result is None:
             self.triage_status_var.set(outcome.reason or "調査できませんでした。")
-            self._set_readonly(self.triage_result_text, "")
+            note = "" if outcome.code_available else triage.code_unavailable_note(outcome.code_unavailable_reason)
+            self._set_readonly(self.triage_result_text, note)
             self.apply_criteria_button.state(["disabled"])
             return
         result = outcome.result
@@ -174,7 +175,7 @@ class ReportSpecDialog:
         if result.low_confidence_bug:
             lines.append("※ バグと判定されましたが、確信度は低めです。内容を確認してください。")
         if not outcome.code_available:
-            lines.append("※ 対象アプリのコードを読めなかったため、報告の文面だけから判断しています。")
+            lines.append(triage.code_unavailable_note(outcome.code_unavailable_reason))
         lines += ["", "根拠:", result.evidence or "(なし)", "", "修正箇所の候補:"]
         lines += [f"- {loc}" for loc in result.suspected_locations] if result.suspected_locations else ["(なし)"]
         lines += ["", "返信の下書き:", result.reply_draft or "(なし)"]

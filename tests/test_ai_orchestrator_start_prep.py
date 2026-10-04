@@ -320,6 +320,26 @@ class ResolveRepoDirForAppTests(HostCase):
                 mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
             self.assertIsNone(orch.resolve_repo_dir_for_app("some-other-app"))
 
+    def test_unavailable_reason_is_empty_when_the_folder_resolves(self):
+        """DCC Task 14.3: a resolvable app_key has no unavailable reason to show."""
+        with self.registry(self.repo.name), mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
+            self.assertEqual(orch.resolve_repo_dir_unavailable_reason(self.repo.name), "")
+
+    def test_unregistered_app_key_reason_is_app_not_registered(self):
+        """DCC Task 14.3: the 夕食料飲システム incident -- an app_key the registry has never
+        heard of must be classified as unregistered, not a generic missing-folder reason."""
+        with self.registry(self.repo.name):
+            self.assertEqual(
+                orch.resolve_repo_dir_unavailable_reason("not-a-registered-name"),
+                orch.REPO_DIR_APP_NOT_REGISTERED)
+
+    def test_registered_name_with_a_missing_folder_reason_is_folder_missing(self):
+        with self.registry("some-other-app"), \
+                mock.patch.object(orch, "DM_ROOT", self.tmp / "development-management"):
+            self.assertEqual(
+                orch.resolve_repo_dir_unavailable_reason("some-other-app"),
+                orch.REPO_DIR_FOLDER_MISSING)
+
 
 class ResolveTargetRepoPreviewTests(HostCase):
     """DCC Task 10: the start-confirmation screen needs the target repo decided before any run

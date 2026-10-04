@@ -496,16 +496,50 @@ def _resolve_repo_path(task: str, spec: Spec | None) -> Path:
     return DM_ROOT.parent / matches[0]
 
 
+# DCC Task 14.3: why resolve_repo_dir_for_app came back None, classified from DCC's own
+# registry only -- never a path or exception string (reports_triage.py turns these into the
+# fixed Japanese note the dialog shows; see reports_triage.code_unavailable_note).
+REPO_DIR_APP_NOT_REGISTERED = "app_not_registered"
+REPO_DIR_FOLDER_MISSING = "repo_folder_missing"
+
+
+def _resolve_repo_dir_for_app_detail(app_key: str) -> tuple[Path | None, str]:
+    """Shared lookup behind resolve_repo_dir_for_app and resolve_repo_dir_unavailable_reason:
+    app_key (an inbox report's app_key, e.g. "next-day-setup") against DCC's own registry only
+    -- never report text or AI output, which this function never even sees.
+
+    Matches the registry the same way _resolve_repo_path already does (_normalize_repo_name:
+    casefold, surrounding whitespace stripped), then builds the folder path from the registry's
+    own canonical name rather than the raw app_key -- so a config-side spelling difference in
+    case or incidental whitespace between reports.<app_key> and [types]/[branches] still
+    resolves, instead of silently falling through to "not registered"."""
+    names = sorted({d.name for d in _registry_definitions()})
+    matches = [n for n in names if _normalize_repo_name(n) == _normalize_repo_name(app_key)]
+    if not matches:
+        return None, REPO_DIR_APP_NOT_REGISTERED
+    path = DM_ROOT.parent / matches[0]
+    if path.is_dir():
+        return path, ""
+    return None, REPO_DIR_FOLDER_MISSING
+
+
 def resolve_repo_dir_for_app(app_key: str) -> Path | None:
     """The repository folder DCC's own registry maps an inbox report's app_key (e.g.
     "next-day-setup") to, or None when app_key is not a registered repo name or that repo's
     folder does not exist on disk. Used by reports_triage.py (DCC Task 14) to pick a read-only
     investigation working folder from DCC's own configuration only -- never from report text or
     AI output, which this function never even sees."""
-    if app_key not in {d.name for d in _registry_definitions()}:
-        return None
-    path = DM_ROOT.parent / app_key
-    return path if path.is_dir() else None
+    path, _reason = _resolve_repo_dir_for_app_detail(app_key)
+    return path
+
+
+def resolve_repo_dir_unavailable_reason(app_key: str) -> str:
+    """DCC Task 14.3: REPO_DIR_APP_NOT_REGISTERED / REPO_DIR_FOLDER_MISSING classifying why
+    resolve_repo_dir_for_app(app_key) is None, or "" when it would actually resolve. Used by
+    reports_triage.py to choose the fixed Japanese note shown on screen -- this function itself
+    never produces or sees a path string or exception text, only the kind."""
+    _path, reason = _resolve_repo_dir_for_app_detail(app_key)
+    return reason
 
 
 def resolve_target_repo(task: str, spec: Spec | None, repo: str | None = None) -> Path:

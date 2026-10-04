@@ -397,6 +397,16 @@ class TriageResultRenderingTests(ReportSpecDialogCase):
         self.assertIn("コードを読めなかった", d.triage_result_text.content)
         self.assertTrue(d.apply_criteria_button.instate(["disabled"]))  # no criteria_draft
 
+    def test_code_unavailable_outcome_names_the_classified_reason(self):
+        """DCC Task 14.3: when the AI investigation knows *why* no working folder was found
+        (the app_key isn't registered, as happened for 夕食料飲システム), the dialog must show
+        that fixed Japanese reason, not just the generic Task 14 note."""
+        result = triage.TriageResult("insufficient_info", "medium", "E", (), (), "返信")
+        outcome = triage.TriageOutcome(result, "", False, triage.CODE_UNAVAILABLE_REASON_NOT_REGISTERED)
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: outcome)
+        self._settle(d)
+        self.assertIn("このアプリがリポジトリに登録されていません", d.triage_result_text.content)
+
     def test_failed_outcome_shows_the_japanese_reason_and_leaves_the_template_usable(self):
         d = self.make_dialog(investigate_fn=lambda report, *, stop_event:
                               triage.TriageOutcome(None, "調査できませんでした。", False))
@@ -405,6 +415,30 @@ class TriageResultRenderingTests(ReportSpecDialogCase):
         self.assertTrue(d.apply_criteria_button.instate(["disabled"]))
         self.assertEqual(d.criteria_text.content, "\n".join(inbox.SPEC_CRITERIA_TEMPLATE))
         self.assertTrue(d.create_button.instate(["!disabled"]))
+
+    def test_failed_outcome_with_code_unavailable_still_names_the_classified_reason(self):
+        """DCC Task 14.3 review fix: when code_available is False *and* the AI call itself also
+        failed (timeout / unavailable / unreadable output -- result is None), the dialog must
+        still show the fixed-phrase reason, not silently drop it the way the generic failure
+        message alone would. Must never include a path or exception text."""
+        outcome = triage.TriageOutcome(
+            None, "調査できませんでした。", False, triage.CODE_UNAVAILABLE_REASON_FOLDER_MISSING)
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: outcome)
+        self._settle(d)
+        self.assertEqual(d.triage_status_var.get(), "調査できませんでした。")
+        shown = d.triage_result_text.content
+        self.assertIn("リポジトリのフォルダが見つかりません", shown)
+        self.assertNotIn("\\", shown)
+        self.assertNotIn("/", shown)
+        self.assertTrue(d.apply_criteria_button.instate(["disabled"]))
+
+    def test_failed_outcome_with_code_available_shows_no_unavailable_note(self):
+        """The opposite case: an AI-call failure with a working folder that *was* found must not
+        gain a spurious "could not read the code" note."""
+        outcome = triage.TriageOutcome(None, "調査が時間切れになりました。", True)
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: outcome)
+        self._settle(d)
+        self.assertEqual(d.triage_result_text.content, "")
 
 
 class ApplyCriteriaDraftTests(ReportSpecDialogCase):

@@ -126,11 +126,40 @@ class TriageOutcome:
     """result is None on any failure (AI unavailable, timeout, over the token limit, or output
     that failed validation); reason is then a one-line Japanese explanation for the dialog.
     code_available records whether an investigation working folder was found at all -- shown to
-    the human even on success, since a text-only classification carries less evidence."""
+    the human even on success, since a text-only classification carries less evidence.
+    code_unavailable_reason (DCC Task 14.3) is one of the CODE_UNAVAILABLE_REASON_* kinds below
+    when code_available is False, or "" when it is True or the kind could not be classified;
+    never a path or exception string -- see code_unavailable_note."""
 
     result: TriageResult | None
     reason: str = ""
     code_available: bool = False
+    code_unavailable_reason: str = ""
+
+
+# DCC Task 14.3: why code_available is False, classified from DCC's own repo registry only (see
+# tools.ai_orchestrator.orchestrator.resolve_repo_dir_unavailable_reason) -- never from report
+# text or AI output, and never shown as a path or exception string.
+CODE_UNAVAILABLE_REASON_NOT_REGISTERED = "app_not_registered"
+CODE_UNAVAILABLE_REASON_FOLDER_MISSING = "repo_folder_missing"
+
+_CODE_UNAVAILABLE_DETAILS = {
+    CODE_UNAVAILABLE_REASON_NOT_REGISTERED: "このアプリがリポジトリに登録されていません",
+    CODE_UNAVAILABLE_REASON_FOLDER_MISSING: "リポジトリのフォルダが見つかりません",
+}
+
+_CODE_UNAVAILABLE_NOTE = "※ 対象アプリのコードを読めなかったため、報告の文面だけから判断しています"
+
+
+def code_unavailable_note(reason: str) -> str:
+    """The dialog's on-screen note for code_available=False (DCC Task 14.3, 仕様3): the fixed
+    Japanese detail for `reason` in parentheses when its kind is known, else the plain DCC Task
+    14 note unchanged. Never includes a path or exception text -- `reason` is only ever one of
+    the CODE_UNAVAILABLE_REASON_* kinds above (or "" / unknown, which this degrades safely)."""
+    detail = _CODE_UNAVAILABLE_DETAILS.get(reason, "")
+    if detail:
+        return f"{_CODE_UNAVAILABLE_NOTE}（{detail}）。"
+    return f"{_CODE_UNAVAILABLE_NOTE}。"
 
 
 def _clean(text: str, max_chars: int) -> str:
@@ -436,6 +465,14 @@ def _default_resolve_repo_dir(app_key: str) -> Path | None:
     return resolve_repo_dir_for_app(app_key)
 
 
+def _default_resolve_repo_dir_reason(app_key: str) -> str:
+    """DCC Task 14.3: the real classification behind _default_resolve_repo_dir's None, from
+    DCC's own registry only (see orchestrator.resolve_repo_dir_unavailable_reason)."""
+    from tools.ai_orchestrator.orchestrator import resolve_repo_dir_unavailable_reason
+
+    return resolve_repo_dir_unavailable_reason(app_key)
+
+
 def _default_call_ai(worktree: Path, prompt: str, timeout: float, stop_event: threading.Event | None):
     """The same read-only call DCC's Orchestrator uses for its Reviewer AI (Read/Glob/Grep only,
     no shell/editor/MCP/sub-agent tool, no git or package-install capability), with Main=Claude
@@ -454,6 +491,7 @@ def investigate(
     report: inbox.Report,
     *,
     resolve_repo_dir: Callable[[str], Path | None] | None = None,
+    resolve_repo_dir_reason: Callable[[str], str] | None = None,
     call_ai: Callable[[Path, str, float, threading.Event | None], object] | None = None,
     timeout: float = TRIAGE_TIMEOUT_SECONDS,
     max_tokens: int = TRIAGE_MAX_TOKENS,
@@ -466,6 +504,12 @@ def investigate(
     stop (StopRequested, from `stop_event` while an AI call is in flight) propagates, so a
     caller whose dialog has already closed can let the whole investigation unwind quietly.
 
+    `resolve_repo_dir_reason` (DCC Task 14.3) is called only when `resolve_repo_dir` came back
+    None, to classify *why* (one of the CODE_UNAVAILABLE_REASON_* kinds, or "" when unknown) for
+    the dialog's on-screen note (code_unavailable_note) -- never a path or exception string. It
+    defaults to the real registry classification; any exception from it degrades to "" (仕様3:
+    an unclassifiable reason still falls back to the plain Task 14 note, never raises).
+
     `write_failure_log` (DCC Task 14.1, 仕様B) is called only when the AI answered but its output
     could not be read (parse/validation failure) -- never on AI-unavailable/timeout/token-limit
     (仕様B-7) and never on success (仕様B-8). It defaults to write_triage_failure_log; tests
@@ -476,6 +520,7 @@ def investigate(
     from tools.ai_orchestrator import providers
 
     resolve_repo_dir = resolve_repo_dir or _default_resolve_repo_dir
+    resolve_repo_dir_reason = resolve_repo_dir_reason or _default_resolve_repo_dir_reason
     call_ai = call_ai or _default_call_ai
     write_failure_log = write_failure_log or write_triage_failure_log
 
@@ -484,6 +529,12 @@ def investigate(
     except Exception:  # noqa: BLE001 - registry trouble must degrade to text-only, not crash
         repo_dir = None
     code_available = repo_dir is not None
+    code_unavailable_reason = ""
+    if not code_available:
+        try:
+            code_unavailable_reason = resolve_repo_dir_reason(report.app_key)
+        except Exception:  # noqa: BLE001 - an unclassifiable reason must not change the outcome
+            code_unavailable_reason = ""
     prompt = build_triage_prompt(report, code_available=code_available)
 
     worktree = repo_dir
@@ -498,7 +549,7 @@ def investigate(
         except StopRequested:
             raise
         except Exception:  # noqa: BLE001 - any provider/process failure is "could not investigate"
-            return TriageOutcome(None, "AIを呼び出せませんでした。", code_available)
+            return TriageOutcome(None, "AIを呼び出せませんでした。", code_available, code_unavailable_reason)
     finally:
         if cleanup_dir is not None:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
@@ -511,11 +562,12 @@ def investigate(
             _log_token_limit_breakdown(result, max_tokens)
         else:
             reason = "調査できませんでした。"
-        return TriageOutcome(None, reason, code_available)
+        return TriageOutcome(None, reason, code_available, code_unavailable_reason)
 
     if result.tokens and result.tokens > max_tokens:
         _log_token_limit_breakdown(result, max_tokens)
-        return TriageOutcome(None, "調査できませんでした（トークンの上限を超えました）。", code_available)
+        return TriageOutcome(None, "調査できませんでした（トークンの上限を超えました）。", code_available,
+                              code_unavailable_reason)
 
     try:
         parsed = parse_triage_output(result.text)
@@ -524,6 +576,6 @@ def investigate(
             write_failure_log(exc.kind, result.text)
         except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
             pass
-        return TriageOutcome(None, str(exc), code_available)
+        return TriageOutcome(None, str(exc), code_available, code_unavailable_reason)
 
-    return TriageOutcome(parsed, "", code_available)
+    return TriageOutcome(parsed, "", code_available, code_unavailable_reason)
