@@ -42,9 +42,12 @@ TRIAGE_MAX_TOKENS = 300_000
 # was tight enough that a real investigation (reading an unfamiliar repo's README/docs/code) could
 # run out mid-way with no readable answer -- ClaudeProvider.parse's own subtype=error_max_turns
 # path, previously folded into "the AI's process ended abnormally" (DCC Task 14.4.1's incident).
-# Raised to 1.5x for this call only, via run_review(max_turns=...); the Orchestrator's own
-# Reviewer-role calls (criteria drafting, code review) keep the unchanged default.
-TRIAGE_REVIEW_MAX_TURNS = 24  # 1.5 * providers.CLAUDE_REVIEW_MAX_TURNS (16)
+# Raised for this call only, via run_review(max_turns=...); the Orchestrator's own Reviewer-role
+# calls (criteria drafting, code review) keep the unchanged default.
+# DCC Task 14.4.3: 24 still was not enough headroom for a real investigation (夕食料飲システム) to
+# reach a conclusion before being cut off -- raised again to 40, alongside a stricter file-count /
+# early-conclusion budget in the prompt itself (see build_triage_prompt's _INVESTIGATION_BUDGET_NOTE).
+TRIAGE_REVIEW_MAX_TURNS = 40
 
 CLASSIFICATIONS = ("bug", "spec_misunderstanding", "feature_request", "insufficient_info")
 CLASSIFICATION_LABELS = {
@@ -199,6 +202,19 @@ def _clean(text: str, max_chars: int) -> str:
     return inbox.sanitize_text(text).strip()[:max_chars]
 
 
+# DCC Task 14.4.3: a fixed Japanese sentence, never mixed with the report body or any other
+# external string -- added to the prompt only when code_available (it is about reading files),
+# right after the existing scope note. Gives the AI a concrete budget (an approximate file-count
+# ceiling, a reminder to conclude before turns run out, and the fixed "未確認" fallback wording)
+# so it reaches a conclusion before TRIAGE_REVIEW_MAX_TURNS, instead of being cut off mid-way
+# (the failure build_triage_prompt's existing scope note alone did not prevent).
+_INVESTIGATION_BUDGET_NOTE = (
+    "ファイルを読むのは多くても約12個までにする。報告の内容に直接関係するファイルだけを読む。"
+    "作業回数の残りが少なくなる前に、調べるのをやめて、分かった範囲で必ず結論（根拠・修正箇所の候補・確信度）を出す。"
+    "調べきれなかった部分は『未確認』と書く。"
+)
+
+
 def build_triage_prompt(report: inbox.Report, *, code_available: bool) -> str:
     """The AI request (DCC Task 14, 仕様3): quotes report, kind, app, title and body with
     reports_inbox.quote_block (random boundary, control chars stripped, length already bounded
@@ -208,6 +224,7 @@ def build_triage_prompt(report: inbox.Report, *, code_available: bool) -> str:
         "読むファイルは、報告に関係しそうなものに絞り、リポジトリ全体を探索しないこと。"
         "調べきれない場合は、分かった範囲でJSONを返し、推測は推測と明記すること。"
         "読むファイルの数は必要最小限にし、決められた回数の中で、分かった範囲の結論を必ずJSONとして返すこと。"
+        " " + _INVESTIGATION_BUDGET_NOTE
         if code_available else
         "対象アプリのコードは読めません（作業フォルダが見つかりません）。報告の文面だけから判断してください。"
     )

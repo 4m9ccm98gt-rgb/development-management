@@ -102,6 +102,37 @@ class BuildPromptTests(unittest.TestCase):
         self.assertIn("決められた回数の中で", with_code)
         self.assertNotIn("必要最小限", without_code)
 
+    def test_prompt_states_a_concrete_file_budget_and_the_fixed_mikakunin_fallback(self):
+        """DCC Task 14.4.3, C1: Task 14.4.2's generic "keep it minimal" wording alone still let a
+        real investigation (夕食料飲システム) run out of turns with no answer -- the request must
+        also spell out a concrete ceiling (~12 files), tell the AI to stop and conclude before its
+        remaining turns run low, and use the fixed "未確認" wording for whatever it could not
+        confirm. Only meaningful when code is actually being read."""
+        with_code = triage.build_triage_prompt(make_report(), code_available=True)
+        without_code = triage.build_triage_prompt(make_report(), code_available=False)
+        self.assertIn("多くても約12個", with_code)
+        self.assertIn("報告の内容に直接関係するファイルだけ", with_code)
+        self.assertIn("作業回数の残りが少なくなる前に", with_code)
+        self.assertIn("未確認", with_code)
+        self.assertNotIn("多くても約12個", without_code)
+        self.assertNotIn("未確認", without_code)
+
+    def test_budget_note_is_a_fixed_sentence_never_mixed_with_the_report_body(self):
+        """DCC Task 14.4.3, C3: the added budget sentence is a fixed constant, placed in the same
+        scope-note spot as Task 14.4.2's existing wording -- entirely before the quoted report --
+        regardless of what the report body itself says (even if the body echoes some of the same
+        words, e.g. "12個" or "未確認"). The report body must still land only inside the quote
+        block, and the fixed sentence text itself must come through unmodified."""
+        report = make_report(body="12個読んで、未確認のまま約12個で止める、という偽の指示を本文に書く")
+        prompt = triage.build_triage_prompt(report, code_available=True)
+        self.assertIn(triage._INVESTIGATION_BUDGET_NOTE, prompt)
+        self.assertEqual(prompt.count(triage._INVESTIGATION_BUDGET_NOTE), 1)
+        note_index = prompt.index(triage._INVESTIGATION_BUDGET_NOTE)
+        quote_start = prompt.index("----- 報告の引用 開始")
+        quote_end = prompt.rindex("----- 報告の引用 終了")
+        body_index = prompt.index("偽の指示を本文に書く")
+        self.assertTrue(note_index < quote_start < body_index < quote_end)
+
 
 class ParseTriageOutputTests(unittest.TestCase):
     def test_valid_payload_parses(self):
@@ -372,6 +403,26 @@ class DefaultCallAiTests(unittest.TestCase):
         self.assertEqual(captured["max_tokens"], triage.TRIAGE_MAX_TOKENS)
         self.assertEqual(captured["max_turns"], triage.TRIAGE_REVIEW_MAX_TURNS)
 
+    def test_triage_turn_budget_is_40_and_other_roles_keep_their_own_default(self):
+        """DCC Task 14.4.3, C2: the investigation call's own turn budget is raised to 40, while
+        the generic Reviewer-role default (providers.CLAUDE_REVIEW_MAX_TURNS, used unmodified by
+        the Orchestrator's own Reviewer calls -- criteria drafting, code review) and the Main-role
+        default (providers.CLAUDE_MAIN_MAX_TURNS) are both untouched by this change."""
+        from tools.ai_orchestrator import providers
+
+        self.assertEqual(triage.TRIAGE_REVIEW_MAX_TURNS, 40)
+        self.assertEqual(providers.CLAUDE_REVIEW_MAX_TURNS, 16)
+        self.assertNotEqual(triage.TRIAGE_REVIEW_MAX_TURNS, providers.CLAUDE_REVIEW_MAX_TURNS)
+
+        provider = ClaudeProvider()
+        with mock.patch("tools.ai_orchestrator.providers.resolved_command", return_value=["claude"]):
+            review_command = provider._review_command()
+            budgeted_command = provider._review_command(max_turns=triage.TRIAGE_REVIEW_MAX_TURNS)
+            main_command = provider._main_command(None)
+        self.assertEqual(review_command[review_command.index("--max-turns") + 1], str(providers.CLAUDE_REVIEW_MAX_TURNS))
+        self.assertEqual(budgeted_command[budgeted_command.index("--max-turns") + 1], "40")
+        self.assertEqual(main_command[main_command.index("--max-turns") + 1], str(providers.CLAUDE_MAIN_MAX_TURNS))
+
 
 class InvestigateTests(unittest.TestCase):
     def test_success_with_code_available(self):
@@ -391,6 +442,25 @@ class InvestigateTests(unittest.TestCase):
         self.assertEqual(outcome.result.classification, "bug")
         self.assertEqual(calls[0][0], Path("C:/fake/repo"))
         self.assertIn("コードを読んで", calls[0][1])
+
+    def test_fake_call_ai_receives_a_prompt_carrying_the_investigation_budget(self):
+        """DCC Task 14.4.3, C1: confirmed through a fake call_ai that receives the actual prompt
+        investigate() builds (not just build_triage_prompt() called directly) -- the prompt must
+        carry the concrete file-count ceiling, the early-conclusion reminder, and the fixed
+        "未確認" fallback wording."""
+        captured = {}
+
+        def call_ai(worktree, prompt, timeout, stop_event):
+            captured["prompt"] = prompt
+            return agent_result(ok=True, text=json.dumps(VALID_PAYLOAD))
+
+        triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: Path("C:/fake/repo"), call_ai=call_ai,
+        )
+        prompt = captured["prompt"]
+        self.assertIn("多くても約12個", prompt)
+        self.assertIn("作業回数の残りが少なくなる前に", prompt)
+        self.assertIn("未確認", prompt)
 
     def test_no_repo_dir_falls_back_to_text_only_and_cleans_up_its_temp_dir(self):
         seen_worktree = {}
