@@ -20,7 +20,8 @@ def jl(*items) -> str:
     return "\n".join(json.dumps(i) for i in items) + "\n"
 
 
-def claude_stream(*, result="OK", is_error=False, subtype="success", rate=True, terminal="completed"):
+def claude_stream(*, result="OK", is_error=False, subtype="success", rate=True, terminal="completed",
+                   num_turns=None, errors=None):
     items = [
         {"type": "system", "subtype": "init", "model": "claude-sonnet-5", "session_id": SESSION},
         {"type": "assistant", "parent_tool_use_id": None, "message": {
@@ -33,9 +34,14 @@ def claude_stream(*, result="OK", is_error=False, subtype="success", rate=True, 
             "status": "allowed", "resetsAt": 1790326800, "rateLimitType": "five_hour",
             "unifiedWindows": {"five_hour": {"utilization": 0.06, "resetsAt": 1790326800},
                                "seven_day": {"utilization": 0.01, "resetsAt": 1790866800}}}})
-    items.append({"type": "result", "subtype": subtype, "is_error": is_error, "result": result,
-                  "session_id": SESSION, "terminal_reason": terminal,
-                  "modelUsage": {"claude-sonnet-5": {"contextWindow": 1000000}}})
+    result_event = {"type": "result", "subtype": subtype, "is_error": is_error, "result": result,
+                    "session_id": SESSION, "terminal_reason": terminal,
+                    "modelUsage": {"claude-sonnet-5": {"contextWindow": 1000000}}}
+    if num_turns is not None:
+        result_event["num_turns"] = num_turns
+    if errors is not None:
+        result_event["errors"] = errors
+    items.append(result_event)
     return jl(*items)
 
 
@@ -80,6 +86,58 @@ class ClaudeParseTests(unittest.TestCase):
         r = self.parse(claude_stream(is_error=True, subtype="error_max_turns", result=""), rc=1)
         self.assertTrue(r.max_turns)
 
+    def test_max_turns_gets_its_own_error_kind_and_fixed_subtype(self):
+        """DCC Task 14.4.2: a result event with subtype=error_max_turns (no answer text, exit
+        code 1) must be classified as ERR_MAX_TURNS, not folded into the generic ERR_PROCESS a
+        crashed process gets -- so a caller can show the real reason."""
+        r = self.parse(claude_stream(is_error=True, subtype="error_max_turns", result="",
+                                      num_turns=24), rc=1)
+        self.assertEqual(r.error_kind, p.ERR_MAX_TURNS)
+        self.assertEqual(r.result_subtype, p.RESULT_SUBTYPE_ERROR_MAX_TURNS)
+        self.assertEqual(r.num_turns, 24)
+
+    def test_unknown_subtype_is_reported_as_other_never_as_the_raw_value(self):
+        marker = "MYSTERY-SUBTYPE-MARKER-xyz"
+        r = self.parse(claude_stream(is_error=True, subtype=marker, result=""), rc=1)
+        self.assertEqual(r.result_subtype, p.RESULT_SUBTYPE_OTHER)
+        self.assertNotEqual(r.result_subtype, marker)
+
+    def test_no_result_event_leaves_result_subtype_empty(self):
+        # Same shape as test_crashed_process_with_no_result_event_is_a_process_error above --
+        # distinct from an unknown-but-present subtype, which is RESULT_SUBTYPE_OTHER.
+        r = self.parse("garbage\n", rc=1)
+        self.assertEqual(r.result_subtype, "")
+
+    def test_num_turns_is_captured_on_success(self):
+        r = self.parse(claude_stream(num_turns=5))
+        self.assertEqual(r.num_turns, 5)
+        self.assertEqual(r.result_subtype, p.RESULT_SUBTYPE_SUCCESS)
+
+    def test_num_turns_excludes_booleans(self):
+        # isinstance(True, int) is True in Python -- a stray JSON boolean must not be logged as 1/0.
+        r = self.parse(claude_stream(num_turns=True))
+        self.assertIsNone(r.num_turns)
+
+    def test_unknown_subtype_with_max_turns_phrase_in_errors_logs_other_not_error_max_turns(self):
+        """Reviewer finding: the free-text "maximum number of turns" fallback (for calls cut off
+        before a subtype-bearing result could be parsed) must not overwrite the logged
+        result_subtype for a result event that *was* parsed and carried a different subtype. The
+        actually-received (if unknown) subtype is logged as RESULT_SUBTYPE_OTHER, never forced to
+        error_max_turns just because the free-text heuristic also matched."""
+        marker = "MYSTERY-SUBTYPE-MARKER-xyz"
+        r = self.parse(claude_stream(is_error=True, subtype=marker, result="",
+                                      errors="hit the maximum number of turns"), rc=1)
+        self.assertEqual(r.result_subtype, p.RESULT_SUBTYPE_OTHER)
+        self.assertNotEqual(r.result_subtype, p.RESULT_SUBTYPE_ERROR_MAX_TURNS)
+
+    def test_no_result_event_with_max_turns_phrase_in_stderr_leaves_subtype_empty(self):
+        """Reviewer finding: with no result event parsed at all, the free-text heuristic must not
+        fabricate a result_subtype that was never actually reported -- it stays "" exactly like
+        any other no-result-event failure."""
+        r = self.parse("garbage\n", rc=1, stderr="Error: reached the maximum number of turns")
+        self.assertEqual(r.result_subtype, "")
+        self.assertFalse(r.max_turns)
+
     def test_no_result_event_is_a_protocol_error(self):
         # Exit code 0, non-empty but unparseable stdout: a clean exit that said nothing readable.
         r = self.parse("garbage\n", rc=0)
@@ -108,6 +166,19 @@ class ClaudeParseTests(unittest.TestCase):
         self.assertIn("Read,Glob,Grep", command)
         self.assertNotIn("acceptEdits", command)
         self.assertNotIn("Bash", " ".join(command))
+        self.assertIn(str(p.CLAUDE_REVIEW_MAX_TURNS), command)
+
+    def test_review_command_max_turns_can_be_overridden_without_changing_the_default(self):
+        """DCC Task 14.4.2: one caller (reports_triage's investigation) raises its own turn
+        budget via run_review(max_turns=...) without changing CLAUDE_REVIEW_MAX_TURNS itself --
+        every other Reviewer-role call (e.g. the Orchestrator's own code review) keeps using the
+        unchanged default when it doesn't pass max_turns."""
+        with mock.patch.object(p, "resolved_command", lambda name: [name]):
+            default_command = p.ClaudeProvider()._review_command()
+            raised_command = p.ClaudeProvider()._review_command(max_turns=24)
+        self.assertIn(str(p.CLAUDE_REVIEW_MAX_TURNS), default_command)
+        self.assertIn("24", raised_command)
+        self.assertNotIn("24", default_command)
 
     def test_run_review_stops_the_child_mid_stream_once_max_tokens_is_exceeded(self):
         """DCC Task 14 review fix: max_tokens must be enforced while the child is still

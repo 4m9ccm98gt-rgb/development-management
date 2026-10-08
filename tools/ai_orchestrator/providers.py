@@ -38,6 +38,24 @@ ERR_PROTOCOL = "protocol"
 ERR_EMPTY_RESPONSE = "empty_response"  # the call finished cleanly but the answer text itself was blank --
 # distinct from ERR_PROTOCOL, which means no readable answer could be found at all (DCC Task 14.4)
 ERR_TOKEN_LIMIT = "token_limit"  # caller-supplied run_review(max_tokens=...) was exceeded mid-run
+ERR_MAX_TURNS = "max_turns"  # Claude's own result event said subtype=error_max_turns -- the call was cut
+# off at --max-turns mid-investigation, not a crash (DCC Task 14.4.2); distinct from ERR_PROCESS so a
+# caller can show the real reason instead of "the AI's process ended abnormally"
+
+# Claude's own result.subtype, restricted to this fixed vocabulary (DCC Task 14.4.2): any other value
+# (including one that never appears here) is reported as RESULT_SUBTYPE_OTHER -- the AI's own subtype
+# string is never stored or displayed as-is.
+RESULT_SUBTYPE_SUCCESS = "success"
+RESULT_SUBTYPE_ERROR_MAX_TURNS = "error_max_turns"
+RESULT_SUBTYPE_ERROR_DURING_EXECUTION = "error_during_execution"
+RESULT_SUBTYPE_OTHER = "other"
+KNOWN_RESULT_SUBTYPES = (RESULT_SUBTYPE_SUCCESS, RESULT_SUBTYPE_ERROR_MAX_TURNS, RESULT_SUBTYPE_ERROR_DURING_EXECUTION)
+
+
+def _classify_result_subtype(raw: object) -> str:
+    """`raw` (the result event's own `subtype`) mapped onto KNOWN_RESULT_SUBTYPES, or
+    RESULT_SUBTYPE_OTHER for anything else -- never the raw value itself."""
+    return raw if raw in KNOWN_RESULT_SUBTYPES else RESULT_SUBTYPE_OTHER
 
 # Non-interactive acceptEdits denies Bash unless allowed. Inspection, tests and
 # interpreters only; git write commands are deliberately absent.
@@ -81,6 +99,10 @@ class AgentResult:
     stderr_chars: int = 0  # length only, never the content (DCC Task 14.4's own failure log needs a count, not the text)
     executable_kind: str = ""  # DCC Task 14.4.1: resolved_command_kind's own suffix (".cmd" / ".exe" / ...),
     # never the path -- a silent crash with empty stdout/stderr still leaves this fact behind.
+    result_subtype: str = ""  # DCC Task 14.4.2: one of RESULT_SUBTYPE_* (fixed vocabulary), or "" when no
+    # result event was parsed at all -- never the AI's own subtype string.
+    num_turns: int | None = None  # DCC Task 14.4.2: the result event's own num_turns, when the provider
+    # reported one as an int; never guessed.
 
 
 def agent_env() -> dict[str, str]:
@@ -220,7 +242,7 @@ class Provider:
         raise NotImplementedError
 
     def run_review(self, worktree: Path, prompt: str, *, timeout: int, hooks: ProcessHooks,
-                   max_tokens: int | None = None) -> AgentResult:
+                   max_tokens: int | None = None, max_turns: int | None = None) -> AgentResult:
         raise NotImplementedError
 
     def preflight(self) -> None:
@@ -246,22 +268,26 @@ class ClaudeProvider(Provider):
             command += ["--resume", session_id]
         return command
 
-    def _review_command(self) -> list[str]:
+    def _review_command(self, *, max_turns: int | None = None) -> list[str]:
         # Read-only capability set: no shell, editor, MCP or sub-agent tool.
         empty_mcp = Path(tempfile.gettempdir()) / "ai-orchestrator-empty-mcp.json"
         empty_mcp.write_text('{"mcpServers":{}}', encoding="utf-8")
         return [
             *resolved_command("claude"), "-p", "--output-format", "stream-json", "--verbose",
             "--permission-mode", "default", "--tools", "Read,Glob,Grep",
-            "--allowedTools", "Read,Glob,Grep", "--max-turns", str(CLAUDE_REVIEW_MAX_TURNS),
+            "--allowedTools", "Read,Glob,Grep", "--max-turns", str(max_turns or CLAUDE_REVIEW_MAX_TURNS),
             "--disable-slash-commands", "--strict-mcp-config", "--mcp-config", str(empty_mcp),
         ]
 
     def run_main(self, worktree, prompt, *, timeout, hooks, session_id=None):
         return self._call("main", self._main_command(session_id), worktree, prompt, timeout, hooks)
 
-    def run_review(self, worktree, prompt, *, timeout, hooks, max_tokens: int | None = None):
-        return self._call("review", self._review_command(), worktree, prompt, timeout, hooks,
+    def run_review(self, worktree, prompt, *, timeout, hooks, max_tokens: int | None = None,
+                    max_turns: int | None = None):
+        # `max_turns` lets one caller (DCC Task 14.4.2's triage investigation) raise its own budget
+        # above CLAUDE_REVIEW_MAX_TURNS without changing it for every other Reviewer-role call
+        # (e.g. the Orchestrator's own code review / criteria drafting).
+        return self._call("review", self._review_command(max_turns=max_turns), worktree, prompt, timeout, hooks,
                            max_tokens=max_tokens)
 
     def _call(self, role, command, worktree, prompt, timeout, hooks, max_tokens: int | None = None) -> AgentResult:
@@ -368,15 +394,36 @@ class ClaudeProvider(Provider):
         spent = final.get("usage") if isinstance(final.get("usage"), dict) else {}
         token_breakdown = {k: int(spent.get(k) or 0) for k in CLAUDE_BUDGET_USAGE_FIELDS}
         tokens = sum(token_breakdown.values())
+        # DCC Task 14.4.2: subtype_raw/num_turns_raw are the result event's own, unvalidated values --
+        # subtype_raw is never put on an AgentResult directly (only through _classify_result_subtype's
+        # fixed vocabulary, below); num_turns_raw is kept only when it is actually an int (and not a
+        # bool -- isinstance(True, int) is True in Python, so a stray boolean would otherwise log as 1/0).
+        subtype_raw = final.get("subtype") if isinstance(final.get("subtype"), str) else None
+        num_turns_raw = final.get("num_turns")
+        num_turns = num_turns_raw if isinstance(num_turns_raw, int) and not isinstance(num_turns_raw, bool) else None
+        # result_subtype (what gets logged/displayed) reflects only the result event actually
+        # received: "" when none was parsed at all, else the fixed-vocabulary classification of its
+        # own subtype. Computed once, here, so no later branch can substitute a different value for
+        # the one Claude actually reported (DCC Task 14.4.2 review: a free-text max-turns guess must
+        # not overwrite the logged subtype for a case the result event itself didn't report).
+        result_subtype = _classify_result_subtype(subtype_raw) if final else ""
         common = dict(provider="claude", role=role, session_id=session.lower() if session else None,
                       returncode=result.returncode, raw=result.stdout + "\n" + result.stderr,
                       rate_limit=rate, context=context, events=events or [], tokens=tokens,
                       token_breakdown=token_breakdown, stderr_chars=len(result.stderr),
-                      executable_kind=executable_kind)
-        max_turns = final.get("subtype") == "error_max_turns" or "maximum number of turns" in (
-            json.dumps(final.get("errors", "")) + result.stderr).lower()
+                      executable_kind=executable_kind, num_turns=num_turns, result_subtype=result_subtype)
+        # max_turns decides the user-facing reason (ERR_MAX_TURNS) only; it never changes
+        # result_subtype above, which must stay the actually-received value even when this
+        # free-text fallback (for calls that were cut off before a subtype-bearing result event
+        # could be parsed at all) fires.
+        max_turns = subtype_raw == RESULT_SUBTYPE_ERROR_MAX_TURNS or (
+            bool(final) and "maximum number of turns" in (
+                json.dumps(final.get("errors", "")) + result.stderr).lower())
         if max_turns:
-            return AgentResult(ok=False, max_turns=True, error_kind=ERR_PROCESS,
+            # Claude's own result event said it was cut off at --max-turns, not that it crashed --
+            # ERR_MAX_TURNS (DCC Task 14.4.2) lets a caller (reports_triage.investigate) show the
+            # real reason instead of folding this into "the AI's process ended abnormally".
+            return AgentResult(ok=False, max_turns=True, error_kind=ERR_MAX_TURNS,
                                error_detail="Claude reached max-turns", **common)
         failed = bool(result.returncode) or bool(final.get("is_error")) or not final
         if failed:

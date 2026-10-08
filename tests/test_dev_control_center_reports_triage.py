@@ -22,7 +22,8 @@ from scripts.dev_control_center import reports_triage as triage
 from tools.ai_orchestrator import orchestrator as orch
 from tools.ai_orchestrator.common import OrchestratorError, StopRequested
 from tools.ai_orchestrator.providers import (
-    ERR_AUTH, ERR_EMPTY_RESPONSE, ERR_PROCESS, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TOKEN_LIMIT, ClaudeProvider,
+    ERR_AUTH, ERR_EMPTY_RESPONSE, ERR_MAX_TURNS, ERR_PROCESS, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TOKEN_LIMIT,
+    ClaudeProvider,
 )
 from tools.ai_orchestrator.common import CommandResult
 
@@ -89,6 +90,17 @@ class BuildPromptTests(unittest.TestCase):
         quote_start = prompt.index("----- 報告の引用 開始")
         quote_end = prompt.rindex("----- 報告の引用 終了")  # the footer; the header mentions "終了" too, in its own description text
         self.assertTrue(quote_start < body_index < quote_end)
+
+    def test_prompt_asks_for_a_minimal_file_set_and_a_conclusion_within_the_turn_budget(self):
+        """DCC Task 14.4.2: once the real investigation call was confirmed to be cut off at
+        --max-turns (ClaudeProvider.parse's subtype=error_max_turns path), the request must also
+        tell the AI to keep the files it reads to a minimum and always return a conclusion within
+        its fixed number of turns -- only meaningful when code is actually being read."""
+        with_code = triage.build_triage_prompt(make_report(), code_available=True)
+        without_code = triage.build_triage_prompt(make_report(), code_available=False)
+        self.assertIn("必要最小限", with_code)
+        self.assertIn("決められた回数の中で", with_code)
+        self.assertNotIn("必要最小限", without_code)
 
 
 class ParseTriageOutputTests(unittest.TestCase):
@@ -312,6 +324,26 @@ class WriteTriageFailureLogTests(unittest.TestCase):
             expected = set(range(total - triage.TRIAGE_LOG_MAX_FILES, total))
             self.assertEqual(survivors, expected)
 
+    def test_result_subtype_and_num_turns_are_written_as_fixed_facts(self):
+        """DCC Task 14.4.2: the log must carry the fixed-vocabulary subtype and the turn count
+        when known -- never the AI's own raw subtype string."""
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp) / "triage_logs"
+            triage.write_triage_failure_log(
+                triage.FAILURE_KIND_MAX_TURNS, logs_dir=logs_dir,
+                **log_kwargs(result_subtype="error_max_turns", num_turns=24))
+            content = next(logs_dir.iterdir()).read_text(encoding="utf-8")
+            self.assertIn("結果のsubtype: error_max_turns", content)
+            self.assertIn("ターン数: 24", content)
+
+    def test_missing_result_subtype_and_num_turns_are_shown_as_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp) / "triage_logs"
+            triage.write_triage_failure_log(triage.FAILURE_KIND_OTHER, logs_dir=logs_dir, **log_kwargs())
+            content = next(logs_dir.iterdir()).read_text(encoding="utf-8")
+            self.assertIn("結果のsubtype: (不明)", content)
+            self.assertIn("ターン数: (不明)", content)
+
     def test_never_raises_when_the_directory_cannot_be_created(self):
         with tempfile.TemporaryDirectory() as tmp:
             blocking_file = Path(tmp) / "not-a-directory"
@@ -330,13 +362,15 @@ class DefaultCallAiTests(unittest.TestCase):
         captured = {}
 
         class FakeClaudeProvider:
-            def run_review(self, worktree, prompt, *, timeout, hooks, max_tokens=None):
+            def run_review(self, worktree, prompt, *, timeout, hooks, max_tokens=None, max_turns=None):
                 captured["max_tokens"] = max_tokens
+                captured["max_turns"] = max_turns
                 return agent_result(ok=True, text=json.dumps(VALID_PAYLOAD))
 
         with mock.patch("tools.ai_orchestrator.providers.ClaudeProvider", FakeClaudeProvider):
             triage._default_call_ai(Path("w"), "prompt", 10.0, None)
         self.assertEqual(captured["max_tokens"], triage.TRIAGE_MAX_TOKENS)
+        self.assertEqual(captured["max_turns"], triage.TRIAGE_REVIEW_MAX_TURNS)
 
 
 class InvestigateTests(unittest.TestCase):
@@ -473,6 +507,22 @@ class InvestigateTests(unittest.TestCase):
         kind, kwargs = failure_log_calls[0]
         self.assertEqual(kind, triage.FAILURE_KIND_TOKEN_LIMIT)
         self.assertEqual(kwargs["reply_chars"], len(fake_result.text))
+
+    def test_max_turns_error_kind_is_reported_distinctly_from_process_crashed(self):
+        """DCC Task 14.4.2: ERR_MAX_TURNS must not fall through to the generic "process crashed"
+        reason -- it gets its own FAILURE_KIND_MAX_TURNS / screen message."""
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_MAX_TURNS, returncode=1)
+
+        calls = []
+        outcome = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
+        )
+        self.assertIsNone(outcome.result)
+        self.assertIn("作業回数の上限", outcome.reason)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], triage.FAILURE_KIND_MAX_TURNS)
 
     def test_process_crashed_is_reported_in_japanese_and_logged_without_markers(self):
         """DCC Task 14.4, C1/C2: a crashed-process AgentResult (error_kind=ERR_PROCESS) is the
@@ -618,6 +668,75 @@ class InvestigateTests(unittest.TestCase):
         for kind, kwargs in unreadable_calls + blank_calls:
             self.assertNotIn(garbage_marker, json.dumps(kwargs, ensure_ascii=False))
         self.assertNotIn(garbage_marker, outcome_unreadable.reason)
+
+    def test_max_turns_unknown_subtype_and_silent_crash_are_distinguished(self):
+        """DCC Task 14.4.2, 受入条件: three fake `claude` outputs through the real
+        ClaudeProvider.parse -- (a) a result event with subtype=error_max_turns and no answer
+        text (exit code 1), (b) a result event whose subtype is some unrecognised value, also no
+        answer text (exit code 1), and (c) no result event at all (exit code 1, no stdout) --
+        must be told apart: (a) gets its own "reached the turn limit" screen message, and the
+        triage log's result_subtype differs for all three ("error_max_turns" / "other" / ""),
+        even though (b) and (c) can legitimately share the same "process crashed" screen reason.
+        The unknown subtype's own literal text must never reach the screen or the log."""
+        unknown_marker = "MYSTERY-SUBTYPE-MARKER-MUST-NEVER-BE-SHOWN-OR-LOGGED"
+
+        def call_ai_max_turns(worktree, prompt, timeout, stop_event):
+            stdout = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True,
+                                  "result": "", "session_id": None, "num_turns": 24}) + "\n"
+            return ClaudeProvider.parse("review", CommandResult(("claude",), 1, stdout, ""))
+
+        def call_ai_unknown_subtype(worktree, prompt, timeout, stop_event):
+            stdout = json.dumps({"type": "result", "subtype": unknown_marker, "is_error": True,
+                                  "result": "", "session_id": None}) + "\n"
+            return ClaudeProvider.parse("review", CommandResult(("claude",), 1, stdout, ""))
+
+        def call_ai_silent_crash(worktree, prompt, timeout, stop_event):
+            return ClaudeProvider.parse("review", CommandResult(("claude",), 1, "", ""))
+
+        max_turns_calls, unknown_calls, crash_calls = [], [], []
+        outcome_max_turns = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai_max_turns,
+            write_failure_log=lambda kind, **kwargs: max_turns_calls.append((kind, kwargs)),
+        )
+        outcome_unknown = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai_unknown_subtype,
+            write_failure_log=lambda kind, **kwargs: unknown_calls.append((kind, kwargs)),
+        )
+        outcome_crash = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai_silent_crash,
+            write_failure_log=lambda kind, **kwargs: crash_calls.append((kind, kwargs)),
+        )
+
+        self.assertIsNone(outcome_max_turns.result)
+        self.assertIsNone(outcome_unknown.result)
+        self.assertIsNone(outcome_crash.result)
+
+        # (a) is on-screen distinct from (b)/(c); (b) and (c) may share the existing wording.
+        self.assertEqual(outcome_max_turns.reason, triage._SCREEN_MESSAGES[triage.FAILURE_KIND_MAX_TURNS])
+        self.assertIn("作業回数の上限", outcome_max_turns.reason)
+        self.assertNotEqual(outcome_max_turns.reason, outcome_unknown.reason)
+        self.assertEqual(outcome_unknown.reason, outcome_crash.reason)
+
+        self.assertEqual(len(max_turns_calls), 1)
+        self.assertEqual(len(unknown_calls), 1)
+        self.assertEqual(len(crash_calls), 1)
+        self.assertEqual(max_turns_calls[0][0], triage.FAILURE_KIND_MAX_TURNS)
+        self.assertEqual(unknown_calls[0][0], triage.FAILURE_KIND_PROCESS_CRASHED)
+        self.assertEqual(crash_calls[0][0], triage.FAILURE_KIND_PROCESS_CRASHED)
+
+        # The log's result_subtype tells (b) and (c) apart even though their kind/reason match.
+        self.assertEqual(max_turns_calls[0][1]["result_subtype"], "error_max_turns")
+        self.assertEqual(max_turns_calls[0][1]["num_turns"], 24)
+        self.assertEqual(unknown_calls[0][1]["result_subtype"], "other")
+        self.assertEqual(crash_calls[0][1]["result_subtype"], "")
+        self.assertNotEqual(unknown_calls[0][1]["result_subtype"], outcome_crash.reason)
+
+        # The unknown subtype's own text must never leak into what is shown or logged.
+        for outcome, calls in ((outcome_max_turns, max_turns_calls), (outcome_unknown, unknown_calls),
+                                (outcome_crash, crash_calls)):
+            self.assertNotIn(unknown_marker, outcome.reason)
+            for kind, kwargs in calls:
+                self.assertNotIn(unknown_marker, json.dumps(kwargs, ensure_ascii=False))
 
     def test_auth_failure_is_ai_unavailable_and_is_logged(self):
         """Review fix (finding 2): ERR_AUTH/ERR_QUOTA (the AI process ran but rejected the call)

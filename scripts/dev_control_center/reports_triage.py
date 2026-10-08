@@ -38,6 +38,13 @@ TRIAGE_TIMEOUT_SECONDS = 300
 # Well under a Claude call's context window (~1,000,000 tokens; see ClaudeProvider.parse's
 # modelUsage): a runaway investigation is stopped long before it could exhaust it.
 TRIAGE_MAX_TOKENS = 300_000
+# DCC Task 14.4.2: the generic Reviewer-role turn budget (providers.CLAUDE_REVIEW_MAX_TURNS, 16)
+# was tight enough that a real investigation (reading an unfamiliar repo's README/docs/code) could
+# run out mid-way with no readable answer -- ClaudeProvider.parse's own subtype=error_max_turns
+# path, previously folded into "the AI's process ended abnormally" (DCC Task 14.4.1's incident).
+# Raised to 1.5x for this call only, via run_review(max_turns=...); the Orchestrator's own
+# Reviewer-role calls (criteria drafting, code review) keep the unchanged default.
+TRIAGE_REVIEW_MAX_TURNS = 24  # 1.5 * providers.CLAUDE_REVIEW_MAX_TURNS (16)
 
 CLASSIFICATIONS = ("bug", "spec_misunderstanding", "feature_request", "insufficient_info")
 CLASSIFICATION_LABELS = {
@@ -75,6 +82,8 @@ FAILURE_KIND_TOKEN_LIMIT = "token_limit"
 FAILURE_KIND_AI_UNAVAILABLE = "ai_unavailable"
 FAILURE_KIND_PROCESS_CRASHED = "process_crashed"
 FAILURE_KIND_EMPTY_RESPONSE = "empty_response"
+FAILURE_KIND_MAX_TURNS = "max_turns"  # DCC Task 14.4.2: Claude's own result event said
+# subtype=error_max_turns -- the call was cut off at --max-turns mid-investigation, not a crash.
 FAILURE_KIND_OTHER = "other"
 
 _LOG_HEADERS = {
@@ -88,6 +97,7 @@ _LOG_HEADERS = {
     FAILURE_KIND_AI_UNAVAILABLE: "AIが使えません",
     FAILURE_KIND_PROCESS_CRASHED: "AIのプロセスが異常終了しました",
     FAILURE_KIND_EMPTY_RESPONSE: "AIの返事が空でした",
+    FAILURE_KIND_MAX_TURNS: "AIの作業回数が上限に達しました",
     FAILURE_KIND_OTHER: "その他の失敗",
 }
 
@@ -106,6 +116,8 @@ _SCREEN_MESSAGES = {
         "調査できませんでした（AIのプロセスが異常終了しました）。詳細はDCCのログに残しました。",
     FAILURE_KIND_EMPTY_RESPONSE:
         "調査できませんでした（AIの返事が空でした）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_MAX_TURNS:
+        "調査できませんでした（調査の途中で、AI の作業回数の上限に達しました）。",
     FAILURE_KIND_OTHER: "調査できませんでした（その他の失敗です）。詳細はDCCのログに残しました。",
 }
 
@@ -195,6 +207,7 @@ def build_triage_prompt(report: inbox.Report, *, code_available: bool) -> str:
         "対象アプリのリポジトリのコード・README・docsを読んで調べてください。"
         "読むファイルは、報告に関係しそうなものに絞り、リポジトリ全体を探索しないこと。"
         "調べきれない場合は、分かった範囲でJSONを返し、推測は推測と明記すること。"
+        "読むファイルの数は必要最小限にし、決められた回数の中で、分かった範囲の結論を必ずJSONとして返すこと。"
         if code_available else
         "対象アプリのコードは読めません（作業フォルダが見つかりません）。報告の文面だけから判断してください。"
     )
@@ -444,6 +457,8 @@ def write_triage_failure_log(
     reason: str,
     executable_kind: str = "",
     timeout_seconds: float | None = None,
+    result_subtype: str = "",
+    num_turns: int | None = None,
     logs_dir: Path | None = None,
 ) -> None:
     """Best-effort local record of one failed investigation (DCC Task 14.1 仕様B, widened by Task
@@ -460,7 +475,11 @@ def write_triage_failure_log(
     whose precise cause could not be identified from code alone: which file type the provider
     actually launched (never the path) and the timeout that was configured for this call. Whether
     this call force-killed its own child for running past that timeout is derived from `kind`
-    itself (FAILURE_KIND_TIMEOUT), never guessed."""
+    itself (FAILURE_KIND_TIMEOUT), never guessed.
+
+    `result_subtype` (DCC Task 14.4.2) is one of providers.RESULT_SUBTYPE_* (fixed vocabulary) or
+    "" when no result event was parsed at all -- never the AI's own subtype string. `num_turns` is
+    the result event's own turn count when the provider reported one as an int, else None."""
     try:
         directory = logs_dir if logs_dir is not None else triage_logs_root()
         directory.mkdir(parents=True, exist_ok=True)
@@ -477,6 +496,8 @@ def write_triage_failure_log(
             f"強制終了（待ち時間切れ）: {'はい' if kind == FAILURE_KIND_TIMEOUT else 'いいえ'}",
             f"待ち時間の設定値（秒）: {timeout_seconds if timeout_seconds is not None else '(不明)'}",
             f"実行ファイルの種類: {executable_kind or '(不明)'}",
+            f"結果のsubtype: {result_subtype or '(不明)'}",
+            f"ターン数: {num_turns if num_turns is not None else '(不明)'}",
         ])
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
         seq = _next_log_sequence()
@@ -490,7 +511,7 @@ def write_triage_failure_log(
 def _safe_write_failure_log(
     write_failure_log: Callable[..., None], kind: str, *, returncode: int | None, elapsed_seconds: float,
     stderr_chars: int, reply_chars: int, reason: str, executable_kind: str = "",
-    timeout_seconds: float | None = None,
+    timeout_seconds: float | None = None, result_subtype: str = "", num_turns: int | None = None,
 ) -> None:
     """DCC Task 14.4, 仕様3/C3: calling the (possibly test-injected) logger must never itself
     raise or change the outcome already computed -- same guarantee write_triage_failure_log gives
@@ -499,7 +520,7 @@ def _safe_write_failure_log(
         write_failure_log(
             kind, returncode=returncode, elapsed_seconds=elapsed_seconds, stderr_chars=stderr_chars,
             reply_chars=reply_chars, reason=reason, executable_kind=executable_kind,
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=timeout_seconds, result_subtype=result_subtype, num_turns=num_turns,
         )
     except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
         pass
@@ -544,12 +565,13 @@ def _default_call_ai(worktree: Path, prompt: str, timeout: float, stop_event: th
     per the Orchestrator's own default (no new provider setting is introduced). max_tokens is
     enforced while the call is still running (ClaudeProvider._call watches each stream-json line's
     running usage), not only against the finished result -- a runaway investigation is stopped,
-    not merely discarded after the fact."""
+    not merely discarded after the fact. max_turns=TRIAGE_REVIEW_MAX_TURNS (DCC Task 14.4.2) raises
+    the turn budget for this call only, above the Orchestrator's own Reviewer-role default."""
     from tools.ai_orchestrator.common import ProcessHooks
     from tools.ai_orchestrator.providers import ClaudeProvider
 
     return ClaudeProvider().run_review(worktree, prompt, timeout=int(timeout), hooks=ProcessHooks(stop=stop_event),
-                                        max_tokens=TRIAGE_MAX_TOKENS)
+                                        max_tokens=TRIAGE_MAX_TOKENS, max_turns=TRIAGE_REVIEW_MAX_TURNS)
 
 
 def investigate(
@@ -646,6 +668,8 @@ def investigate(
             providers.ERR_TOKEN_LIMIT: FAILURE_KIND_TOKEN_LIMIT,
             providers.ERR_QUOTA: FAILURE_KIND_AI_UNAVAILABLE,
             providers.ERR_AUTH: FAILURE_KIND_AI_UNAVAILABLE,
+            providers.ERR_MAX_TURNS: FAILURE_KIND_MAX_TURNS,  # DCC Task 14.4.2: cut off at the turn
+            # limit mid-investigation -- distinct from a crashed process (ERR_PROCESS below).
             providers.ERR_PROCESS: FAILURE_KIND_PROCESS_CRASHED,
             providers.ERR_PROTOCOL: FAILURE_KIND_NO_JSON,  # no readable answer at all -- "読み取れなかった"
             providers.ERR_EMPTY_RESPONSE: FAILURE_KIND_EMPTY_RESPONSE,  # answer text itself was blank
@@ -660,6 +684,7 @@ def investigate(
             elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
             reply_chars=len(getattr(result, "text", "") or ""), reason=reason,
             executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
+            result_subtype=getattr(result, "result_subtype", ""), num_turns=getattr(result, "num_turns", None),
         )
         return TriageOutcome(None, reason, code_available, code_unavailable_reason)
 
@@ -670,6 +695,7 @@ def investigate(
             elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
             reply_chars=len(result.text), reason=_SCREEN_MESSAGES[FAILURE_KIND_TOKEN_LIMIT],
             executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
+            result_subtype=getattr(result, "result_subtype", ""), num_turns=getattr(result, "num_turns", None),
         )
         return TriageOutcome(None, _SCREEN_MESSAGES[FAILURE_KIND_TOKEN_LIMIT], code_available,
                               code_unavailable_reason)
@@ -682,6 +708,7 @@ def investigate(
             elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
             reply_chars=len(result.text), reason=str(exc),
             executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
+            result_subtype=getattr(result, "result_subtype", ""), num_turns=getattr(result, "num_turns", None),
         )
         return TriageOutcome(None, str(exc), code_available, code_unavailable_reason)
 
