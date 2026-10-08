@@ -69,9 +69,11 @@ class ReportsInboxWindow:
                  scan_fn: Callable[[list], list] | None = None,
                  copy_to_clipboard: Callable[[str], None] | None = None,
                  reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None,
-                 on_spec_ready: Callable[[object], None] | None = None) -> None:
+                 on_spec_ready: Callable[[object], None] | None = None,
+                 current_roles: Callable[[], tuple[str, str]] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
+        self._current_roles = current_roles
         if reports_config_fn is not None:
             self._reports_config_fn = reports_config_fn
         elif configured_apps is not None:
@@ -408,7 +410,8 @@ class ReportsInboxWindow:
         def on_created(path: object) -> None:
             self._on_spec_created(report, path)
 
-        ReportSpecDialog(self.window, report, target_repo=report.app_key, on_created=on_created)
+        ReportSpecDialog(self.window, report, target_repo=report.app_key, on_created=on_created,
+                          current_roles=self._current_roles)
 
     def _on_spec_created(self, report: inbox.Report, path) -> None:
         decision = inbox.save_decision(report.app_key, report.report_id, "handle")

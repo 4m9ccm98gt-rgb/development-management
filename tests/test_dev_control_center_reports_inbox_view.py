@@ -691,11 +691,12 @@ class _FakeReportSpecDialog:
 
     instances: list["_FakeReportSpecDialog"] = []
 
-    def __init__(self, master, report, *, target_repo, on_created=None):
+    def __init__(self, master, report, *, target_repo, on_created=None, current_roles=None):
         self.master = master
         self.report = report
         self.target_repo = target_repo
         self.on_created = on_created
+        self.current_roles = current_roles
         _FakeReportSpecDialog.instances.append(self)
 
 

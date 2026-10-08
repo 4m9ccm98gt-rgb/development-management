@@ -341,6 +341,27 @@ class ResolveRepoDirForAppTests(HostCase):
                 orch.REPO_DIR_FOLDER_MISSING)
 
 
+class ResolveRepoDefinitionTests(unittest.TestCase):
+    """DCC Task 14.5: reports_create_and_start.py's registered-Tests-command / branch lookup for
+    一回のクリックでの開始, keyed by the resolved repo directory's own name only."""
+
+    def registry(self, *definitions):
+        return mock.patch.object(orch, "_registry_definitions", lambda: list(definitions))
+
+    def test_matches_by_exact_name(self):
+        definition = SimpleNamespace(name="next-day-setup", branch="main", initial_test="pytest -q")
+        with self.registry(definition):
+            self.assertIs(orch.resolve_repo_definition("next-day-setup"), definition)
+
+    def test_no_match_is_none(self):
+        with self.registry(SimpleNamespace(name="some-other-app", branch="main", initial_test="")):
+            self.assertIsNone(orch.resolve_repo_definition("next-day-setup"))
+
+    def test_empty_registry_is_none(self):
+        with self.registry():
+            self.assertIsNone(orch.resolve_repo_definition("next-day-setup"))
+
+
 class ResolveTargetRepoPreviewTests(HostCase):
     """DCC Task 10: the start-confirmation screen needs the target repo decided before any run
     or lock exists. resolve_target_repo exposes exactly prepare_run's own decision, standalone."""

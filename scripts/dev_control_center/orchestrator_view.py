@@ -501,6 +501,12 @@ class OrchestratorWindow:
         inverse = {v: k for k, v in ROLE_LABEL.items()}
         return inverse.get(self.main_var.get(), DEFAULT_MAIN_AGENT), inverse.get(self.review_var.get(), DEFAULT_REVIEW_AGENT)
 
+    def current_roles(self) -> tuple[str, str]:
+        """DCC Task 14.5: this window's own currently-selected (main, reviewer) -- used by
+        app.py to show "現在の DCC の設定" in the reports inbox's 作成して開始 confirmation
+        dialog without that dialog needing to know this window's internals."""
+        return self._names()
+
     def _on_role_changed(self, changed: str) -> None:
         main, reviewer = self._names()
         if main == reviewer:

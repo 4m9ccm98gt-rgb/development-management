@@ -510,7 +510,20 @@ class App(ttk.Frame):
         if window is not None and window.exists():
             window.focus()
             return
-        self.reports_window = ReportsInboxWindow(self.master, on_spec_ready=self._send_spec_to_orchestrator)
+        self.reports_window = ReportsInboxWindow(
+            self.master, on_spec_ready=self._send_spec_to_orchestrator,
+            current_roles=self._current_orchestrator_roles)
+
+    def _current_orchestrator_roles(self) -> tuple[str, str]:
+        """DCC Task 14.5: "現在の DCC の設定" for 作成して開始's confirmation dialog -- the
+        already-open Orchestrator window's own Main/Reviewer selection when there is one, else
+        the Orchestrator's own defaults (the same ones a freshly opened window would show)."""
+        from tools.ai_orchestrator.providers import DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT
+
+        window = self.orchestrator_window
+        if window is not None and window.exists():
+            return window.current_roles()
+        return DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT
 
     def _send_spec_to_orchestrator(self, spec_path) -> None:
         """DCC Task 11: open (or focus, never duplicate) the Orchestrator start form and load the

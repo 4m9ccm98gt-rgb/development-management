@@ -542,6 +542,16 @@ def resolve_repo_dir_unavailable_reason(app_key: str) -> str:
     return reason
 
 
+def resolve_repo_definition(repo_name: str):
+    """DCC Task 14.5: the registry's own RepoDefinition for `repo_name` (an exact match against
+    the canonical name resolve_repo_dir_for_app resolves to, e.g. the resolved path's `.name`),
+    or None when there is no such definition. Gives reports_create_and_start.py the same branch /
+    initial_test defaults OrchestratorWindow.start_run already falls back to when a human leaves
+    those fields blank -- so a repo's branch and Tests command still come from DCC's own registry
+    only, never from report text or AI output."""
+    return next((d for d in _registry_definitions() if d.name == repo_name), None)
+
+
 def resolve_target_repo(task: str, spec: Spec | None, repo: str | None = None) -> Path:
     """What prepare_run will pick as the target repository, and whether it agrees with the
     task's own "対象リポジトリ:" line / the spec's target_repo -- without creating a run or
