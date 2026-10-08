@@ -154,6 +154,17 @@ def resolved_command(name: str) -> list[str]:
     return [str(path)]
 
 
+def resolved_command_kind(name: str) -> str:
+    """Which file type `name` resolves to on PATH, as `resolved_command` would launch it (DCC
+    Task 14.4.1 diagnostic logging): the resolved executable's own suffix, never its path --
+    a silent crash that leaves every other field empty still leaves this one fact. "" when
+    `name` is not found at all."""
+    resolved = shutil.which(name)
+    if not resolved:
+        return ""
+    return Path(resolved).suffix.lower() or "(no-ext)"
+
+
 # --- atomic JSON --------------------------------------------------------------
 
 def write_json_atomic(path: Path, payload: object) -> None:

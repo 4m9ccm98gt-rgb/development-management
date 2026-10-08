@@ -16,7 +16,8 @@ import tempfile
 import threading
 
 from .common import (
-    CommandResult, OrchestratorError, ProcessHooks, StopRequested, resolved_command, run_streaming,
+    CommandResult, OrchestratorError, ProcessHooks, StopRequested, resolved_command, resolved_command_kind,
+    run_streaming,
 )
 
 CLAUDE_MAIN_MAX_TURNS = 40   # fallback per invocation; the engine sets `turn_limit` from Limits (implementation / repair)
@@ -78,6 +79,8 @@ class AgentResult:
     token_breakdown: dict | None = None  # Claude only: {"input_tokens", "cache_creation_input_tokens", "output_tokens"} -- the same fields `tokens` sums, never cache_read_input_tokens (see _claude_turn_tokens)
     events: list = field(default_factory=list)  # short human log lines already emitted
     stderr_chars: int = 0  # length only, never the content (DCC Task 14.4's own failure log needs a count, not the text)
+    executable_kind: str = ""  # DCC Task 14.4.1: resolved_command_kind's own suffix (".cmd" / ".exe" / ...),
+    # never the path -- a silent crash with empty stdout/stderr still leaves this fact behind.
 
 
 def agent_env() -> dict[str, str]:
@@ -264,6 +267,7 @@ class ClaudeProvider(Provider):
     def _call(self, role, command, worktree, prompt, timeout, hooks, max_tokens: int | None = None) -> AgentResult:
         events: list[str] = []
         live = hooks.on_line
+        executable_kind = resolved_command_kind(self.name)
         budget_exceeded = threading.Event()
         running_tokens = {"total": 0, **{k: 0 for k in CLAUDE_BUDGET_USAGE_FIELDS}}
         counted_message_ids: set[str] = set()
@@ -301,12 +305,13 @@ class ClaudeProvider(Provider):
                                     error_detail="token budget exceeded mid-run",
                                     tokens=running_tokens["total"],
                                     token_breakdown={k: running_tokens[k] for k in CLAUDE_BUDGET_USAGE_FIELDS},
-                                    events=events)
+                                    events=events, executable_kind=executable_kind)
             raise
         except OrchestratorError as exc:
             kind = ERR_TIMEOUT if exc.code == "COMMAND_TIMEOUT" else ERR_PROCESS
-            return AgentResult(self.name, role, False, error_kind=kind, error_detail=str(exc), events=events)
-        return self.parse(role, result, events)
+            return AgentResult(self.name, role, False, error_kind=kind, error_detail=str(exc), events=events,
+                                executable_kind=executable_kind)
+        return self.parse(role, result, events, executable_kind=executable_kind)
 
     @staticmethod
     def _summarize_line(line: str) -> str:
@@ -330,7 +335,8 @@ class ClaudeProvider(Provider):
         return ""
 
     @staticmethod
-    def parse(role: str, result: CommandResult, events: list[str] | None = None) -> AgentResult:
+    def parse(role: str, result: CommandResult, events: list[str] | None = None,
+              executable_kind: str = "") -> AgentResult:
         items = _json_lines(result.stdout)
         final = next((i for i in reversed(items) if i.get("type") == "result"), {})
         rate = None
@@ -365,7 +371,8 @@ class ClaudeProvider(Provider):
         common = dict(provider="claude", role=role, session_id=session.lower() if session else None,
                       returncode=result.returncode, raw=result.stdout + "\n" + result.stderr,
                       rate_limit=rate, context=context, events=events or [], tokens=tokens,
-                      token_breakdown=token_breakdown, stderr_chars=len(result.stderr))
+                      token_breakdown=token_breakdown, stderr_chars=len(result.stderr),
+                      executable_kind=executable_kind)
         max_turns = final.get("subtype") == "error_max_turns" or "maximum number of turns" in (
             json.dumps(final.get("errors", "")) + result.stderr).lower()
         if max_turns:

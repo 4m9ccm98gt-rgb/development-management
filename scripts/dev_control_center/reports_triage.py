@@ -442,6 +442,8 @@ def write_triage_failure_log(
     stderr_chars: int,
     reply_chars: int,
     reason: str,
+    executable_kind: str = "",
+    timeout_seconds: float | None = None,
     logs_dir: Path | None = None,
 ) -> None:
     """Best-effort local record of one failed investigation (DCC Task 14.1 仕様B, widened by Task
@@ -452,7 +454,13 @@ def write_triage_failure_log(
     text; only their *lengths* (stderr_chars, reply_chars) are recorded. The file name (UTC
     timestamp + a monotonic sequence number + random suffix) carries none of that either. The
     sequence number (see _next_log_sequence) keeps name order equal to creation order even for
-    several logs written within the same second, which the timestamp alone cannot guarantee."""
+    several logs written within the same second, which the timestamp alone cannot guarantee.
+
+    `executable_kind` and `timeout_seconds` (DCC Task 14.4.1) are the fallback facts for a failure
+    whose precise cause could not be identified from code alone: which file type the provider
+    actually launched (never the path) and the timeout that was configured for this call. Whether
+    this call force-killed its own child for running past that timeout is derived from `kind`
+    itself (FAILURE_KIND_TIMEOUT), never guessed."""
     try:
         directory = logs_dir if logs_dir is not None else triage_logs_root()
         directory.mkdir(parents=True, exist_ok=True)
@@ -466,6 +474,9 @@ def write_triage_failure_log(
             f"標準エラーの文字数: {stderr_chars}",
             f"AIの返事の文字数: {reply_chars}",
             f"理由: {reason}",
+            f"強制終了（待ち時間切れ）: {'はい' if kind == FAILURE_KIND_TIMEOUT else 'いいえ'}",
+            f"待ち時間の設定値（秒）: {timeout_seconds if timeout_seconds is not None else '(不明)'}",
+            f"実行ファイルの種類: {executable_kind or '(不明)'}",
         ])
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
         seq = _next_log_sequence()
@@ -478,7 +489,8 @@ def write_triage_failure_log(
 
 def _safe_write_failure_log(
     write_failure_log: Callable[..., None], kind: str, *, returncode: int | None, elapsed_seconds: float,
-    stderr_chars: int, reply_chars: int, reason: str,
+    stderr_chars: int, reply_chars: int, reason: str, executable_kind: str = "",
+    timeout_seconds: float | None = None,
 ) -> None:
     """DCC Task 14.4, 仕様3/C3: calling the (possibly test-injected) logger must never itself
     raise or change the outcome already computed -- same guarantee write_triage_failure_log gives
@@ -486,7 +498,8 @@ def _safe_write_failure_log(
     try:
         write_failure_log(
             kind, returncode=returncode, elapsed_seconds=elapsed_seconds, stderr_chars=stderr_chars,
-            reply_chars=reply_chars, reason=reason,
+            reply_chars=reply_chars, reason=reason, executable_kind=executable_kind,
+            timeout_seconds=timeout_seconds,
         )
     except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
         pass
@@ -620,7 +633,7 @@ def investigate(
             reason = _SCREEN_MESSAGES[FAILURE_KIND_OTHER]
             _safe_write_failure_log(write_failure_log, FAILURE_KIND_OTHER, returncode=None,
                                      elapsed_seconds=time.monotonic() - started, stderr_chars=0,
-                                     reply_chars=0, reason=reason)
+                                     reply_chars=0, reason=reason, timeout_seconds=timeout)
             return TriageOutcome(None, reason, code_available, code_unavailable_reason)
     finally:
         if cleanup_dir is not None:
@@ -646,6 +659,7 @@ def investigate(
             write_failure_log, failure_kind, returncode=getattr(result, "returncode", None),
             elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
             reply_chars=len(getattr(result, "text", "") or ""), reason=reason,
+            executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
         )
         return TriageOutcome(None, reason, code_available, code_unavailable_reason)
 
@@ -655,6 +669,7 @@ def investigate(
             write_failure_log, FAILURE_KIND_TOKEN_LIMIT, returncode=getattr(result, "returncode", None),
             elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
             reply_chars=len(result.text), reason=_SCREEN_MESSAGES[FAILURE_KIND_TOKEN_LIMIT],
+            executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
         )
         return TriageOutcome(None, _SCREEN_MESSAGES[FAILURE_KIND_TOKEN_LIMIT], code_available,
                               code_unavailable_reason)
@@ -666,6 +681,7 @@ def investigate(
             write_failure_log, exc.kind, returncode=getattr(result, "returncode", None),
             elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
             reply_chars=len(result.text), reason=str(exc),
+            executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
         )
         return TriageOutcome(None, str(exc), code_available, code_unavailable_reason)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -252,6 +253,34 @@ class ClaudeParseTests(unittest.TestCase):
         allowed = " ".join(p.CLAUDE_ALLOWED_BASH_TOOLS)
         for word in ("git commit", "git push", "git add", "git reset", "git checkout"):
             self.assertNotIn(word, allowed)
+
+
+class ClaudeFakeProcessClassificationTests(unittest.TestCase):
+    """DCC Task 14.4.1, C1: a forced timeout kill and a silent crash (exit code 1, no stdout/
+    stderr at all -- the exact shape of the real-world "AIのプロセスが異常終了しました" report)
+    must stay classified differently all the way from the real child process through
+    run_streaming and ClaudeProvider -- never both folding into ERR_PROCESS. These use a real
+    fake subprocess (a short `python -c ...` script standing in for claude.cmd / claude.exe),
+    not an injected AgentResult, so the classification is exercised through the actual process
+    plumbing -- no real AI call, no network, no Tk."""
+
+    def test_forced_timeout_kill_is_classified_as_timeout_not_crashed(self):
+        code = "import time; time.sleep(5)"
+        with mock.patch.object(p, "resolved_command", lambda name: [sys.executable, "-c", code]):
+            result = p.ClaudeProvider().run_review(
+                Path(tempfile.gettempdir()), "", timeout=1, hooks=p.ProcessHooks())
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_kind, p.ERR_TIMEOUT)
+
+    def test_silent_crash_with_no_output_and_exit_code_one_is_classified_as_process_crashed(self):
+        code = "import sys; sys.exit(1)"
+        with mock.patch.object(p, "resolved_command", lambda name: [sys.executable, "-c", code]):
+            result = p.ClaudeProvider().run_review(
+                Path(tempfile.gettempdir()), "", timeout=30, hooks=p.ProcessHooks())
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_kind, p.ERR_PROCESS)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr_chars, 0)
 
 
 class CodexParseTests(unittest.TestCase):

@@ -49,9 +49,10 @@ VALID_PAYLOAD = {
 }
 
 
-def agent_result(*, ok=True, text="", tokens=0, error_kind=None, returncode=None, stderr_chars=0):
+def agent_result(*, ok=True, text="", tokens=0, error_kind=None, returncode=None, stderr_chars=0,
+                  executable_kind=""):
     return SimpleNamespace(ok=ok, text=text, tokens=tokens, error_kind=error_kind,
-                            returncode=returncode, stderr_chars=stderr_chars)
+                            returncode=returncode, stderr_chars=stderr_chars, executable_kind=executable_kind)
 
 
 class BuildPromptTests(unittest.TestCase):
@@ -496,6 +497,47 @@ class InvestigateTests(unittest.TestCase):
         self.assertEqual(kwargs["returncode"], 1)
         self.assertEqual(kwargs["stderr_chars"], 123)
         self.assertEqual(kwargs["reply_chars"], 0)
+
+    def test_process_crashed_log_carries_the_executable_kind_and_configured_timeout(self):
+        """DCC Task 14.4.1: when the real cause of a crash can not be pinned down from code
+        alone, the log must still carry which file type was actually launched (never the path)
+        and the timeout that was configured for this call -- never guessed, always what
+        investigate() itself was given."""
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_PROCESS, returncode=1, executable_kind=".cmd")
+
+        calls = []
+        triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai, timeout=123.0,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
+        )
+        self.assertEqual(len(calls), 1)
+        _, kwargs = calls[0]
+        self.assertEqual(kwargs["executable_kind"], ".cmd")
+        self.assertEqual(kwargs["timeout_seconds"], 123.0)
+
+    def test_timeout_and_process_crashed_write_different_forced_kill_facts_to_the_real_log(self):
+        """DCC Task 14.4.1, C1: with the *real* write_triage_failure_log (not a fake), a forced
+        timeout kill and a silent crash must be distinguishable in the log body itself -- not
+        just by the header -- via the explicit forced-kill fact line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp)
+
+            def call_ai_timeout(worktree, prompt, timeout, stop_event):
+                return agent_result(ok=False, error_kind=ERR_TIMEOUT)
+
+            def call_ai_crashed(worktree, prompt, timeout, stop_event):
+                return agent_result(ok=False, error_kind=ERR_PROCESS, returncode=1)
+
+            import functools
+            real_logger = functools.partial(triage.write_triage_failure_log, logs_dir=logs_dir)
+            triage.investigate(make_report(), resolve_repo_dir=lambda app_key: None,
+                                call_ai=call_ai_timeout, write_failure_log=real_logger)
+            triage.investigate(make_report(), resolve_repo_dir=lambda app_key: None,
+                                call_ai=call_ai_crashed, write_failure_log=real_logger)
+            contents = [f.read_text(encoding="utf-8") for f in sorted(logs_dir.iterdir())]
+        forced_lines = {c.splitlines()[7] for c in contents}
+        self.assertEqual(forced_lines, {"強制終了（待ち時間切れ）: はい", "強制終了（待ち時間切れ）: いいえ"})
 
     def test_unreadable_response_is_reported_in_japanese_and_logged(self):
         """DCC Task 14.4 review fix: ClaudeProvider.parse's ERR_PROTOCOL (no result event could
