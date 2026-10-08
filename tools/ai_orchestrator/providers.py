@@ -34,6 +34,8 @@ ERR_TRANSIENT = "transient"
 ERR_TIMEOUT = "timeout"
 ERR_PROCESS = "process"
 ERR_PROTOCOL = "protocol"
+ERR_EMPTY_RESPONSE = "empty_response"  # the call finished cleanly but the answer text itself was blank --
+# distinct from ERR_PROTOCOL, which means no readable answer could be found at all (DCC Task 14.4)
 ERR_TOKEN_LIMIT = "token_limit"  # caller-supplied run_review(max_tokens=...) was exceeded mid-run
 
 # Non-interactive acceptEdits denies Bash unless allowed. Inspection, tests and
@@ -75,6 +77,7 @@ class AgentResult:
     tokens: int = 0                  # tokens this whole call consumed (Claude: input+cache-creation+output; Codex: input+output)
     token_breakdown: dict | None = None  # Claude only: {"input_tokens", "cache_creation_input_tokens", "output_tokens"} -- the same fields `tokens` sums, never cache_read_input_tokens (see _claude_turn_tokens)
     events: list = field(default_factory=list)  # short human log lines already emitted
+    stderr_chars: int = 0  # length only, never the content (DCC Task 14.4's own failure log needs a count, not the text)
 
 
 def agent_env() -> dict[str, str]:
@@ -362,7 +365,7 @@ class ClaudeProvider(Provider):
         common = dict(provider="claude", role=role, session_id=session.lower() if session else None,
                       returncode=result.returncode, raw=result.stdout + "\n" + result.stderr,
                       rate_limit=rate, context=context, events=events or [], tokens=tokens,
-                      token_breakdown=token_breakdown)
+                      token_breakdown=token_breakdown, stderr_chars=len(result.stderr))
         max_turns = final.get("subtype") == "error_max_turns" or "maximum number of turns" in (
             json.dumps(final.get("errors", "")) + result.stderr).lower()
         if max_turns:
@@ -374,7 +377,11 @@ class ClaudeProvider(Provider):
                               str(final.get("result", "")), result.stderr] +
                              ([] if final else [result.stdout[-2000:]]))
             kind = classify_error(text)
-            if kind == ERR_PROCESS and not final:
+            # A clean exit (returncode 0) with no parseable "result" event is a protocol
+            # oddity -- the process did what it was told and still said nothing readable.
+            # A non-zero exit with no result event is the process dying outright (DCC Task
+            # 14.4: this must stay ERR_PROCESS, not be folded into "the AI's reply was empty").
+            if kind == ERR_PROCESS and not final and result.returncode == 0:
                 kind = ERR_PROTOCOL
             if rate and str(rate.get("status", "allowed")) not in ("allowed", "allowed_warning") and kind != ERR_QUOTA:
                 kind = ERR_QUOTA
@@ -382,7 +389,11 @@ class ClaudeProvider(Provider):
                                error_detail=_short(text.strip() or f"rc={result.returncode}", 500), **common)
         answer = final.get("result")
         if not isinstance(answer, str) or not answer.strip():
-            return AgentResult(ok=False, error_kind=ERR_PROTOCOL, error_detail="Claude returned no result text", **common)
+            # A well-formed "result" event was parsed (unlike the ERR_PROTOCOL case above), but
+            # its own answer text was blank -- a genuinely empty response, not an unreadable one
+            # (DCC Task 14.4: investigate() must tell these two apart on screen and in the log).
+            return AgentResult(ok=False, error_kind=ERR_EMPTY_RESPONSE,
+                               error_detail="Claude returned no result text", **common)
         return AgentResult(ok=True, text=answer.strip(), **common)
 
 
@@ -465,7 +476,7 @@ class CodexProvider(Provider):
         context = {"used_tokens": used, "window_tokens": None, "model": None} if used else None
         common = dict(provider="codex", role=role, returncode=result.returncode,
                       raw=result.stdout + "\n" + result.stderr, context=context, events=events or [],
-                      tokens=total_tokens)
+                      tokens=total_tokens, stderr_chars=len(result.stderr))
         # Transient `error` events (e.g. stream reconnect notices) are fine when the turn completed.
         if result.returncode or not completed:
             text = "\n".join(errors + [result.stderr] + ([] if items else [result.stdout[-2000:]]))

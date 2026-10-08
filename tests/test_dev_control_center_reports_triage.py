@@ -20,8 +20,11 @@ from unittest import mock
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_triage as triage
 from tools.ai_orchestrator import orchestrator as orch
-from tools.ai_orchestrator.common import StopRequested
-from tools.ai_orchestrator.providers import ERR_PROCESS, ERR_TIMEOUT, ERR_TOKEN_LIMIT
+from tools.ai_orchestrator.common import OrchestratorError, StopRequested
+from tools.ai_orchestrator.providers import (
+    ERR_AUTH, ERR_EMPTY_RESPONSE, ERR_PROCESS, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TOKEN_LIMIT, ClaudeProvider,
+)
+from tools.ai_orchestrator.common import CommandResult
 
 
 def make_report(**overrides) -> inbox.Report:
@@ -46,8 +49,9 @@ VALID_PAYLOAD = {
 }
 
 
-def agent_result(*, ok=True, text="", tokens=0, error_kind=None):
-    return SimpleNamespace(ok=ok, text=text, tokens=tokens, error_kind=error_kind)
+def agent_result(*, ok=True, text="", tokens=0, error_kind=None, returncode=None, stderr_chars=0):
+    return SimpleNamespace(ok=ok, text=text, tokens=tokens, error_kind=error_kind,
+                            returncode=returncode, stderr_chars=stderr_chars)
 
 
 class BuildPromptTests(unittest.TestCase):
@@ -213,29 +217,51 @@ class ParseTriageOutputTests(unittest.TestCase):
         self.assertEqual(ctx.exception.kind, triage.FAILURE_KIND_NO_JSON)
 
 
-class WriteTriageFailureLogTests(unittest.TestCase):
-    """DCC Task 14.1, 仕様B: pure filesystem behaviour of the local failure log, always pointed
-    at a temp dir via logs_dir= -- never the real %LOCALAPPDATA%."""
+def log_kwargs(**overrides):
+    """DCC Task 14.4, 仕様3: the fixed numeric/word shape write_triage_failure_log takes -- never
+    stderr/AI/report content, only counts and the already-fixed Japanese reason."""
+    fields = dict(returncode=1, elapsed_seconds=12.3, stderr_chars=42, reply_chars=0, reason="調査できませんでした。")
+    fields.update(overrides)
+    return fields
 
-    def test_writes_one_new_file_with_a_fixed_header_and_the_raw_text(self):
+
+class WriteTriageFailureLogTests(unittest.TestCase):
+    """DCC Task 14.1, 仕様B (widened by Task 14.4, 仕様3): pure filesystem behaviour of the local
+    failure log, always pointed at a temp dir via logs_dir= -- never the real %LOCALAPPDATA%. The
+    body is numbers and fixed words only; there is no longer a raw-text parameter at all."""
+
+    def test_writes_one_new_file_with_a_fixed_header_and_the_numeric_facts(self):
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "triage_logs"
-            triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, "AIの返事の全文", logs_dir=logs_dir)
+            triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, logs_dir=logs_dir,
+                                             **log_kwargs(returncode=2, elapsed_seconds=5.0, stderr_chars=10,
+                                                          reply_chars=20, reason="調査結果を読み取れませんでした。"))
             files = list(logs_dir.iterdir())
             self.assertEqual(len(files), 1)
             content = files[0].read_text(encoding="utf-8")
             self.assertTrue(content.startswith("[JSONオブジェクトが見つかりません]"))
-            self.assertIn("AIの返事の全文", content)
+            self.assertIn("終了コード: 2", content)
+            self.assertIn("所要秒数: 5.0", content)
+            self.assertIn("標準エラーの文字数: 10", content)
+            self.assertIn("AIの返事の文字数: 20", content)
+            self.assertIn("調査結果を読み取れませんでした。", content)
+
+    def test_missing_returncode_is_shown_as_unknown_not_a_crash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            logs_dir = Path(tmp) / "triage_logs"
+            triage.write_triage_failure_log(triage.FAILURE_KIND_OTHER, logs_dir=logs_dir,
+                                             **log_kwargs(returncode=None))
+            content = next(logs_dir.iterdir()).read_text(encoding="utf-8")
+            self.assertIn("終了コード: (不明)", content)
 
     def test_file_name_contains_no_report_or_ai_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp) / "triage_logs"
-            report_id, app_key, raw = "report-xyz-123", "next-day-setup", "絶対に含まれてはいけない返事の文字列"
-            triage.write_triage_failure_log(triage.FAILURE_KIND_INVALID_VALUE, raw, logs_dir=logs_dir)
+            report_id, app_key = "report-xyz-123", "next-day-setup"
+            triage.write_triage_failure_log(triage.FAILURE_KIND_INVALID_VALUE, logs_dir=logs_dir, **log_kwargs())
             name = next(logs_dir.iterdir()).name
             self.assertNotIn(report_id, name)
             self.assertNotIn(app_key, name)
-            self.assertNotIn(raw, name)
 
     def test_does_not_overwrite_an_existing_file_with_the_same_name(self):
         fixed_now = SimpleNamespace(strftime=lambda fmt: "20260101T000000Z")
@@ -243,19 +269,22 @@ class WriteTriageFailureLogTests(unittest.TestCase):
             logs_dir = Path(tmp)
             with mock.patch.object(triage, "secrets", SimpleNamespace(token_hex=lambda n: "aaaa")), \
                  mock.patch.object(triage, "datetime", SimpleNamespace(now=lambda tz: fixed_now)):
-                triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, "first", logs_dir=logs_dir)
-                triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, "second", logs_dir=logs_dir)
+                triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, logs_dir=logs_dir,
+                                                 **log_kwargs(reply_chars=1))
+                triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, logs_dir=logs_dir,
+                                                 **log_kwargs(reply_chars=2))
             files = sorted(logs_dir.iterdir())
             self.assertEqual(len(files), 2)
             contents = {f.read_text(encoding="utf-8") for f in files}
-            self.assertTrue(any("first" in c for c in contents))
-            self.assertTrue(any("second" in c for c in contents))
+            self.assertTrue(any("AIの返事の文字数: 1" in c for c in contents))
+            self.assertTrue(any("AIの返事の文字数: 2" in c for c in contents))
 
     def test_prunes_to_the_newest_files_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             logs_dir = Path(tmp)
             for i in range(triage.TRIAGE_LOG_MAX_FILES + 5):
-                triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, f"text-{i}", logs_dir=logs_dir)
+                triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, logs_dir=logs_dir,
+                                                 **log_kwargs(reply_chars=i))
             files = list(logs_dir.iterdir())
             self.assertEqual(len(files), triage.TRIAGE_LOG_MAX_FILES)
 
@@ -265,7 +294,7 @@ class WriteTriageFailureLogTests(unittest.TestCase):
         that relied on the random suffix to break the tie would keep the oldest logs and
         delete the newest ones. The sequence number embedded in the name (_next_log_sequence)
         must keep name order equal to creation order regardless of what secrets.token_hex
-        returns, so this asserts on which texts survive, not just the count."""
+        returns, so this asserts on which entries survive, not just the count."""
         fixed_now = SimpleNamespace(strftime=lambda fmt: "20260101T000000Z")
         total = triage.TRIAGE_LOG_MAX_FILES + 5
         tokens = iter(f"{total - i:04d}" for i in range(total))
@@ -274,21 +303,13 @@ class WriteTriageFailureLogTests(unittest.TestCase):
             with mock.patch.object(triage, "datetime", SimpleNamespace(now=lambda tz: fixed_now)), \
                  mock.patch.object(triage, "secrets", SimpleNamespace(token_hex=lambda n: next(tokens))):
                 for i in range(total):
-                    triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, f"text-{i}", logs_dir=logs_dir)
+                    triage.write_triage_failure_log(triage.FAILURE_KIND_NO_JSON, logs_dir=logs_dir,
+                                                     **log_kwargs(reply_chars=i))
             files = sorted(logs_dir.iterdir())
             self.assertEqual(len(files), triage.TRIAGE_LOG_MAX_FILES)
-            bodies = {f.read_text(encoding="utf-8").split("\n", 1)[1] for f in files}
-            expected = {f"text-{i}" for i in range(total - triage.TRIAGE_LOG_MAX_FILES, total)}
-            self.assertEqual(bodies, expected)
-
-    def test_oversized_raw_text_is_truncated_with_a_note(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            logs_dir = Path(tmp)
-            huge = "x" * (triage.TRIAGE_LOG_MAX_CHARS + 500)
-            triage.write_triage_failure_log(triage.FAILURE_KIND_TOO_LONG, huge, logs_dir=logs_dir)
-            content = next(logs_dir.iterdir()).read_text(encoding="utf-8")
-            self.assertLess(len(content), len(huge))
-            self.assertIn("切り詰め", content)
+            survivors = {int(f.read_text(encoding="utf-8").splitlines()[5].split(": ")[1]) for f in files}
+            expected = set(range(total - triage.TRIAGE_LOG_MAX_FILES, total))
+            self.assertEqual(survivors, expected)
 
     def test_never_raises_when_the_directory_cannot_be_created(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -296,7 +317,7 @@ class WriteTriageFailureLogTests(unittest.TestCase):
             blocking_file.write_text("x", encoding="utf-8")
             # logs_dir is a path *under* a plain file: mkdir(parents=True) must fail with OSError.
             triage.write_triage_failure_log(
-                triage.FAILURE_KIND_NO_JSON, "text", logs_dir=blocking_file / "triage_logs")
+                triage.FAILURE_KIND_NO_JSON, logs_dir=blocking_file / "triage_logs", **log_kwargs())
 
 
 class DefaultCallAiTests(unittest.TestCase):
@@ -352,16 +373,29 @@ class InvestigateTests(unittest.TestCase):
         self.assertIsNotNone(outcome.result)
         self.assertFalse(seen_worktree["path"].exists())  # cleaned up after the call
 
-    def test_provider_exception_becomes_a_japanese_reason(self):
-        def call_ai(worktree, prompt, timeout, stop_event):
-            raise RuntimeError("boom")
+    def test_unexpected_exception_from_call_ai_becomes_a_japanese_reason_and_is_logged(self):
+        """DCC Task 14.4, C1/C2: an exception call_ai raises that is not a recognised
+        orchestration-level failure (OrchestratorError) is genuinely unexpected -- it must still
+        produce a non-empty, fixed Japanese reason (never the exception's own text) and now (仕様
+        3, unlike Task 14.1's original design) a triage_logs entry tagged FAILURE_KIND_OTHER,
+        with the exception text nowhere in what gets logged."""
+        marker = "MARKER-EXCEPTION-TEXT-MUST-NEVER-BE-LOGGED-OR-SHOWN"
 
+        def call_ai(worktree, prompt, timeout, stop_event):
+            raise RuntimeError(marker)
+
+        calls = []
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
         self.assertIsNone(outcome.result)
         self.assertTrue(outcome.reason)
-        self.assertNotIn("boom", outcome.reason)
+        self.assertNotIn(marker, outcome.reason)
+        self.assertEqual(len(calls), 1)
+        kind, kwargs = calls[0]
+        self.assertEqual(kind, triage.FAILURE_KIND_OTHER)
+        self.assertNotIn(marker, json.dumps(kwargs, ensure_ascii=False))
 
     def test_timeout_error_kind_is_reported_in_japanese(self):
         def call_ai(worktree, prompt, timeout, stop_event):
@@ -390,24 +424,33 @@ class InvestigateTests(unittest.TestCase):
         """DCC Task 14.2, 仕様3: when the budget is hit, one line goes to DCC's own module
         logger (not triage_logs) carrying only the per-field usage numbers -- never the report
         body or the AI's text. A missing token_breakdown (as on this SimpleNamespace fake) must
-        not raise; it just logs zeros."""
+        not raise; it just logs zeros. Review fix (finding 2): the mid-run token-limit failure
+        must also reach triage_logs now, same as every other post-call failure."""
         secret_text = "SECRET-REPORT-BODY-MUST-NEVER-BE-LOGGED"
 
         def call_ai(worktree, prompt, timeout, stop_event):
             return agent_result(ok=False, error_kind=ERR_TOKEN_LIMIT, text=secret_text)
 
+        failure_log_calls = []
         with self.assertLogs(triage.__name__, level="WARNING") as captured:
             outcome = triage.investigate(
                 make_report(body=secret_text), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+                write_failure_log=lambda kind, **kwargs: failure_log_calls.append((kind, kwargs)),
             )
         self.assertIsNone(outcome.result)
         joined = "\n".join(captured.output)
         self.assertIn("token limit exceeded", joined)
         self.assertNotIn(secret_text, joined)
+        self.assertEqual(len(failure_log_calls), 1)
+        kind, kwargs = failure_log_calls[0]
+        self.assertEqual(kind, triage.FAILURE_KIND_TOKEN_LIMIT)
+        self.assertNotIn(secret_text, json.dumps(kwargs, ensure_ascii=False))
 
     def test_over_token_budget_logs_the_reported_breakdown(self):
         """The post-hoc result.tokens check (AI finished, but over budget) also logs a
-        breakdown -- here using a real token_breakdown-bearing object, not the bare fake."""
+        breakdown -- here using a real token_breakdown-bearing object, not the bare fake. Review
+        fix (finding 2): this path, like the mid-run one above, must now also write a triage_logs
+        entry, not only the module-logger breakdown line."""
         fake_result = SimpleNamespace(
             ok=True, text=json.dumps(VALID_PAYLOAD), tokens=triage.TRIAGE_MAX_TOKENS + 1, error_kind=None,
             token_breakdown={"input_tokens": 10, "cache_creation_input_tokens": triage.TRIAGE_MAX_TOKENS, "output_tokens": 1},
@@ -416,23 +459,140 @@ class InvestigateTests(unittest.TestCase):
         def call_ai(worktree, prompt, timeout, stop_event):
             return fake_result
 
+        failure_log_calls = []
         with self.assertLogs(triage.__name__, level="WARNING") as captured:
             outcome = triage.investigate(
                 make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+                write_failure_log=lambda kind, **kwargs: failure_log_calls.append((kind, kwargs)),
             )
         self.assertIsNone(outcome.result)
         joined = "\n".join(captured.output)
         self.assertIn(f"cache_creation_input_tokens={triage.TRIAGE_MAX_TOKENS}", joined)
+        self.assertEqual(len(failure_log_calls), 1)
+        kind, kwargs = failure_log_calls[0]
+        self.assertEqual(kind, triage.FAILURE_KIND_TOKEN_LIMIT)
+        self.assertEqual(kwargs["reply_chars"], len(fake_result.text))
 
-    def test_other_process_failure_is_reported_in_japanese(self):
+    def test_process_crashed_is_reported_in_japanese_and_logged_without_markers(self):
+        """DCC Task 14.4, C1/C2: a crashed-process AgentResult (error_kind=ERR_PROCESS) is the
+        confirmed real-world route that used to show the bare "調査できませんでした。" with no
+        detail and no log at all -- it must now name the failure and log it, with none of the
+        fake AI's own marker text (stderr/AI reply content is never logged, only lengths)."""
         def call_ai(worktree, prompt, timeout, stop_event):
-            return agent_result(ok=False, error_kind=ERR_PROCESS)
+            return agent_result(ok=False, error_kind=ERR_PROCESS, returncode=1, stderr_chars=123)
 
+        calls = []
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
         self.assertIsNone(outcome.result)
         self.assertTrue(outcome.reason)
+        self.assertIn("プロセス", outcome.reason)
+        self.assertNotIn("\\", outcome.reason)
+        self.assertEqual(len(calls), 1)
+        kind, kwargs = calls[0]
+        self.assertEqual(kind, triage.FAILURE_KIND_PROCESS_CRASHED)
+        self.assertEqual(kwargs["returncode"], 1)
+        self.assertEqual(kwargs["stderr_chars"], 123)
+        self.assertEqual(kwargs["reply_chars"], 0)
+
+    def test_unreadable_response_is_reported_in_japanese_and_logged(self):
+        """DCC Task 14.4 review fix: ClaudeProvider.parse's ERR_PROTOCOL (no result event could
+        be parsed at all -- a non-empty but unreadable response) must read as "読み取れなかった",
+        distinct from a genuinely empty answer (see the ERR_EMPTY_RESPONSE test below), and must
+        be logged."""
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_PROTOCOL, returncode=0)
+
+        calls = []
+        outcome = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
+        )
+        self.assertIsNone(outcome.result)
+        self.assertIn("読み取れ", outcome.reason)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], triage.FAILURE_KIND_NO_JSON)
+
+    def test_empty_response_is_reported_in_japanese_and_logged(self):
+        """DCC Task 14.4, C1/C2: ClaudeProvider.parse's ERR_EMPTY_RESPONSE (a well-formed result
+        event whose own answer text was blank) must read as "AIの返事が空でした", not the bare
+        generic message, and must be logged."""
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_EMPTY_RESPONSE, returncode=0)
+
+        calls = []
+        outcome = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
+        )
+        self.assertIsNone(outcome.result)
+        self.assertIn("空", outcome.reason)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], triage.FAILURE_KIND_EMPTY_RESPONSE)
+
+    def test_real_claude_provider_parse_distinguishes_garbage_from_blank_answer(self):
+        """Review fix (finding 1): a fake call_ai alone never proves ClaudeProvider.parse's own
+        classification reaches investigate() correctly -- this runs the real `parse` against two
+        fake CommandResults (non-empty unparseable stdout vs a well-formed but blank answer) and
+        checks investigate() shows a different, non-empty Japanese reason for each, with neither
+        the fake stdout/stderr marker text nor an exception string ever appearing on screen or in
+        the log."""
+        garbage_marker = "GARBAGE-STDOUT-MARKER-MUST-NEVER-BE-SHOWN-OR-LOGGED"
+
+        def call_ai_unreadable(worktree, prompt, timeout, stop_event):
+            result = CommandResult(("claude",), 0, garbage_marker + "\n", "")
+            return ClaudeProvider.parse("review", result)
+
+        def call_ai_blank_answer(worktree, prompt, timeout, stop_event):
+            stdout = json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": "",
+                                  "session_id": None}) + "\n"
+            result = CommandResult(("claude",), 0, stdout, "")
+            return ClaudeProvider.parse("review", result)
+
+        unreadable_calls = []
+        outcome_unreadable = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai_unreadable,
+            write_failure_log=lambda kind, **kwargs: unreadable_calls.append((kind, kwargs)),
+        )
+        blank_calls = []
+        outcome_blank = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai_blank_answer,
+            write_failure_log=lambda kind, **kwargs: blank_calls.append((kind, kwargs)),
+        )
+
+        self.assertIsNone(outcome_unreadable.result)
+        self.assertIsNone(outcome_blank.result)
+        self.assertNotEqual(outcome_unreadable.reason, outcome_blank.reason)
+        self.assertIn("読み取れ", outcome_unreadable.reason)
+        self.assertIn("空", outcome_blank.reason)
+
+        self.assertEqual(len(unreadable_calls), 1)
+        self.assertEqual(unreadable_calls[0][0], triage.FAILURE_KIND_NO_JSON)
+        self.assertEqual(len(blank_calls), 1)
+        self.assertEqual(blank_calls[0][0], triage.FAILURE_KIND_EMPTY_RESPONSE)
+
+        for kind, kwargs in unreadable_calls + blank_calls:
+            self.assertNotIn(garbage_marker, json.dumps(kwargs, ensure_ascii=False))
+        self.assertNotIn(garbage_marker, outcome_unreadable.reason)
+
+    def test_auth_failure_is_ai_unavailable_and_is_logged(self):
+        """Review fix (finding 2): ERR_AUTH/ERR_QUOTA (the AI process ran but rejected the call)
+        reads as "AI unavailable" on screen, but -- unlike the pre-call OrchestratorError setup
+        failure -- the call *did* happen, so it must now be logged too."""
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_AUTH)
+
+        calls = []
+        outcome = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
+        )
+        self.assertIsNone(outcome.result)
+        self.assertIn("AI", outcome.reason)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], triage.FAILURE_KIND_AI_UNAVAILABLE)
 
     def test_over_token_budget_is_treated_as_failure(self):
         def call_ai(worktree, prompt, timeout, stop_event):
@@ -452,32 +612,38 @@ class InvestigateTests(unittest.TestCase):
         # and must not touch the real %LOCALAPPDATA% (the default logger's target).
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
-            write_failure_log=lambda kind, text: None,
+            write_failure_log=lambda kind, **kwargs: None,
         )
         self.assertIsNone(outcome.result)
         self.assertTrue(outcome.reason)
 
-    def test_unreadable_output_writes_the_raw_text_to_the_failure_log(self):
-        """DCC Task 14.1, 仕様B-5: a parse/validation failure (the AI answered, but its output
-        could not be read) must hand the AI's full raw text to write_failure_log, tagged with
-        the failure kind -- never into the on-screen reason (仕様B-6/7)."""
+    def test_unreadable_output_logs_only_the_reply_length_never_the_raw_text(self):
+        """DCC Task 14.4, 仕様3: a parse/validation failure (the AI answered, but its output
+        could not be read) must log only the fixed kind/word facts and numeric lengths -- the
+        AI's own text (however untrusted) must never reach write_failure_log at all, not even
+        truncated (this replaces Task 14.1's original raw-text-bearing design)."""
+        marker = "これはJSONではありません-MARKER"
+
         def call_ai(worktree, prompt, timeout, stop_event):
-            return agent_result(ok=True, text="これはJSONではありません", tokens=5)
+            return agent_result(ok=True, text=marker, tokens=5)
 
         calls = []
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
-            write_failure_log=lambda kind, text: calls.append((kind, text)),
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
         self.assertIsNone(outcome.result)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0], (triage.FAILURE_KIND_NO_JSON, "これはJSONではありません"))
-        self.assertNotIn("これはJSONではありません", outcome.reason)
+        kind, kwargs = calls[0]
+        self.assertEqual(kind, triage.FAILURE_KIND_NO_JSON)
+        self.assertEqual(kwargs["reply_chars"], len(marker))
+        self.assertNotIn(marker, outcome.reason)
+        self.assertNotIn(marker, json.dumps(kwargs, ensure_ascii=False))
 
-    def test_deeply_nested_ai_output_is_a_failure_logged_with_the_raw_text(self):
+    def test_deeply_nested_ai_output_is_a_failure_logged_without_the_raw_text(self):
         """Review fix: a RecursionError from json.loads inside parse_triage_output must still
-        surface through investigate() as an ordinary unreadable-output failure, with the AI's
-        full raw text hitting write_failure_log -- same contract as any other parse failure."""
+        surface through investigate() as an ordinary unreadable-output failure, logged the same
+        numbers-only way as any other parse failure -- never the AI's full raw text."""
         deeply_nested = '{"x":' + "[" * 5000 + "0" + "]" * 5000 + "}"
 
         def call_ai(worktree, prompt, timeout, stop_event):
@@ -486,11 +652,13 @@ class InvestigateTests(unittest.TestCase):
         calls = []
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
-            write_failure_log=lambda kind, text: calls.append((kind, text)),
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
         self.assertIsNone(outcome.result)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0], (triage.FAILURE_KIND_NO_JSON, deeply_nested))
+        kind, kwargs = calls[0]
+        self.assertEqual(kind, triage.FAILURE_KIND_NO_JSON)
+        self.assertEqual(kwargs["reply_chars"], len(deeply_nested))
 
     def test_success_does_not_write_a_failure_log(self):
         def call_ai(worktree, prompt, timeout, stop_event):
@@ -499,33 +667,76 @@ class InvestigateTests(unittest.TestCase):
         calls = []
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
-            write_failure_log=lambda kind, text: calls.append((kind, text)),
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
         self.assertIsNotNone(outcome.result)
         self.assertEqual(calls, [])
 
-    def test_timeout_does_not_write_a_failure_log(self):
-        """DCC Task 14.1, 仕様B-7: the AI not answering at all (timeout/token-limit/unavailable)
-        is a different failure from "answered but unreadable", and must not be logged."""
+    def test_timeout_writes_a_failure_log(self):
+        """Review fix (finding 2): a timeout happens strictly after the AI call was made, so
+        unlike the pre-call OrchestratorError setup failure (see the test below), it must now be
+        logged -- not treated as "the AI never ran"."""
         def call_ai(worktree, prompt, timeout, stop_event):
-            return agent_result(ok=False, error_kind=ERR_TIMEOUT)
+            return agent_result(ok=False, error_kind=ERR_TIMEOUT, returncode=None, stderr_chars=0)
 
         calls = []
         triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
-            write_failure_log=lambda kind, text: calls.append((kind, text)),
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
-        self.assertEqual(calls, [])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], triage.FAILURE_KIND_TIMEOUT)
 
-    def test_ai_unavailable_does_not_write_a_failure_log(self):
+    def test_every_post_call_failure_kind_leaves_exactly_one_real_log_file_without_raw_data(self):
+        """Review fix (finding 2), end to end with the *real* write_triage_failure_log (not a
+        fake), pointed at a temp dir: timeout, auth/quota ("AI unavailable"), the mid-run
+        token-limit stop, and the post-hoc over-budget check must each leave exactly one log
+        file in a temp folder, and none of them may contain the fake AI's own marker text."""
+        import functools
+
+        marker = "FAKE-AI-MARKER-MUST-NEVER-REACH-THE-LOG-FILE"
+        cases = {
+            "timeout": lambda: agent_result(ok=False, error_kind=ERR_TIMEOUT, text=marker),
+            "ai_unavailable": lambda: agent_result(ok=False, error_kind=ERR_AUTH, text=marker),
+            "mid_run_token_limit": lambda: agent_result(ok=False, error_kind=ERR_TOKEN_LIMIT, text=marker),
+            "post_hoc_token_limit": lambda: agent_result(
+                ok=True, text=marker + json.dumps(VALID_PAYLOAD), tokens=triage.TRIAGE_MAX_TOKENS + 1),
+        }
+        for label, make_result in cases.items():
+            with self.subTest(label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    logs_dir = Path(tmp) / "triage_logs"
+                    real_logger = functools.partial(triage.write_triage_failure_log, logs_dir=logs_dir)
+
+                    def call_ai(worktree, prompt, timeout, stop_event, _result=make_result()):
+                        return _result
+
+                    outcome = triage.investigate(
+                        make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+                        write_failure_log=real_logger,
+                    )
+                    self.assertIsNone(outcome.result)
+                    files = list(logs_dir.iterdir())
+                    self.assertEqual(len(files), 1, label)
+                    content = files[0].read_text(encoding="utf-8")
+                    self.assertNotIn(marker, content, label)
+
+    def test_ai_unavailable_due_to_a_known_orchestrator_error_does_not_write_a_failure_log(self):
+        """A recognised orchestration-level setup failure (e.g. the AI command could not be
+        resolved on PATH -- OrchestratorError("...", "COMMAND_NOT_FOUND")) is "AI unavailable",
+        but unlike every AgentResult-based failure (timeout, token-limit, auth/quota, ...), the
+        AI call here never ran at all -- there is nothing to log, unlike a genuinely unexpected
+        exception (see test_unexpected_exception_from_call_ai_becomes_a_japanese_reason_and_is_logged)."""
         def call_ai(worktree, prompt, timeout, stop_event):
-            raise RuntimeError("boom")
+            raise OrchestratorError("required command not found: claude", "COMMAND_NOT_FOUND")
 
         calls = []
-        triage.investigate(
+        outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
-            write_failure_log=lambda kind, text: calls.append((kind, text)),
+            write_failure_log=lambda kind, **kwargs: calls.append((kind, kwargs)),
         )
+        self.assertIsNone(outcome.result)
+        self.assertIn("AI", outcome.reason)
         self.assertEqual(calls, [])
 
     def test_a_failing_logger_does_not_change_the_outcome_or_raise(self):
@@ -534,13 +745,35 @@ class InvestigateTests(unittest.TestCase):
         def call_ai(worktree, prompt, timeout, stop_event):
             return agent_result(ok=True, text="not json", tokens=5)
 
-        def broken_logger(kind, text):
+        def broken_logger(kind, **kwargs):
             raise OSError("disk full")
 
         outcome = triage.investigate(
             make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
             write_failure_log=broken_logger,
         )
+        self.assertIsNone(outcome.result)
+        self.assertTrue(outcome.reason)
+
+    def test_a_blocked_log_directory_does_not_worsen_the_outcome(self):
+        """DCC Task 14.4, C3: the *real* write_triage_failure_log (not a fake) pointed at a
+        folder that cannot be created must still leave the on-screen outcome exactly as if
+        logging had never been attempted -- never an exception escaping investigate()."""
+        import functools
+
+        with tempfile.TemporaryDirectory() as tmp:
+            blocking_file = Path(tmp) / "not-a-directory"
+            blocking_file.write_text("x", encoding="utf-8")
+            real_logger = functools.partial(
+                triage.write_triage_failure_log, logs_dir=blocking_file / "triage_logs")
+
+            def call_ai(worktree, prompt, timeout, stop_event):
+                return agent_result(ok=False, error_kind=ERR_PROCESS)
+
+            outcome = triage.investigate(
+                make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+                write_failure_log=real_logger,
+            )
         self.assertIsNone(outcome.result)
         self.assertTrue(outcome.reason)
 

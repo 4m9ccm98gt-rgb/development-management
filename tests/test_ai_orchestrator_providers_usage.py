@@ -80,8 +80,22 @@ class ClaudeParseTests(unittest.TestCase):
         self.assertTrue(r.max_turns)
 
     def test_no_result_event_is_a_protocol_error(self):
+        # Exit code 0, non-empty but unparseable stdout: a clean exit that said nothing readable.
         r = self.parse("garbage\n", rc=0)
         self.assertEqual((r.ok, r.error_kind), (False, p.ERR_PROTOCOL))
+
+    def test_crashed_process_with_no_result_event_is_a_process_error(self):
+        # DCC Task 14.4: a non-zero exit with no result event is the process dying outright --
+        # it must stay ERR_PROCESS, not be folded into "the AI's reply was empty" (ERR_PROTOCOL).
+        r = self.parse("garbage\n", rc=1)
+        self.assertEqual((r.ok, r.error_kind), (False, p.ERR_PROCESS))
+
+    def test_empty_result_text_on_clean_exit_is_an_empty_response_error(self):
+        """DCC Task 14.4 review fix: a well-formed result event with a blank answer string is a
+        genuinely empty response, distinct from the garbage-stdout ERR_PROTOCOL case above --
+        investigate() must be able to tell the two apart on screen and in the triage log."""
+        r = self.parse(claude_stream(result=""))
+        self.assertEqual((r.ok, r.error_kind), (False, p.ERR_EMPTY_RESPONSE))
 
     def test_success_prose_mentioning_limits_is_not_an_error(self):
         r = self.parse(claude_stream(result="I handled the rate limit and usage limit cases in the code."))

@@ -23,6 +23,7 @@ import secrets
 import shutil
 import tempfile
 import threading
+import time
 from typing import Callable
 
 from . import reports_inbox as inbox
@@ -59,15 +60,22 @@ MAX_RAW_OUTPUT_CHARS = 60_000
 
 # DCC Task 14.1, 仕様B: local triage_logs folder caps, consolidated into constants as required.
 TRIAGE_LOG_MAX_FILES = 20
-TRIAGE_LOG_MAX_CHARS = 100_000
 
-# Failure-kind labels (DCC Task 14.1, 仕様B): fixed, short, never built from AI output -- used
-# both as the triage_logs file's first line and to choose the on-screen message below.
+# Failure-kind labels (DCC Task 14.1 / 14.4): fixed, short, never built from AI output -- used
+# both as the triage_logs file's first line and to choose the on-screen message below. The first
+# five are "the AI answered, but its output could not be read" (Task 14.1, 仕様A); the rest (DCC
+# Task 14.4) cover everything that can happen to the AI call itself.
 FAILURE_KIND_NO_JSON = "no_json"
 FAILURE_KIND_MULTIPLE_JSON = "multiple_json"
 FAILURE_KIND_MISSING_FIELD = "missing_field"
 FAILURE_KIND_INVALID_VALUE = "invalid_value"
 FAILURE_KIND_TOO_LONG = "too_long"
+FAILURE_KIND_TIMEOUT = "timeout"
+FAILURE_KIND_TOKEN_LIMIT = "token_limit"
+FAILURE_KIND_AI_UNAVAILABLE = "ai_unavailable"
+FAILURE_KIND_PROCESS_CRASHED = "process_crashed"
+FAILURE_KIND_EMPTY_RESPONSE = "empty_response"
+FAILURE_KIND_OTHER = "other"
 
 _LOG_HEADERS = {
     FAILURE_KIND_NO_JSON: "JSONオブジェクトが見つかりません",
@@ -75,6 +83,12 @@ _LOG_HEADERS = {
     FAILURE_KIND_MISSING_FIELD: "必須の項目がありません",
     FAILURE_KIND_INVALID_VALUE: "値が不正です",
     FAILURE_KIND_TOO_LONG: "出力が長すぎます",
+    FAILURE_KIND_TIMEOUT: "時間切れ",
+    FAILURE_KIND_TOKEN_LIMIT: "トークン上限",
+    FAILURE_KIND_AI_UNAVAILABLE: "AIが使えません",
+    FAILURE_KIND_PROCESS_CRASHED: "AIのプロセスが異常終了しました",
+    FAILURE_KIND_EMPTY_RESPONSE: "AIの返事が空でした",
+    FAILURE_KIND_OTHER: "その他の失敗",
 }
 
 _SCREEN_MESSAGES = {
@@ -85,8 +99,15 @@ _SCREEN_MESSAGES = {
         "調査結果を読み取れませんでした（必須の項目が足りません）。詳細はDCCのログに残しました。",
     FAILURE_KIND_INVALID_VALUE: "調査結果を読み取れませんでした（値が不正です）。詳細はDCCのログに残しました。",
     FAILURE_KIND_TOO_LONG: "調査結果を読み取れませんでした（返事が長すぎます）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_TIMEOUT: "調査が時間切れになりました。",
+    FAILURE_KIND_TOKEN_LIMIT: "調査できませんでした（トークンの上限を超えました）。",
+    FAILURE_KIND_AI_UNAVAILABLE: "調査できませんでした（AIが使えません。起動できない、認証、または利用枠の問題です）。",
+    FAILURE_KIND_PROCESS_CRASHED:
+        "調査できませんでした（AIのプロセスが異常終了しました）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_EMPTY_RESPONSE:
+        "調査できませんでした（AIの返事が空でした）。詳細はDCCのログに残しました。",
+    FAILURE_KIND_OTHER: "調査できませんでした（その他の失敗です）。詳細はDCCのログに残しました。",
 }
-
 
 class TriageParseError(ValueError):
     """Japanese-only message shown to the user; never the raw AI output or exception text.
@@ -413,29 +434,60 @@ def triage_logs_root() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ShizenDev" / "DCC" / "triage_logs"
 
 
-def write_triage_failure_log(kind: str, raw_text: str, *, logs_dir: Path | None = None) -> None:
-    """Best-effort local record of one unreadable AI response (DCC Task 14.1, 仕様B): never
-    raises and never changes the caller's outcome -- a logging failure must not worsen an
-    already-failed investigation. The file name (UTC timestamp + a monotonic sequence number +
-    random suffix) carries no report id, app name, report text or AI text; the AI's own text
-    only ever lands in the file body, never in a path or in the on-screen message. The sequence
-    number (see _next_log_sequence) keeps name order equal to creation order even for several
-    logs written within the same second, which the timestamp alone cannot guarantee."""
+def write_triage_failure_log(
+    kind: str,
+    *,
+    returncode: int | None,
+    elapsed_seconds: float,
+    stderr_chars: int,
+    reply_chars: int,
+    reason: str,
+    logs_dir: Path | None = None,
+) -> None:
+    """Best-effort local record of one failed investigation (DCC Task 14.1 仕様B, widened by Task
+    14.4 to every post-call failure, not just an unreadable AI response): never raises and never
+    changes the caller's outcome -- a logging failure must not worsen an already-failed
+    investigation. The body carries only numbers and the fixed Japanese header/reason (DCC Task
+    14.4, 仕様3) -- never stderr content, the AI's own text, the report body or an exception's own
+    text; only their *lengths* (stderr_chars, reply_chars) are recorded. The file name (UTC
+    timestamp + a monotonic sequence number + random suffix) carries none of that either. The
+    sequence number (see _next_log_sequence) keeps name order equal to creation order even for
+    several logs written within the same second, which the timestamp alone cannot guarantee."""
     try:
         directory = logs_dir if logs_dir is not None else triage_logs_root()
         directory.mkdir(parents=True, exist_ok=True)
         header = _LOG_HEADERS.get(kind, kind)
-        body = raw_text
-        note = ""
-        if len(body) > TRIAGE_LOG_MAX_CHARS:
-            body = body[:TRIAGE_LOG_MAX_CHARS]
-            note = "\n\n(長さ上限のため、以降を切り詰めました)"
-        content = f"[{header}]\n{body}{note}"
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        now = datetime.now(timezone.utc)
+        content = "\n".join([
+            f"[{header}]",
+            f"日時: {now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            f"終了コード: {returncode if returncode is not None else '(不明)'}",
+            f"所要秒数: {elapsed_seconds:.1f}",
+            f"標準エラーの文字数: {stderr_chars}",
+            f"AIの返事の文字数: {reply_chars}",
+            f"理由: {reason}",
+        ])
+        stamp = now.strftime("%Y%m%dT%H%M%SZ")
         seq = _next_log_sequence()
         name = f"{stamp}-{seq:010d}-{secrets.token_hex(8)}.log"
         _write_new_log_file(directory, name, content)
         _prune_old_triage_logs(directory, TRIAGE_LOG_MAX_FILES)
+    except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
+        pass
+
+
+def _safe_write_failure_log(
+    write_failure_log: Callable[..., None], kind: str, *, returncode: int | None, elapsed_seconds: float,
+    stderr_chars: int, reply_chars: int, reason: str,
+) -> None:
+    """DCC Task 14.4, 仕様3/C3: calling the (possibly test-injected) logger must never itself
+    raise or change the outcome already computed -- same guarantee write_triage_failure_log gives
+    its own body, extended to cover a broken injected logger too (see 仕様B-6)."""
+    try:
+        write_failure_log(
+            kind, returncode=returncode, elapsed_seconds=elapsed_seconds, stderr_chars=stderr_chars,
+            reply_chars=reply_chars, reason=reason,
+        )
     except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
         pass
 
@@ -496,13 +548,17 @@ def investigate(
     timeout: float = TRIAGE_TIMEOUT_SECONDS,
     max_tokens: int = TRIAGE_MAX_TOKENS,
     stop_event: threading.Event | None = None,
-    write_failure_log: Callable[[str, str], None] | None = None,
+    write_failure_log: Callable[..., None] | None = None,
 ) -> TriageOutcome:
     """Run one read-only AI investigation for `report` and return a TriageOutcome, never
-    raising for any ordinary failure (AI unavailable, timeout, over the token limit, unreadable
-    output) -- callers (reports_spec_dialog.py) always get something to show. Only a cooperative
-    stop (StopRequested, from `stop_event` while an AI call is in flight) propagates, so a
-    caller whose dialog has already closed can let the whole investigation unwind quietly.
+    raising for any ordinary failure (AI unavailable, timeout, over the token limit, a crashed
+    process, an empty or unreadable response, or any other/unexpected failure) -- callers
+    (reports_spec_dialog.py) always get something to show, and it is never a bare, reason-less
+    message (DCC Task 14.4: every post-call failure maps to one of the fixed FAILURE_KIND_*
+    reasons in _SCREEN_MESSAGES, including a last-resort FAILURE_KIND_OTHER for anything that
+    does not match a known shape). Only a cooperative stop (StopRequested, from `stop_event`
+    while an AI call is in flight) propagates, so a caller whose dialog has already closed can
+    let the whole investigation unwind quietly.
 
     `resolve_repo_dir_reason` (DCC Task 14.3) is called only when `resolve_repo_dir` came back
     None, to classify *why* (one of the CODE_UNAVAILABLE_REASON_* kinds, or "" when unknown) for
@@ -510,13 +566,17 @@ def investigate(
     defaults to the real registry classification; any exception from it degrades to "" (仕様3:
     an unclassifiable reason still falls back to the plain Task 14 note, never raises).
 
-    `write_failure_log` (DCC Task 14.1, 仕様B) is called only when the AI answered but its output
-    could not be read (parse/validation failure) -- never on AI-unavailable/timeout/token-limit
-    (仕様B-7) and never on success (仕様B-8). It defaults to write_triage_failure_log; tests
-    inject a fake (or a real one pointed at a temp dir) so nothing is ever written under the
-    real %LOCALAPPDATA%. Any exception from it is swallowed here too (仕様B-6: a logging failure
-    must never change the outcome already computed)."""
-    from tools.ai_orchestrator.common import StopRequested
+    `write_failure_log` (DCC Task 14.1, 仕様B; widened by Task 14.4, 仕様3) is called for every
+    failure that happens *after* the AI call was actually made -- timeout, both token-limit
+    paths (mid-run and post-hoc), AI-unavailable (quota/auth), a crashed process, an empty
+    response, unreadable output, and any other/unexpected failure alike -- and never on success
+    (仕様B-8). The one exception stays the setup failure the AI call never reached (OrchestratorError
+    from `call_ai` itself, e.g. the command could not be resolved on PATH): that is logged nowhere
+    because no call was ever attempted. It defaults to write_triage_failure_log; tests inject a
+    fake (or a real one pointed at a temp dir) so nothing is ever written under the real
+    %LOCALAPPDATA%. Any exception from it is swallowed here too (仕様B-6: a logging failure must
+    never change the outcome already computed)."""
+    from tools.ai_orchestrator.common import OrchestratorError, StopRequested
     from tools.ai_orchestrator import providers
 
     resolve_repo_dir = resolve_repo_dir or _default_resolve_repo_dir
@@ -543,39 +603,70 @@ def investigate(
         worktree = Path(tempfile.mkdtemp(prefix="dcc-triage-"))
         cleanup_dir = worktree
 
+    started = time.monotonic()
     try:
         try:
             result = call_ai(worktree, prompt, timeout, stop_event)
         except StopRequested:
             raise
-        except Exception:  # noqa: BLE001 - any provider/process failure is "could not investigate"
-            return TriageOutcome(None, "AIを呼び出せませんでした。", code_available, code_unavailable_reason)
+        except OrchestratorError:
+            # A known orchestration-level setup failure (e.g. the AI command could not be
+            # resolved on PATH) -- this is "AI unavailable", not an unexpected bug. Unlike every
+            # failure below, the AI call itself never ran, so there is nothing to log (DCC Task
+            # 14.4, 仕様3: logging covers failures *after* the call was made).
+            return TriageOutcome(None, _SCREEN_MESSAGES[FAILURE_KIND_AI_UNAVAILABLE], code_available,
+                                  code_unavailable_reason)
+        except Exception:  # noqa: BLE001 - any other failure here is genuinely unexpected
+            reason = _SCREEN_MESSAGES[FAILURE_KIND_OTHER]
+            _safe_write_failure_log(write_failure_log, FAILURE_KIND_OTHER, returncode=None,
+                                     elapsed_seconds=time.monotonic() - started, stderr_chars=0,
+                                     reply_chars=0, reason=reason)
+            return TriageOutcome(None, reason, code_available, code_unavailable_reason)
     finally:
         if cleanup_dir is not None:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
+    elapsed = time.monotonic() - started
 
     if not result.ok:
-        if result.error_kind == providers.ERR_TIMEOUT:
-            reason = "調査が時間切れになりました。"
-        elif result.error_kind == providers.ERR_TOKEN_LIMIT:
-            reason = "調査できませんでした（トークンの上限を超えました）。"
+        failure_kind = {
+            providers.ERR_TIMEOUT: FAILURE_KIND_TIMEOUT,
+            providers.ERR_TOKEN_LIMIT: FAILURE_KIND_TOKEN_LIMIT,
+            providers.ERR_QUOTA: FAILURE_KIND_AI_UNAVAILABLE,
+            providers.ERR_AUTH: FAILURE_KIND_AI_UNAVAILABLE,
+            providers.ERR_PROCESS: FAILURE_KIND_PROCESS_CRASHED,
+            providers.ERR_PROTOCOL: FAILURE_KIND_NO_JSON,  # no readable answer at all -- "読み取れなかった"
+            providers.ERR_EMPTY_RESPONSE: FAILURE_KIND_EMPTY_RESPONSE,  # answer text itself was blank
+        }.get(result.error_kind, FAILURE_KIND_OTHER)
+        if failure_kind == FAILURE_KIND_TOKEN_LIMIT:
             _log_token_limit_breakdown(result, max_tokens)
-        else:
-            reason = "調査できませんでした。"
+        reason = _SCREEN_MESSAGES[failure_kind]
+        # DCC Task 14.4, 仕様3: every failure that reaches here happened after the AI call was
+        # actually made, so all of them get a log entry now -- no more unlogged post-call kinds.
+        _safe_write_failure_log(
+            write_failure_log, failure_kind, returncode=getattr(result, "returncode", None),
+            elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
+            reply_chars=len(getattr(result, "text", "") or ""), reason=reason,
+        )
         return TriageOutcome(None, reason, code_available, code_unavailable_reason)
 
     if result.tokens and result.tokens > max_tokens:
         _log_token_limit_breakdown(result, max_tokens)
-        return TriageOutcome(None, "調査できませんでした（トークンの上限を超えました）。", code_available,
+        _safe_write_failure_log(
+            write_failure_log, FAILURE_KIND_TOKEN_LIMIT, returncode=getattr(result, "returncode", None),
+            elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
+            reply_chars=len(result.text), reason=_SCREEN_MESSAGES[FAILURE_KIND_TOKEN_LIMIT],
+        )
+        return TriageOutcome(None, _SCREEN_MESSAGES[FAILURE_KIND_TOKEN_LIMIT], code_available,
                               code_unavailable_reason)
 
     try:
         parsed = parse_triage_output(result.text)
     except TriageParseError as exc:
-        try:
-            write_failure_log(exc.kind, result.text)
-        except Exception:  # noqa: BLE001 - logging must never worsen an already-failed investigation
-            pass
+        _safe_write_failure_log(
+            write_failure_log, exc.kind, returncode=getattr(result, "returncode", None),
+            elapsed_seconds=elapsed, stderr_chars=getattr(result, "stderr_chars", 0),
+            reply_chars=len(result.text), reason=str(exc),
+        )
         return TriageOutcome(None, str(exc), code_available, code_unavailable_reason)
 
     return TriageOutcome(parsed, "", code_available, code_unavailable_reason)
