@@ -124,6 +124,19 @@ _SCREEN_MESSAGES = {
     FAILURE_KIND_OTHER: "調査できませんでした（その他の失敗です）。詳細はDCCのログに残しました。",
 }
 
+_REASON_TO_FAILURE_KIND = {message: kind for kind, message in _SCREEN_MESSAGES.items()}
+
+
+def failure_kind_for_reason(reason: str) -> str:
+    """Reverse-lookup from TriageOutcome.reason back to its FAILURE_KIND_* code (DCC Task 17):
+    investigate()'s own contract guarantees reason is always exactly one of the fixed
+    _SCREEN_MESSAGES sentences on failure, so this is a plain allow-listed lookup -- never a
+    substring or pattern match against free text. Anything unrecognized (defensive only; should
+    not happen given that contract) degrades to FAILURE_KIND_OTHER rather than raising, so a
+    caller never stores the raw reason text itself."""
+    return _REASON_TO_FAILURE_KIND.get(reason, FAILURE_KIND_OTHER)
+
+
 class TriageParseError(ValueError):
     """Japanese-only message shown to the user; never the raw AI output or exception text.
 

@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
+from . import reports_auto as auto
 from . import reports_inbox as inbox
 from .orchestrator_view import resolve_click_index
 
@@ -51,11 +52,17 @@ def row_title(text: str, *, limit: int = ROW_TITLE_MAX) -> str:
     return sanitized
 
 
-def row_line(row: inbox.ReportRow) -> str:
+def row_line(row: inbox.ReportRow, auto_outcome: str = "") -> str:
+    """DCC Task 17, 仕様4: `auto_outcome` is always one of reports_auto.OUTCOME_* (a fixed word)
+    when given, never free text -- the report body and the AI's own output never reach this
+    line."""
     report = row.report
     stamp = report.created_at[:16].replace("T", " ")
-    return (f"[{report.kind_label}/{report.severity_label}] {report.app_display_name} "
+    line = (f"[{report.kind_label}/{report.severity_label}] {report.app_display_name} "
             f"{row_title(report.title)}  {stamp}  ({row.status_label})")
+    if auto_outcome:
+        line += f"  [自動調査: {auto_outcome}]"
+    return line
 
 
 def _set_enabled(widget, enabled: bool) -> None:
@@ -70,10 +77,16 @@ class ReportsInboxWindow:
                  copy_to_clipboard: Callable[[str], None] | None = None,
                  reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None,
                  on_spec_ready: Callable[[object], None] | None = None,
-                 current_roles: Callable[[], tuple[str, str]] | None = None) -> None:
+                 current_roles: Callable[[], tuple[str, str]] | None = None,
+                 auto_config_path=None, auto_results_root=None, auto_daily_count_path=None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._current_roles = current_roles
+        # DCC Task 17: test-only overrides so the window never touches the real %LOCALAPPDATA%
+        # unless a caller explicitly wants that (same pattern as reports_triage's logs_dir=).
+        self._auto_config_path = auto_config_path
+        self._auto_results_root = auto_results_root
+        self._auto_daily_count_path = auto_daily_count_path
         if reports_config_fn is not None:
             self._reports_config_fn = reports_config_fn
         elif configured_apps is not None:
@@ -101,6 +114,13 @@ class ReportsInboxWindow:
         self.visible_rows: list[inbox.ReportRow] = []
         self.selected_identity: tuple[str, str] | None = None
         self._draft_full: str = ""
+        # DCC Task 17: settings checkboxes (master switch + per-app permission) and the
+        # per-report auto-triage result shown as a fixed-word column in the list below. Loading
+        # the config never raises (reports_auto.load_auto_mode_config degrades to all-OFF), so a
+        # missing/corrupt settings file never blocks the window from opening.
+        self.auto_config = auto.load_auto_mode_config(self._auto_config_path)
+        self._auto_results: dict[tuple[str, str], "auto.AutoTriageRecord"] = {}
+        self.auto_notice_var = tk.StringVar(value="")
 
         self.window = tk.Toplevel(master)
         self.window.title("報告の受信箱")
@@ -131,6 +151,7 @@ class ReportsInboxWindow:
         status_frame = ttk.LabelFrame(outer, text="アプリの接続状態", padding=8)
         status_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.app_status_vars: dict[str, tk.StringVar] = {}
+        self.auto_app_vars: dict[str, tk.BooleanVar] = {}
         for col, app in enumerate(initial_config.apps):
             var = tk.StringVar(value="読み込み中…")
             self.app_status_vars[app.app_key] = var
@@ -138,6 +159,10 @@ class ReportsInboxWindow:
             box.grid(row=0, column=col, sticky="nw", padx=(0 if col == 0 else 16, 0))
             ttk.Label(box, text=app.display_name, font=("Segoe UI", 9, "bold")).pack(anchor="w")
             ttk.Label(box, textvariable=var, wraplength=220).pack(anchor="w")
+            auto_var = tk.BooleanVar(value=self.auto_config.apps.get(app.app_key, False))
+            self.auto_app_vars[app.app_key] = auto_var
+            ttk.Checkbutton(box, text="自動調査を許可", variable=auto_var,
+                             command=lambda k=app.app_key: self._on_auto_app_toggle(k)).pack(anchor="w")
 
         controls = ttk.Frame(outer)
         controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -145,7 +170,11 @@ class ReportsInboxWindow:
         self.reload_button.pack(side="left")
         ttk.Checkbutton(controls, text="未対応だけ", variable=self.unresolved_only_var,
                         command=self._render_rows).pack(side="left", padx=(12, 0))
+        self.auto_enabled_var = tk.BooleanVar(value=self.auto_config.enabled)
+        ttk.Checkbutton(controls, text="自動モード（全体）", variable=self.auto_enabled_var,
+                        command=self._on_auto_enabled_toggle).pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.notice_var, foreground=DARK_MUTED).pack(side="left", padx=(12, 0))
+        ttk.Label(controls, textvariable=self.auto_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
 
         left = ttk.Frame(outer)
         left.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
@@ -224,6 +253,40 @@ class ReportsInboxWindow:
             pass
         self.window.destroy()
 
+    # ---------------------------------------------------------------- DCC Task 17: settings
+    def _on_auto_enabled_toggle(self) -> None:
+        self.auto_config = auto.set_enabled(self.auto_enabled_var.get(), path=self._auto_config_path)
+        self._refresh_auto_notice()
+
+    def _on_auto_app_toggle(self, app_key: str) -> None:
+        allowed = self.auto_app_vars[app_key].get()
+        self.auto_config = auto.set_app_allowed(app_key, allowed, path=self._auto_config_path)
+
+    def _refresh_auto_notice(self) -> None:
+        """仕様2: the fixed "本日の上限に達しました" sentence, shown in the inbox window once the
+        day's automatic-investigation count has reached the configured limit -- never built from
+        report or AI content."""
+        if self.auto_config.enabled and auto.daily_limit_reached(
+                self.auto_config, auto.today_str(), path=self._auto_daily_count_path):
+            self.auto_notice_var.set(auto.LIMIT_REACHED_TEXT)
+        else:
+            self.auto_notice_var.set("")
+
+    def _refresh_auto_results(self) -> None:
+        """仕様4: re-checks this module's own local auto-triage records (app.py's background
+        thread writes these independently of this window) and the daily-limit notice on every
+        tick, so a cycle that finished while this window stayed open appears in the list and
+        notice without a manual 再読み込み. Only the fixed-word outcome column and the fixed
+        notice text change here -- never a report's other fields, title, or body; those still
+        only refresh via reload()/the shared-folder scan."""
+        if self.rows:
+            new_results = auto.load_auto_results(
+                (r.report.identity for r in self.rows), root=self._auto_results_root)
+            if new_results != self._auto_results:
+                self._auto_results = new_results
+                self._render_rows()
+        self._refresh_auto_notice()
+
     # ---------------------------------------------------------------- loading
     def _apply_config_metadata(self, config) -> None:
         self.config_notice_var.set("\n".join(config.notices))
@@ -273,6 +336,7 @@ class ReportsInboxWindow:
                 _set_enabled(self.reload_button, True)
         except queue.Empty:
             pass
+        self._refresh_auto_results()
         self._tick_id = self.window.after(TICK_MS, self._tick)
 
     def _apply_inboxes(self, inboxes: list) -> None:
@@ -287,18 +351,25 @@ class ReportsInboxWindow:
                     inb, self._shared_root_by_key.get(app_key, ""), self._source_by_key.get(app_key, "")))
         self.rows = inbox.build_rows(inboxes)
         self.broken = inbox.all_broken(inboxes)
+        self._auto_results = auto.load_auto_results(
+            (r.report.identity for r in self.rows), root=self._auto_results_root)
+        self._refresh_auto_notice()
         self.notice_var.set(f"読み込み完了（{len(self.rows)}件 / 読めない報告 {len(self.broken)}件）")
         self._render_rows()
         self._render_broken()
         self._restore_selection()
 
     # ---------------------------------------------------------------- list / selection
+    def _auto_outcome_label(self, row: inbox.ReportRow) -> str:
+        record = self._auto_results.get(row.report.identity)
+        return record.outcome if record is not None else ""
+
     def _render_rows(self) -> None:
         rows = self.rows
         if self.unresolved_only_var.get():
             rows = inbox.unresolved_only(rows)
         self.visible_rows = rows
-        lines = [row_line(r) for r in rows]
+        lines = [row_line(r, self._auto_outcome_label(r)) for r in rows]
         self.report_list.delete(0, "end")
         for line in lines:
             self.report_list.insert("end", line)

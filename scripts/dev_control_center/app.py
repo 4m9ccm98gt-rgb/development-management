@@ -212,6 +212,11 @@ class App(ttk.Frame):
         self.ai_drafts: dict[str, object] = {}
         self._badge_queue: queue.Queue = queue.Queue(maxsize=1)
         self._badge_stop = threading.Event()
+        # DCC Task 17: periodic automatic triage (report inbox, allowed apps only -- off by
+        # default). Its own ON/OFF check happens inside reports_auto.run_auto_triage_once()
+        # itself (re-read every cycle), so toggling the settings checkboxes takes effect on the
+        # next tick without restarting DCC.
+        self._auto_triage_stop = threading.Event()
         self.unmanaged_repos: list[RemoteRepo] = []
         self._applying_lifecycle = False
         self.self_update_sha = ""
@@ -253,6 +258,7 @@ class App(ttk.Frame):
         self.master.after(150, self.scan_remote_repos)
         self.master.after(300, self.check_self_update)
         self.master.after(500, self._start_orchestrator_badge)
+        self.master.after(700, self._start_auto_triage_loop)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -279,6 +285,7 @@ class App(ttk.Frame):
             return
         self._closed = True
         self._badge_stop.set()
+        self._auto_triage_stop.set()
         window = self.orchestrator_window
         if window is not None and window.exists():
             window.close()
@@ -1089,6 +1096,33 @@ class App(ttk.Frame):
                 stop.wait(10.0)
 
         threading.Thread(target=work, name="orchestrator-badge", daemon=True).start()
+
+    # --- DCC Task 17: periodic automatic triage --------------------------------------
+    def _start_auto_triage_loop(self) -> None:
+        """Runs for the whole life of this DCC process (not just while the reports inbox window
+        is open), checking at most once every reports_auto.AUTO_TRIAGE_INTERVAL_SECONDS. Whether
+        anything actually happens on a given tick is decided entirely inside
+        reports_auto.run_auto_triage_once() itself (global switch, per-app permission, daily
+        limit, already-investigated check) -- this loop only provides the "DCCが起動している間、
+        一定間隔で" cadence. Never touches a Tk widget from the background thread."""
+        if self._closed:
+            return
+        stop = self._auto_triage_stop
+
+        def work() -> None:
+            from . import reports_auto
+
+            while not stop.is_set():
+                try:
+                    reports_auto.run_auto_triage_once(
+                        config_path=reports_auto.auto_mode_config_path(), stop_event=stop)
+                except Exception:  # noqa: BLE001 - one bad cycle must not kill the loop or DCC
+                    import logging
+
+                    logging.getLogger(__name__).exception("auto triage cycle failed")
+                stop.wait(reports_auto.AUTO_TRIAGE_INTERVAL_SECONDS)
+
+        threading.Thread(target=work, name="dcc-auto-triage", daemon=True).start()
 
     def _drain_orchestrator_badge(self) -> None:
         try:

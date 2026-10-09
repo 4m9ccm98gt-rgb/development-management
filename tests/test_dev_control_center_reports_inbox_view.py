@@ -22,6 +22,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from scripts.dev_control_center import app as dcc
+from scripts.dev_control_center import reports_auto as auto
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_inbox_view as view
 
@@ -397,15 +398,19 @@ class ReportsInboxWindowCase(unittest.TestCase):
         if self.window is not None and self.window.exists():
             self.window.close()
 
-    def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None, on_spec_ready=None):
+    def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None, on_spec_ready=None,
+                     auto_config_path=None, auto_results_root=None, auto_daily_count_path=None):
         scan_fn = scan_fn or inbox.scan_all
+        auto_kwargs = dict(auto_config_path=auto_config_path, auto_results_root=auto_results_root,
+                            auto_daily_count_path=auto_daily_count_path)
         if reports_config_fn is not None:
             self.window = view.ReportsInboxWindow(self.master, scan_fn=scan_fn, copy_to_clipboard=clipboard,
-                                                  reports_config_fn=reports_config_fn, on_spec_ready=on_spec_ready)
+                                                  reports_config_fn=reports_config_fn, on_spec_ready=on_spec_ready,
+                                                  **auto_kwargs)
             return self.window
         apps = apps if apps is not None else [("app-a", "アプリA", "configured")]
         self.window = view.ReportsInboxWindow(self.master, configured_apps=lambda: apps, scan_fn=scan_fn,
-                                              copy_to_clipboard=clipboard, on_spec_ready=on_spec_ready)
+                                              copy_to_clipboard=clipboard, on_spec_ready=on_spec_ready, **auto_kwargs)
         return self.window
 
     def pump(self, condition, timeout=5):
@@ -465,6 +470,49 @@ class LoadAndDisplayTests(ReportsInboxWindowCase):
             self.assertEqual(window.app_status_vars["ok"].get(),
                               f"接続できました（{inbox.truncate_path_for_display(str(share))}）")
             self.assertIn("未設定", window.app_status_vars["missing"].get())
+
+
+class AutoTriageResultAutoRefreshTests(ReportsInboxWindowCase):
+    """DCC Task 17, 仕様4: app.py's own background auto-triage thread writes reports_auto's
+    local records and daily-count file independently of this window. An already-open window
+    must pick both up on its own existing tick loop, without a manual 再読み込み click."""
+
+    def test_background_result_appears_without_a_manual_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            results_root = tmp / "auto-results"
+            window = self.make_window(apps=apps, auto_results_root=results_root)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+
+            # The background thread (app.py) saves this independently of the window -- never
+            # through window.reload().
+            record = auto.AutoTriageRecord("app-a", "r1", auto.OUTCOME_PROCEED, "2026-01-01T00:00:00Z", 1.2)
+            auto._save_result(record, root=results_root)
+
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), auto.OUTCOME_PROCEED)
+            self.assertIn(auto.OUTCOME_PROCEED, window.report_list.get(0, "end")[0])
+
+    def test_daily_limit_notice_appears_without_a_manual_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config_path = tmp / "config.json"
+            auto.save_auto_mode_config(auto.AutoModeConfig(enabled=True, daily_limit=1), path=config_path)
+            daily_count_path = tmp / "count.json"
+            window = self.make_window(apps=[], auto_config_path=config_path,
+                                       auto_daily_count_path=daily_count_path)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window.auto_notice_var.get(), "")
+
+            # The background thread (app.py) increments this independently of the window.
+            auto._increment_daily_count(auto.today_str(), daily_count_path)
+
+            window._tick()
+            self.assertEqual(window.auto_notice_var.get(), auto.LIMIT_REACHED_TEXT)
 
 
 class ConfigNoticeAndSourceDisplayTests(ReportsInboxWindowCase):
@@ -885,6 +933,7 @@ class AppReportsButtonTests(unittest.TestCase):
         self.assertTrue(window.exists())
         self.app._closed = False
         self.app._badge_stop = threading.Event()
+        self.app._auto_triage_stop = threading.Event()
         self.app.orchestrator_window = None
         self.app.selection = SimpleNamespace(close=lambda: None)
         self.app._on_close()  # must not raise even though the inbox window is still open
