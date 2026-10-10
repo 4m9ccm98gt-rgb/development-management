@@ -11,7 +11,7 @@
 
 ## 開発ルートと確認
 
-通常DevelopmentはClaude / Codexが正式ローカルrepoで直接実装します。GPTは相談・要件整理・設計・指示文作成を担当します。DCCはRUN / BUILD / UPDATEを担当し、Orchestratorは別画面の任意の第二ルートです。
+標準の開発ルートはDCCのAI Orchestratorで、GPTは相談・要件整理・設計と、[Orchestrator入力契約](docs/orchestrator_input_contract.md) に沿った依頼の作成を担当します。Claude / Codexが正式ローカルrepoで直接実装するルートも選べます。DCCはRUN / BUILD / UPDATEを担当します。
 
 RUN / BUILDはcandidateやtracked cleanを要求しません。UPDATEは成果物と配布先を明示し、BUILD記録・hash・ユーザー実機確認を根拠に明示操作で行います。Orchestrator内部candidateの安全条件は専用文書を参照します。
 

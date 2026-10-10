@@ -1,6 +1,6 @@
 # AI Orchestrator（Phase 2 — 長時間放置できる自動開発モード）
 
-運用の正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。通常Developmentの必須経路ではなく、DCCの別画面から使う任意の第二ルートです。isolated worktreeで実装し、Tests PASS + Reviewer PASS + 安全チェックPASSの**local candidate**で停止します。push / BUILD / UPDATE / DEPLOYは行いません。
+運用の正本は [OPERATING_CONTRACT.md](../OPERATING_CONTRACT.md)。DCCの別画面から使う標準の開発ルートです（直接実装ルートも選べます）。依頼の書き方は [Orchestrator入力契約](orchestrator_input_contract.md)。isolated worktreeで実装し、Tests PASS + Reviewer PASS + 安全チェックPASSの**local candidate**で停止します。push / BUILD / UPDATE / DEPLOYは行いません。
 
 ## 全体像
 

@@ -2,7 +2,14 @@
 
 Development運用の正本。通常Development、DCC、AI Orchestratorの責務を分離します。
 
-## 通常Development（Phase 1）
+## 標準の開発ルート（AI Orchestrator）
+
+GPT相談・要件整理 → GPTが [Orchestrator入力契約](docs/orchestrator_input_contract.md) に従って【対象repo】【Tests】【Task】を作成 → DCCのOrchestrator画面で開始 → Main AI実装 → Tests → Reviewer → local candidate → RUN_DEV（ユーザー実機確認）→ 承認 → push → BUILD → UPDATE。
+AIがOrchestrator用の依頼を書くときは入力契約だけを見ればよく、Orchestratorのソースコードを読む必要はありません。入力契約の完成例・規則は `tests/test_orchestrator_input_contract.py` で実装と一致することを検証します。
+
+## 直接実装ルート（通常Development・Phase 1）
+
+Orchestratorで扱えない作業（Orchestrator自体が動かないときの修理、新規repoの初回準備など）や、ユーザーが直接実装を選んだ場合に使います。
 
 GPT相談・要件整理・設計・指示文作成 → Claude / Codexが正式ローカルrepoで直接実装 → Tests → DCC RUN → ユーザー実機確認 → BUILD → UPDATE。
 Claude / Codexは用途・利用可能量・ユーザー判断で選択します。GPTは必要に応じてコード・ログ・設計をレビューします。GPTによるGitHub直接編集とPC同期、credit削減目的の編集・同期を標準ルートにしません。GitHubの観測・調査は可能です。
@@ -30,9 +37,9 @@ BUILD記録はrepo、base HEAD、dirty / clean、日時、build ID、成果物�
 - AI判断による自動UPDATE / DEPLOYは禁止。操作は自動連続しない。
 - 通常操作とOrchestratorは別の実行状態を持つ。同じrepoの競合は停止できるが、AI異常やレビュー待ちを理由にDCC全体をロックしない。
 
-## AI Orchestrator（任意の正式な第二ルート）
+## AI Orchestrator（標準の開発ルート）
 
-DCC → 別画面のAI Orchestrator → 独立run worker。長時間・無人でAI開発を完成まで進める自動運転モードです。通常Developmentの必須経路ではありません。詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。
+DCC → 別画面のAI Orchestrator → 独立run worker。長時間・無人でAI開発を完成まで進める自動運転モードです。依頼の書き方は [Orchestrator入力契約](docs/orchestrator_input_contract.md)、エンジンの詳細は [Orchestrator仕様](docs/ai_orchestrator.md)。直接実装ルートを選ぶこともできます。
 
 Phase 2の標準フロー: Main AI（既定Claude）が実装 → 独立Tests。Tests FAIL #1はMain自身が修正、FAIL #2からReviewer AI（既定Codex、読み取り専用）が失敗分析してMainへ自動で修正指示。Tests PASS後は必ずReviewerが最終レビューし、修正後は必ずTestsを再実行する。完成条件は **Tests PASS + Reviewer PASS + 安全チェックPASS**（同一diff）。Main / ReviewerはClaude / Codexから選択でき、同一providerは選択不可。レビュー結果・decision JSONを人間が中継する操作は標準フローに存在しない。
 
