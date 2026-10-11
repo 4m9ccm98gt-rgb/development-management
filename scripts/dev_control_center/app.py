@@ -236,6 +236,7 @@ class App(ttk.Frame):
         self.lifecycle_jobs: dict[str, object] = {}
         self.lifecycle_cancellations: dict[str, threading.Event] = {}
         self.lifecycle_after: dict[str, object] = {}  # repo -> callback(rc) after its current job (UPDATE dry-run)
+        self.combined_run_tokens: dict[str, object] = {}  # repo -> the live token pinning DCC Task 19a's reservation
         # Orchestrator drafts (Task / Tests per repo) and the running-run badge. The Orchestrator itself
         # is not an operation of this window: its runs live in their own worker processes.
         self.ai_drafts: dict[str, object] = {}
@@ -512,6 +513,9 @@ class App(ttk.Frame):
         self.push_button.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
         self.discard_button = ttk.Button(flow_box, text="candidateを破棄", command=self.discard_candidate)
         self.discard_button.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
+        self.combined_button = ttk.Button(
+            flow_box, text="PUSH → BUILD → DRY-RUNをまとめて実行", command=self.push_build_dry_run)
+        self.combined_button.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(4, 0))
 
         self.operation_stop_button = ttk.Button(lifecycle, text="このrepoの実行を停止", command=self.stop_lifecycle)
         self.operation_stop_button.grid(row=0, column=0, columnspan=2, sticky="w")
@@ -598,10 +602,14 @@ class App(ttk.Frame):
         window.focus()
         window.load_spec_file(spec_path)
 
-    def _repo_busy(self) -> bool:
+    def _repo_busy(self, exclude_token_id: int | None = None) -> bool:
+        """`exclude_token_id` lets a combined run's own ACTIVE_OPERATIONS reservation pass this
+        check for its own continuations, while any other reservation for the current repo
+        (including another combined run) still reports busy."""
         if self.active_process is not None:
             return True
-        return bool(self.current and any(name == self.current.name for name, _ in ACTIVE_OPERATIONS.values()))
+        return bool(self.current and any(
+            name == self.current.name for key, (name, _) in ACTIVE_OPERATIONS.items() if key != exclude_token_id))
 
     def _select_repo(self) -> None:
         selection = self.repo_list.curselection()
@@ -1115,6 +1123,96 @@ class App(ttk.Frame):
 
         self._prepare_operation(definition.name, "discard", lambda: candidate_flow.discard(candidate), ready)
 
+    # --- DCC Task 19a: PUSH -> BUILD -> UPDATE-DRY-RUN in one operation (never RELEASE) --------
+    def push_build_dry_run(self) -> None:
+        """Chains the existing PUSH, BUILD and UPDATE-DRY-RUN processing for the approved candidate,
+        stopping after each stage's success before starting the next. RELEASE is never called from
+        here: a human starts it afterwards with the existing UPDATE button.
+
+        A single ACTIVE_OPERATIONS reservation is held for the whole run (not just while each
+        stage's own subprocess is active), so the folder-pick pauses between stages are covered
+        too. `exclude_token_id` lets the run's own continuations through that same reservation
+        while every other entry point (including a second combined run) still sees the repo as
+        busy."""
+        flow, definition = self._current_flow(), self.current
+        if not flow or not self._combined_run_enabled(flow) or App._repo_busy(self):
+            return
+        candidate = flow["candidate"]
+        if not messagebox.askyesno(
+                "PUSH → BUILD → DRY-RUNをまとめて実行",
+                f"対象: {definition.name}\nSHA: {short_sha(candidate.sha)}\n\n"
+                "この順に実行します: PUSH → BUILD → UPDATE-DRY-RUN\n"
+                "RELEASEはこの操作には含まれません（人が別に実行します）。\n\n実行しますか？",
+                parent=self.master):
+            return
+        token = object()
+        ACTIVE_OPERATIONS[id(token)] = (definition.name, "combined")
+        # `combined_run_tokens` keeps a strong reference to `token` for the whole run (not just
+        # `id(token)`): without it nothing else holds the object, CPython can garbage-collect it
+        # between stages, and a later unrelated object can be assigned the same id(), silently
+        # releasing (or colliding with) this reservation. Every cross-stage helper below passes
+        # around plain `id(token)` ints (matching the rest of the file's ACTIVE_OPERATIONS keys),
+        # which stay valid only because this dict pins the object itself.
+        self.combined_run_tokens[definition.name] = token
+        self._set_button_states()
+        command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.candidate", "push",
+                   "--repo", str(REPOS_ROOT / definition.name), "--branch", definition.branch, "--expect-sha", candidate.sha]
+        self._log(f"{definition.name}: まとめ実行開始（PUSH → BUILD → UPDATE-DRY-RUN） 対象 = 承認済みcandidate {candidate.sha}")
+        if self._start_lifecycle(command, definition.name, "push", exclude_token_id=id(token)):
+            self.lifecycle_after[definition.name] = lambda rc: self._combined_after_push(definition, token, rc)
+        else:
+            self._release_combined_run(id(token))
+
+    def _release_combined_run(self, token_id: int) -> None:
+        """Drops the whole-run ACTIVE_OPERATIONS reservation DCC Task 19a holds across all three
+        stages (and the `combined_run_tokens` reference pinning it, see `push_build_dry_run`).
+        Called from every path that stops the chain without handing it to the next stage: each
+        stage's own failure/selection-change check below, a BUILD inspection error or cancelled
+        folder pick (via `launch`'s `on_error`/early-return cleanup), a failed dry-run start, and
+        an explicit stop mid-stage (via `_drain_lifecycle_events`, keyed off `combined_run_tokens`
+        since a cancelled job's `after` callback is never invoked)."""
+        if ACTIVE_OPERATIONS.pop(token_id, None) is not None:
+            for repo_name, token in list(self.combined_run_tokens.items()):
+                if id(token) == token_id:
+                    del self.combined_run_tokens[repo_name]
+            self._set_button_states()
+
+    def _combined_after_push(self, definition: RepoDefinition, token: object, rc: int) -> None:
+        if rc != 0:
+            self._release_combined_run(id(token))
+            return
+        if self.current != definition:
+            self._log(f"{definition.name}: 選択が変わったためまとめ実行を中止しました（PUSHは完了）")
+            self._release_combined_run(id(token))
+            return
+        self.launch("build", exclude_token_id=id(token),
+                    on_success=lambda build_rc: self._combined_after_build(definition, token, build_rc))
+
+    def _combined_after_build(self, definition: RepoDefinition, token: object, rc: int) -> None:
+        if rc != 0:
+            self._release_combined_run(id(token))
+            return
+        if self.current != definition:
+            self._log(f"{definition.name}: 選択が変わったためまとめ実行を中止しました（BUILDは完了）")
+            self._release_combined_run(id(token))
+            return
+        repo_root = REPOS_ROOT / definition.name
+        production = candidate_flow._read_json(provenance.production_record_path(repo_root.resolve())) or {}
+        folder = filedialog.askdirectory(title="配布先フォルダを選択（まとめ実行: UPDATE-DRY-RUN）",
+                                         initialdir=production.get("target") or None, parent=self.master)
+        if not folder:
+            self._log(f"{definition.name}: まとめ実行停止 — UPDATE-DRY-RUNの配布先が未選択")
+            self._release_combined_run(id(token))
+            return
+        self._start_engine_dry_run(repo_root, definition, Path(folder), exclude_token_id=id(token),
+                                   after=lambda rc: self._combined_after_dry_run(definition, token, rc))
+
+    def _combined_after_dry_run(self, definition: RepoDefinition, token: object, rc: int) -> None:
+        if rc == 0 and self.current == definition:
+            self._log(f"{definition.name}: まとめ実行完了 — RELEASEの準備ができました")
+            self.banner_var.set("RELEASEの準備ができました")
+        self._release_combined_run(id(token))
+
     # --- Orchestrator badge: reconnect visibility for runs that outlive DCC -------------
     def _start_orchestrator_badge(self) -> None:
         if self._closed:
@@ -1233,8 +1331,16 @@ class App(ttk.Frame):
             "idle": not App._repo_busy(self),
         }
 
-    def launch(self, action: str) -> None:
-        if not self.current or App._repo_busy(self):
+    def launch(self, action: str, on_success=None, exclude_token_id: int | None = None) -> None:
+        """`on_success(rc)` is DCC Task 19a's hook for chaining into the next stage of the combined
+        PUSH -> BUILD -> UPDATE-DRY-RUN run: called only for a successful BUILD started here, once
+        its own lifecycle job finishes. `exclude_token_id` is that same run's own ACTIVE_OPERATIONS
+        reservation, held for the whole combined run (including this BUILD's own folder pick below)
+        so this call does not see itself as a conflicting operation. Every other caller passes
+        neither and behaviour is unchanged."""
+        if not self.current or App._repo_busy(self, exclude_token_id):
+            if exclude_token_id is not None:
+                self._release_combined_run(exclude_token_id)
             return
         definition = self.current
         repo_root = REPOS_ROOT / definition.name
@@ -1264,59 +1370,77 @@ class App(ttk.Frame):
             return state, choice, flow
 
         def ready(result):
-            state, choice, flow = result
-            if self.current != definition or App._repo_busy(self):
-                self._log(f"{definition.name}: 開始中止（選択または実行状態が変化）")
-                return
-            if action == "sync":
-                self._log("SYNCは手動の正式入口を使用してください。DCC通常操作はRUN / BUILD / UPDATEです。")
-                return
-            if action == "run" and flow:
-                sha = flow["candidate"].sha
-                command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.candidate", "run-dev",
-                           "--repo", str(repo_root), "--branch", definition.branch, "--expect-sha", sha]
-                self._log(f"{definition.name}: RUN_DEV 対象 = Orchestrator candidate {sha}"
-                          f"（run {flow['candidate'].run_id} / {flow['candidate'].branch}）。source repoは変更しません")
-                self._start_lifecycle(command, definition.name, "run_dev")
-                return
-            if action == "run":
-                command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.entrypoints", "run", "--repo", str(repo_root)]
-                self._start_lifecycle(command, definition.name, action)
-                return
-            if action == "build":
-                profile = provenance.PROFILES.get(definition.name)
-                if profile:
-                    artifact = (repo_root / profile[0]).resolve()
-                else:
-                    folder = filedialog.askdirectory(title="BUILD成果物の出力フォルダを指定", parent=self.master)
-                    if not folder:
-                        return
-                    artifact = Path(folder).resolve()
-                if artifact == repo_root.resolve() or repo_root.resolve().is_relative_to(artifact):
-                    raise ValueError("repo全体やその親を成果物には指定できません")
-                if self.current != definition or App._repo_busy(self):
+            # `progressed` tracks whether this call handed off to a running/registered lifecycle
+            # job that will itself carry the combined run's reservation forward (via its own
+            # `after`/`on_success`). Any other exit (early return, or an exception propagating
+            # out of this function) means the chain stops here, so DCC Task 19a's reservation
+            # must be released in the `finally` below rather than left dangling.
+            progressed = False
+            try:
+                state, choice, flow = result
+                if self.current != definition or App._repo_busy(self, exclude_token_id):
+                    self._log(f"{definition.name}: 開始中止（選択または実行状態が変化）")
                     return
-                command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.provenance", "build",
-                           "--repo", str(repo_root), "--entry", str(choice.path), "--artifact", str(artifact)]
-                if flow is not None:
-                    command += ["--expect-sha", flow.sha, "--candidate-run", flow.run_id, "--expect-branch", definition.branch]
-                    self._log(f"{definition.name}: BUILD 対象 = 承認・push済みcandidate {flow.sha}（local / origin 一致を確認済み）")
-                self._start_lifecycle(command, definition.name, action)
-                return
-            if release_update.engine_repo(definition.name):
-                production = candidate_flow._read_json(provenance.production_record_path(repo_root.resolve())) or {}
-                folder = filedialog.askdirectory(title="配布先フォルダを選択（共通UPDATE engine: まずdry-run）",
-                                                 initialdir=production.get("target") or None, parent=self.master)
+                if action == "sync":
+                    self._log("SYNCは手動の正式入口を使用してください。DCC通常操作はRUN / BUILD / UPDATEです。")
+                    return
+                if action == "run" and flow:
+                    sha = flow["candidate"].sha
+                    command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.candidate", "run-dev",
+                               "--repo", str(repo_root), "--branch", definition.branch, "--expect-sha", sha]
+                    self._log(f"{definition.name}: RUN_DEV 対象 = Orchestrator candidate {sha}"
+                              f"（run {flow['candidate'].run_id} / {flow['candidate'].branch}）。source repoは変更しません")
+                    self._start_lifecycle(command, definition.name, "run_dev")
+                    return
+                if action == "run":
+                    command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.entrypoints", "run", "--repo", str(repo_root)]
+                    self._start_lifecycle(command, definition.name, action)
+                    return
+                if action == "build":
+                    profile = provenance.PROFILES.get(definition.name)
+                    if profile:
+                        artifact = (repo_root / profile[0]).resolve()
+                    else:
+                        folder = filedialog.askdirectory(title="BUILD成果物の出力フォルダを指定", parent=self.master)
+                        if not folder:
+                            return
+                        artifact = Path(folder).resolve()
+                    if artifact == repo_root.resolve() or repo_root.resolve().is_relative_to(artifact):
+                        raise ValueError("repo全体やその親を成果物には指定できません")
+                    if self.current != definition or App._repo_busy(self, exclude_token_id):
+                        return
+                    command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.provenance", "build",
+                               "--repo", str(repo_root), "--entry", str(choice.path), "--artifact", str(artifact)]
+                    if flow is not None:
+                        command += ["--expect-sha", flow.sha, "--candidate-run", flow.run_id, "--expect-branch", definition.branch]
+                        self._log(f"{definition.name}: BUILD 対象 = 承認・push済みcandidate {flow.sha}（local / origin 一致を確認済み）")
+                    if self._start_lifecycle(command, definition.name, action, exclude_token_id=exclude_token_id):
+                        progressed = True
+                        if on_success is not None:
+                            self.lifecycle_after[definition.name] = on_success
+                    return
+                if release_update.engine_repo(definition.name):
+                    production = candidate_flow._read_json(provenance.production_record_path(repo_root.resolve())) or {}
+                    folder = filedialog.askdirectory(title="配布先フォルダを選択（共通UPDATE engine: まずdry-run）",
+                                                     initialdir=production.get("target") or None, parent=self.master)
+                    if folder:
+                        self._start_engine_dry_run(repo_root, definition, Path(folder))
+                    return
+                folder = filedialog.askdirectory(title="配布先フォルダを選択（HDD更新はドライブ直下）", parent=self.master)
                 if folder:
-                    self._start_engine_dry_run(repo_root, definition, Path(folder))
-                return
-            folder = filedialog.askdirectory(title="配布先フォルダを選択（HDD更新はドライブ直下）", parent=self.master)
-            if folder:
-                self._prepare_release(repo_root, definition, Path(folder))
+                    self._prepare_release(repo_root, definition, Path(folder))
+            finally:
+                if exclude_token_id is not None and not progressed:
+                    self._release_combined_run(exclude_token_id)
 
-        self._prepare_operation(definition.name, action, inspect, ready)
+        on_error = (lambda: self._release_combined_run(exclude_token_id)) if exclude_token_id is not None else None
+        self._prepare_operation(definition.name, action, inspect, ready, on_error=on_error)
 
-    def _prepare_operation(self, repo_name: str, action: str, work, ready) -> None:
+    def _prepare_operation(self, repo_name: str, action: str, work, ready, on_error=None) -> None:
+        """`on_error` (no args) is DCC Task 19a's hook: when `work()` raises (a failed precondition
+        check, e.g. BUILD's candidate_flow.build_gate), `ready` is never called, so without this
+        hook a combined run's reservation would survive the failed check. Every other caller
+        passes none and behaviour is unchanged."""
         token = object()
         ACTIVE_OPERATIONS[id(token)] = (repo_name, action + "-check")
         self.banner_var.set(f"{repo_name}: {action.upper()}開始条件を確認中...")
@@ -1326,13 +1450,14 @@ class App(ttk.Frame):
                 result, error = work(), None
             except Exception as exc:
                 result, error = None, str(exc)
-            self.lifecycle_events.put(("prepared", token, repo_name, action, result, error, ready))
+            self.lifecycle_events.put(("prepared", token, repo_name, action, result, error, ready, on_error))
 
         threading.Thread(target=inspect, daemon=True).start()
         self._set_button_states()
 
-    def _start_lifecycle(self, command: list[str], repo_name: str, action: str) -> bool:
-        if any(name == repo_name for name, _ in ACTIVE_OPERATIONS.values()):
+    def _start_lifecycle(self, command: list[str], repo_name: str, action: str,
+                         exclude_token_id: int | None = None) -> bool:
+        if any(name == repo_name for key, (name, _) in ACTIVE_OPERATIONS.items() if key != exclude_token_id):
             self._log(f"{repo_name}: 競合する操作があるため開始しません")
             return False
         token = object()
@@ -1390,11 +1515,13 @@ class App(ttk.Frame):
                 if self.current and self.current.name == repo:
                     self._render_flow()
             elif event[0] == "prepared":
-                _, token, repo, action, result, error, ready = event
+                _, token, repo, action, result, error, ready, on_error = event
                 ACTIVE_OPERATIONS.pop(id(token), None)
                 if error:
                     self.banner_var.set(f"{repo}: {action.upper()}停止 — {error}")
                     self._log(self.banner_var.get())
+                    if on_error is not None:
+                        on_error()
                 else:
                     try:
                         ready(result)
@@ -1407,14 +1534,22 @@ class App(ttk.Frame):
                 self.lifecycle_jobs.pop(repo, None)
                 cancellation = self.lifecycle_cancellations.pop(repo, None)
                 self.selection.process_boundary(repo, f"process-end:{action}")
-                outcome = "停止" if cancellation and cancellation.is_set() else ("成功" if rc == 0 else "失敗")
+                stopped = bool(cancellation and cancellation.is_set())
+                outcome = "停止" if stopped else ("成功" if rc == 0 else "失敗")
                 text = f"{repo}: {action.upper()} {outcome} rc={rc}"
                 self._log(text)
                 self.selection.post_action_notice[repo] = text
                 self.banner_var.set(text)
                 self._reload_after(repo)
                 after = self.lifecycle_after.pop(repo, None)
-                if after is not None and not (cancellation and cancellation.is_set()):
+                if stopped:
+                    # An explicit stop never advances to the next stage, so `after` (which would
+                    # chain into it) is skipped. DCC Task 19a's combined run still has its
+                    # whole-run reservation to drop here: nothing else will call it now.
+                    combined_token = self.combined_run_tokens.get(repo)
+                    if combined_token is not None:
+                        self._release_combined_run(id(combined_token))
+                elif after is not None:
                     try:
                         after(rc)
                     except Exception as exc:
@@ -1422,17 +1557,27 @@ class App(ttk.Frame):
         self._set_button_states()
 
     def _start_engine_dry_run(self, repo_root: Path, definition: RepoDefinition, target: Path,
-                              acknowledge_orphans: bool = False) -> None:
-        """Common UPDATE engine, step 1: a read-only dry-run in a worker; its plan is then shown for confirmation."""
-        if self.current != definition or App._repo_busy(self):
+                              acknowledge_orphans: bool = False, after=None,
+                              exclude_token_id: int | None = None) -> None:
+        """Common UPDATE engine, step 1: a read-only dry-run in a worker; its plan is then shown for
+        confirmation. `after(rc)` defaults to that confirmation step; DCC Task 19a's combined run
+        passes its own callback instead, so the dry-run never leads to a RELEASE confirmation there.
+        `exclude_token_id` is that combined run's own reservation, held across this stage too; it
+        is released here if this stage never starts (selection changed / repo busy / a conflicting
+        operation refused the start), since nothing else would release it otherwise."""
+        if self.current != definition or App._repo_busy(self, exclude_token_id):
+            if exclude_token_id is not None:
+                self._release_combined_run(exclude_token_id)
             return
         plan_path = release_update.plans_dir(repo_root.resolve()) / f"plan-{time.strftime('%Y%m%d_%H%M%S')}.json"
         command = [processes.console_python(), "-u", "-B", "-m", "scripts.dev_control_center.release_update", "plan",
                    "--repo", str(repo_root), "--target", str(target), "--branch", definition.branch,
                    "--out", str(plan_path)] + (["--acknowledge-orphans"] if acknowledge_orphans else [])
-        if self._start_lifecycle(command, definition.name, "update-dry-run"):
-            self.lifecycle_after[definition.name] = lambda rc: self._confirm_engine_plan(
-                repo_root, definition, target, plan_path, rc)
+        if self._start_lifecycle(command, definition.name, "update-dry-run", exclude_token_id=exclude_token_id):
+            self.lifecycle_after[definition.name] = after or (lambda rc: self._confirm_engine_plan(
+                repo_root, definition, target, plan_path, rc))
+        elif exclude_token_id is not None:
+            self._release_combined_run(exclude_token_id)
 
     def _confirm_engine_plan(self, repo_root: Path, definition: RepoDefinition, target: Path, plan_path: Path,
                              rc: int) -> None:
@@ -1550,7 +1695,8 @@ class App(ttk.Frame):
             idle = self.current is not None and not App._repo_busy(self)
             for button, enabled in ((self.approve_button, flow.get("can_approve")),
                                     (self.push_button, flow.get("can_push")),
-                                    (self.discard_button, flow.get("candidate") is not None and flow.get("active"))):
+                                    (self.discard_button, flow.get("candidate") is not None and flow.get("active")),
+                                    (self.combined_button, self._combined_run_enabled(flow))):
                 button.state(["!disabled" if idle and enabled else "disabled"])
         if hasattr(self, "operation_stop_button"):
             running = self.current and self.current.name in self.lifecycle_cancellations
@@ -1558,6 +1704,17 @@ class App(ttk.Frame):
         if hasattr(self, "revert_button"):
             idle = self.current is not None and not App._repo_busy(self)
             self.revert_button.state(["!disabled" if idle and self._engine_release_live() else "disabled"])
+
+    def _combined_run_enabled(self, flow: dict) -> bool:
+        """DCC Task 19a: the combined PUSH -> BUILD -> UPDATE-DRY-RUN button needs an approved SHA, and
+        a repo whose UPDATE goes through the common engine (only there is UPDATE-DRY-RUN a genuine
+        read-only stage, separate from RELEASE)."""
+        if not self.current or not flow.get("can_push"):
+            return False
+        try:
+            return release_update.engine_repo(self.current.name)
+        except OSError:
+            return False
 
     def _engine_release_live(self) -> bool:
         """The confirmed production of the current repo is a common-engine release (so it can be reverted)."""
