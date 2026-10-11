@@ -135,6 +135,35 @@ def configure_dark_theme(master: tk.Tk) -> None:
         foreground=[("disabled", DARK_DISABLED_FG)],
         bordercolor=[("focus", DARK_ACCENT)],
     )
+    for style_name in ("TCheckbutton", "TRadiobutton"):
+        style.configure(
+            style_name,
+            background=DARK_BG,
+            foreground=DARK_FG,
+            focuscolor=DARK_BG,
+        )
+        style.map(
+            style_name,
+            background=[
+                ("disabled", DARK_BG),
+                ("pressed", DARK_SELECTION),
+                ("active", DARK_FIELD),
+                ("selected", DARK_BG),
+            ],
+            foreground=[
+                ("disabled", DARK_DISABLED_FG),
+                ("pressed", "#ffffff"),
+                ("active", DARK_FG),
+                ("selected", DARK_FG),
+            ],
+            indicatorcolor=[
+                ("disabled", DARK_DISABLED_BG),
+                ("pressed", DARK_SELECTION),
+                ("selected", DARK_ACCENT),
+                ("active", DARK_FIELD),
+                ("!selected", DARK_FIELD),
+            ],
+        )
 
 
 def configure_dark_listbox(widget: tk.Listbox) -> None:
