@@ -23,6 +23,7 @@ from unittest import mock
 
 from scripts.dev_control_center import app as dcc
 from scripts.dev_control_center import reports_auto as auto
+from scripts.dev_control_center import reports_auto_start as auto_start
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_inbox_view as view
 
@@ -399,10 +400,16 @@ class ReportsInboxWindowCase(unittest.TestCase):
             self.window.close()
 
     def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None, on_spec_ready=None,
-                     auto_config_path=None, auto_results_root=None, auto_daily_count_path=None):
+                     auto_config_path=None, auto_results_root=None, auto_daily_count_path=None,
+                     auto_start_config_path=None, auto_start_records_root=None,
+                     auto_start_daily_count_path=None, auto_start_waiting_root=None):
         scan_fn = scan_fn or inbox.scan_all
         auto_kwargs = dict(auto_config_path=auto_config_path, auto_results_root=auto_results_root,
-                            auto_daily_count_path=auto_daily_count_path)
+                            auto_daily_count_path=auto_daily_count_path,
+                            auto_start_config_path=auto_start_config_path,
+                            auto_start_records_root=auto_start_records_root,
+                            auto_start_daily_count_path=auto_start_daily_count_path,
+                            auto_start_waiting_root=auto_start_waiting_root)
         if reports_config_fn is not None:
             self.window = view.ReportsInboxWindow(self.master, scan_fn=scan_fn, copy_to_clipboard=clipboard,
                                                   reports_config_fn=reports_config_fn, on_spec_ready=on_spec_ready,
@@ -513,6 +520,89 @@ class AutoTriageResultAutoRefreshTests(ReportsInboxWindowCase):
 
             window._tick()
             self.assertEqual(window.auto_notice_var.get(), auto.LIMIT_REACHED_TEXT)
+
+
+class AutoStartResultAutoRefreshTests(ReportsInboxWindowCase):
+    """DCC Task 18, 仕様1/4: app.py's own background auto-start thread writes
+    reports_auto_start's local records, daily-count file, and waiting marks independently of
+    this window. An already-open window must pick all three up on its own existing tick loop,
+    without a manual 再読み込み click -- the Reviewer's own finding that the auto-start limit
+    notice and the「待機中」display were never wired up to a real screen."""
+
+    def test_candidate_and_needs_human_results_appear_without_a_manual_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            records_root = tmp / "auto-start-records"
+            window = self.make_window(apps=apps, auto_start_records_root=records_root)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window._auto_start_result_label(window.visible_rows[0]), "")
+
+            # The background thread (app.py) saves this independently of the window.
+            record = auto_start.AutoStartRecord("app-a", "r1", "2026-01-01T00:00:00Z", "run-1",
+                                                  auto_start.RESULT_CANDIDATE)
+            auto_start._save_record(record, root=records_root)
+
+            window._tick()
+            self.assertEqual(window._auto_start_result_label(window.visible_rows[0]),
+                              auto_start.RESULT_CANDIDATE)
+            self.assertIn(auto_start.RESULT_CANDIDATE, window.report_list.get(0, "end")[0])
+
+    def test_auto_start_daily_limit_notice_appears_without_a_manual_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config_path = tmp / "config.json"
+            auto.save_auto_mode_config(auto.AutoModeConfig(enabled=True), path=config_path)
+            start_config_path = tmp / "start_config.json"
+            auto_start.save_auto_start_config(
+                auto_start.AutoStartConfig(daily_limit=1), path=start_config_path)
+            daily_count_path = tmp / "start_count.json"
+            window = self.make_window(apps=[], auto_config_path=config_path,
+                                       auto_start_config_path=start_config_path,
+                                       auto_start_daily_count_path=daily_count_path)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window.auto_start_notice_var.get(), "")
+            # Task 17's own limit notice must stay independent of Task 18's.
+            self.assertEqual(window.auto_notice_var.get(), "")
+
+            # The background thread (app.py) increments this independently of the window.
+            auto_start._increment_daily_count(auto.today_str(), daily_count_path)
+
+            window._tick()
+            self.assertEqual(window.auto_start_notice_var.get(), auto_start.LIMIT_REACHED_TEXT)
+            self.assertEqual(window.auto_notice_var.get(), "")
+
+    def test_waiting_report_shows_fixed_waiting_word_and_clears_once_started(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            records_root = tmp / "auto-start-records"
+            waiting_root = tmp / "auto-start-waiting"
+            window = self.make_window(apps=apps, auto_start_records_root=records_root,
+                                       auto_start_waiting_root=waiting_root)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window._auto_start_result_label(window.visible_rows[0]), "")
+
+            # The background thread (app.py) marks a busy-repo report as waiting -- no record
+            # exists yet, so the report is still eligible to be auto-started next cycle.
+            auto_start.mark_waiting("app-a", "r1", root=waiting_root)
+            window._tick()
+            self.assertEqual(window._auto_start_result_label(window.visible_rows[0]),
+                              auto_start.RESULT_WAITING)
+            self.assertIn(auto_start.RESULT_WAITING, window.report_list.get(0, "end")[0])
+
+            # Once the report actually starts, the fixed result word takes priority and the
+            # waiting word disappears from the list.
+            auto_start.clear_waiting("app-a", "r1", root=waiting_root)
+            record = auto_start.AutoStartRecord("app-a", "r1", "2026-01-01T00:00:00Z", "run-1")
+            auto_start._save_record(record, root=records_root)
+            window._tick()
+            self.assertEqual(window._auto_start_result_label(window.visible_rows[0]), "")
+            self.assertNotIn(auto_start.RESULT_WAITING, window.report_list.get(0, "end")[0])
 
 
 class ConfigNoticeAndSourceDisplayTests(ReportsInboxWindowCase):
@@ -934,6 +1024,7 @@ class AppReportsButtonTests(unittest.TestCase):
         self.app._closed = False
         self.app._badge_stop = threading.Event()
         self.app._auto_triage_stop = threading.Event()
+        self.app._auto_start_stop = threading.Event()
         self.app.orchestrator_window = None
         self.app.selection = SimpleNamespace(close=lambda: None)
         self.app._on_close()  # must not raise even though the inbox window is still open

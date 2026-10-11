@@ -182,18 +182,25 @@ def create_and_start(
     resolve_repo_dir: Callable[[str], Path | None] | None = None,
     create_spec_file: Callable[..., Path] | None = None,
     start_run: Callable[..., Path] | None = None,
+    task_text_fn: Callable[["inbox.Report"], str] | None = None,
 ) -> StartResult:
     """(1) write the spec file, (2) start the Orchestrator -- only ever called after a human has
     reviewed the criteria and pressed 作成して開始 in the confirmation dialog (DCC Task
-    14.5仕様3). Never raises: every failure becomes a StartResult with one of the fixed REASON_*
-    Japanese strings above, never a path or exception's own text (C15).
+    14.5仕様3), or (DCC Task 18) after the automatic-start module has decided to start a
+    pre-triaged report without a human pressing anything. Never raises: every failure becomes a
+    StartResult with one of the fixed REASON_* Japanese strings above, never a path or
+    exception's own text (C15).
 
     The repository is resolved only from DCC's own registry (resolve_repo_dir, keyed by
     report.app_key) -- criteria_lines (human-confirmed, possibly AI-suggested-then-edited text)
     never influence it (C19). create_spec_file defaults to reports_inbox.create_spec_file, which
     never overwrites an existing spec file (C10) and never includes the report body (C19).
     start_run defaults to _default_start_run, the same entry point a human's own 開始 button uses
-    (C11); it is called at most once, only after the spec file was written successfully."""
+    (C11); it is called at most once, only after the spec file was written successfully.
+    task_text_fn defaults to this module's own build_task_text (DCC Task 14.5's unchanged fixed
+    template); DCC Task 18 injects its own fixed-template builder instead so the Task body also
+    carries a docs/orchestrator_input_contract.md-R1 "対象リポジトリ:" line -- never report text
+    or AI output either way."""
     from tools.ai_orchestrator import taskspec
     from tools.ai_orchestrator.common import OrchestratorError
     from tools.ai_orchestrator.runstate import ActiveRunExists
@@ -201,6 +208,7 @@ def create_and_start(
     resolve_repo_dir = resolve_repo_dir or _default_resolve_repo_dir
     create_spec_file = create_spec_file or inbox.create_spec_file
     start_run = start_run or _default_start_run
+    task_text_fn = task_text_fn or build_task_text
 
     reason = inbox.validate_criteria_lines(criteria_lines)
     if reason:
@@ -225,7 +233,7 @@ def create_and_start(
     except taskspec.SpecError:
         return StartResult(False, REASON_SPEC_FAILED, spec_path=spec_path)
 
-    task_text = build_task_text(report)
+    task_text = task_text_fn(report)
     try:
         run_dir = start_run(repo=str(repo_dir), task=task_text, main_agent=main_agent,
                              review_agent=review_agent, spec=spec)

@@ -246,6 +246,18 @@ class App(ttk.Frame):
         # itself (re-read every cycle), so toggling the settings checkboxes takes effect on the
         # next tick without restarting DCC.
         self._auto_triage_stop = threading.Event()
+        # DCC Task 18: periodic automatic start -- only a report Task 17 already bucketed as
+        # 自動で進めてよい, for an app whose own「自動開始を許可」is ON, may be started this way
+        # (off by default; the shared global switch above gates this too). Its own checks happen
+        # inside reports_auto_start.run_auto_start_once() itself, re-read every cycle, same as
+        # _start_auto_triage_loop.
+        self._auto_start_stop = threading.Event()
+        # Read on the auto-start background thread, written only on the Tk main thread
+        # (_heartbeat_tick) -- a plain tuple-reference read/write, never a Tk widget access, so
+        # the background thread never touches Tk.
+        from tools.ai_orchestrator.providers import DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT
+
+        self._current_roles_snapshot: tuple[str, str] = (DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT)
         self.unmanaged_repos: list[RemoteRepo] = []
         self._applying_lifecycle = False
         self.self_update_sha = ""
@@ -288,6 +300,7 @@ class App(ttk.Frame):
         self.master.after(300, self.check_self_update)
         self.master.after(500, self._start_orchestrator_badge)
         self.master.after(700, self._start_auto_triage_loop)
+        self.master.after(900, self._start_auto_start_loop)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -315,6 +328,7 @@ class App(ttk.Frame):
         self._closed = True
         self._badge_stop.set()
         self._auto_triage_stop.set()
+        self._auto_start_stop.set()
         window = self.orchestrator_window
         if window is not None and window.exists():
             window.close()
@@ -347,6 +361,10 @@ class App(ttk.Frame):
         self._drain_lifecycle_events()
         self._drain_orchestrator_badge()
         self._set_button_states()
+        try:
+            self._current_roles_snapshot = self._current_orchestrator_roles()
+        except Exception:  # noqa: BLE001 - keep the heartbeat alive
+            pass
         self.master.after(HEARTBEAT_MS, self._heartbeat_tick)
 
     def _build(self) -> None:
@@ -1152,6 +1170,40 @@ class App(ttk.Frame):
                 stop.wait(reports_auto.AUTO_TRIAGE_INTERVAL_SECONDS)
 
         threading.Thread(target=work, name="dcc-auto-triage", daemon=True).start()
+
+    # --- DCC Task 18: periodic automatic start ----------------------------------------
+    def _start_auto_start_loop(self) -> None:
+        """Runs for the whole life of this DCC process, checking at most once every
+        reports_auto_start.AUTO_START_INTERVAL_SECONDS. Whether anything actually happens on a
+        given tick is decided entirely inside reports_auto_start.run_auto_start_once() itself
+        (shared global switch, this feature's own per-app permission, daily limit, Task 17's own
+        振り分け, already-started check, target-repo busy check) -- this loop only provides the
+        periodic cadence and the current Main/Reviewer roles. Never touches a Tk widget directly
+        from the background thread."""
+        if self._closed:
+            return
+        stop = self._auto_start_stop
+
+        def work() -> None:
+            from . import reports_auto, reports_auto_start
+
+            while not stop.is_set():
+                try:
+                    # Read-only tuple reference, refreshed every heartbeat tick on the Tk main
+                    # thread (_heartbeat_tick) -- never touches a Tk widget from this thread.
+                    main_agent, review_agent = self._current_roles_snapshot
+                    reports_auto_start.run_auto_start_once(
+                        global_config_path=reports_auto.auto_mode_config_path(),
+                        start_config_path=reports_auto_start.auto_start_config_path(),
+                        main_agent=main_agent, review_agent=review_agent, stop_event=stop,
+                    )
+                except Exception:  # noqa: BLE001 - one bad cycle must not kill the loop or DCC
+                    import logging
+
+                    logging.getLogger(__name__).exception("auto start cycle failed")
+                stop.wait(reports_auto_start.AUTO_START_INTERVAL_SECONDS)
+
+        threading.Thread(target=work, name="dcc-auto-start", daemon=True).start()
 
     def _drain_orchestrator_badge(self) -> None:
         try:

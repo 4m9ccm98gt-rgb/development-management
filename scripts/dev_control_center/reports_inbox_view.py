@@ -15,6 +15,7 @@ from tkinter import ttk
 from typing import Callable
 
 from . import reports_auto as auto
+from . import reports_auto_start as auto_start
 from . import reports_inbox as inbox
 from .orchestrator_view import resolve_click_index
 
@@ -52,16 +53,20 @@ def row_title(text: str, *, limit: int = ROW_TITLE_MAX) -> str:
     return sanitized
 
 
-def row_line(row: inbox.ReportRow, auto_outcome: str = "") -> str:
+def row_line(row: inbox.ReportRow, auto_outcome: str = "", auto_start_result: str = "") -> str:
     """DCC Task 17, 仕様4: `auto_outcome` is always one of reports_auto.OUTCOME_* (a fixed word)
     when given, never free text -- the report body and the AI's own output never reach this
-    line."""
+    line. DCC Task 18, 仕様4: `auto_start_result` is likewise always one of
+    reports_auto_start.RESULT_* (候補あり / 人の確認が必要) when given -- never the started Run's
+    own final message."""
     report = row.report
     stamp = report.created_at[:16].replace("T", " ")
     line = (f"[{report.kind_label}/{report.severity_label}] {report.app_display_name} "
             f"{row_title(report.title)}  {stamp}  ({row.status_label})")
     if auto_outcome:
         line += f"  [自動調査: {auto_outcome}]"
+    if auto_start_result:
+        line += f"  [自動開始: {auto_start_result}]"
     return line
 
 
@@ -78,7 +83,9 @@ class ReportsInboxWindow:
                  reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None,
                  on_spec_ready: Callable[[object], None] | None = None,
                  current_roles: Callable[[], tuple[str, str]] | None = None,
-                 auto_config_path=None, auto_results_root=None, auto_daily_count_path=None) -> None:
+                 auto_config_path=None, auto_results_root=None, auto_daily_count_path=None,
+                 auto_start_config_path=None, auto_start_records_root=None,
+                 auto_start_daily_count_path=None, auto_start_waiting_root=None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._current_roles = current_roles
@@ -87,6 +94,12 @@ class ReportsInboxWindow:
         self._auto_config_path = auto_config_path
         self._auto_results_root = auto_results_root
         self._auto_daily_count_path = auto_daily_count_path
+        # DCC Task 18: same test-only override convention for the automatic-start module's own
+        # per-app permission, local started-report records, daily-count file, and waiting marks.
+        self._auto_start_config_path = auto_start_config_path
+        self._auto_start_records_root = auto_start_records_root
+        self._auto_start_daily_count_path = auto_start_daily_count_path
+        self._auto_start_waiting_root = auto_start_waiting_root
         if reports_config_fn is not None:
             self._reports_config_fn = reports_config_fn
         elif configured_apps is not None:
@@ -121,6 +134,13 @@ class ReportsInboxWindow:
         self.auto_config = auto.load_auto_mode_config(self._auto_config_path)
         self._auto_results: dict[tuple[str, str], "auto.AutoTriageRecord"] = {}
         self.auto_notice_var = tk.StringVar(value="")
+        # DCC Task 18: the automatic-start module's own per-app permission (initial OFF for every
+        # app, independent of Task 17's「自動調査を許可」above) and the fixed-word result column
+        # for any report this feature already started.
+        self.auto_start_config = auto_start.load_auto_start_config(self._auto_start_config_path)
+        self._auto_start_results: dict[tuple[str, str], "auto_start.AutoStartRecord"] = {}
+        self._auto_start_waiting: dict[tuple[str, str], bool] = {}
+        self.auto_start_notice_var = tk.StringVar(value="")
 
         self.window = tk.Toplevel(master)
         self.window.title("報告の受信箱")
@@ -152,6 +172,7 @@ class ReportsInboxWindow:
         status_frame.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.app_status_vars: dict[str, tk.StringVar] = {}
         self.auto_app_vars: dict[str, tk.BooleanVar] = {}
+        self.auto_start_app_vars: dict[str, tk.BooleanVar] = {}
         for col, app in enumerate(initial_config.apps):
             var = tk.StringVar(value="読み込み中…")
             self.app_status_vars[app.app_key] = var
@@ -163,6 +184,12 @@ class ReportsInboxWindow:
             self.auto_app_vars[app.app_key] = auto_var
             ttk.Checkbutton(box, text="自動調査を許可", variable=auto_var,
                              command=lambda k=app.app_key: self._on_auto_app_toggle(k)).pack(anchor="w")
+            # DCC Task 18: a separate permission, initial OFF, on top of the shared global switch
+            # and Task 17's own「自動調査を許可」above.
+            auto_start_var = tk.BooleanVar(value=self.auto_start_config.apps.get(app.app_key, False))
+            self.auto_start_app_vars[app.app_key] = auto_start_var
+            ttk.Checkbutton(box, text="自動開始を許可", variable=auto_start_var,
+                             command=lambda k=app.app_key: self._on_auto_start_app_toggle(k)).pack(anchor="w")
 
         controls = ttk.Frame(outer)
         controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -175,6 +202,7 @@ class ReportsInboxWindow:
                         command=self._on_auto_enabled_toggle).pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.notice_var, foreground=DARK_MUTED).pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.auto_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
+        ttk.Label(controls, textvariable=self.auto_start_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
 
         left = ttk.Frame(outer)
         left.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
@@ -257,10 +285,16 @@ class ReportsInboxWindow:
     def _on_auto_enabled_toggle(self) -> None:
         self.auto_config = auto.set_enabled(self.auto_enabled_var.get(), path=self._auto_config_path)
         self._refresh_auto_notice()
+        self._refresh_auto_start_notice()
 
     def _on_auto_app_toggle(self, app_key: str) -> None:
         allowed = self.auto_app_vars[app_key].get()
         self.auto_config = auto.set_app_allowed(app_key, allowed, path=self._auto_config_path)
+
+    def _on_auto_start_app_toggle(self, app_key: str) -> None:
+        allowed = self.auto_start_app_vars[app_key].get()
+        self.auto_start_config = auto_start.set_app_start_allowed(
+            app_key, allowed, path=self._auto_start_config_path)
 
     def _refresh_auto_notice(self) -> None:
         """仕様2: the fixed "本日の上限に達しました" sentence, shown in the inbox window once the
@@ -272,6 +306,17 @@ class ReportsInboxWindow:
         else:
             self.auto_notice_var.set("")
 
+    def _refresh_auto_start_notice(self) -> None:
+        """DCC Task 18, 仕様1: the fixed "本日の自動開始の上限に達しました" sentence, shown once
+        this feature's own (separate) daily count has reached its own configured limit -- never
+        built from report or AI content. Gated on the same shared global switch as
+        _refresh_auto_notice, mirroring that method exactly."""
+        if self.auto_config.enabled and auto_start.daily_limit_reached(
+                self.auto_start_config, auto.today_str(), path=self._auto_start_daily_count_path):
+            self.auto_start_notice_var.set(auto_start.LIMIT_REACHED_TEXT)
+        else:
+            self.auto_start_notice_var.set("")
+
     def _refresh_auto_results(self) -> None:
         """仕様4: re-checks this module's own local auto-triage records (app.py's background
         thread writes these independently of this window) and the daily-limit notice on every
@@ -280,12 +325,19 @@ class ReportsInboxWindow:
         notice text change here -- never a report's other fields, title, or body; those still
         only refresh via reload()/the shared-folder scan."""
         if self.rows:
-            new_results = auto.load_auto_results(
-                (r.report.identity for r in self.rows), root=self._auto_results_root)
-            if new_results != self._auto_results:
+            identities = [r.report.identity for r in self.rows]
+            new_results = auto.load_auto_results(identities, root=self._auto_results_root)
+            new_start_results = auto_start.load_auto_start_records(
+                identities, root=self._auto_start_records_root)
+            new_waiting = auto_start.load_waiting_marks(identities, root=self._auto_start_waiting_root)
+            if (new_results != self._auto_results or new_start_results != self._auto_start_results
+                    or new_waiting != self._auto_start_waiting):
                 self._auto_results = new_results
+                self._auto_start_results = new_start_results
+                self._auto_start_waiting = new_waiting
                 self._render_rows()
         self._refresh_auto_notice()
+        self._refresh_auto_start_notice()
 
     # ---------------------------------------------------------------- loading
     def _apply_config_metadata(self, config) -> None:
@@ -353,7 +405,12 @@ class ReportsInboxWindow:
         self.broken = inbox.all_broken(inboxes)
         self._auto_results = auto.load_auto_results(
             (r.report.identity for r in self.rows), root=self._auto_results_root)
+        self._auto_start_results = auto_start.load_auto_start_records(
+            (r.report.identity for r in self.rows), root=self._auto_start_records_root)
+        self._auto_start_waiting = auto_start.load_waiting_marks(
+            (r.report.identity for r in self.rows), root=self._auto_start_waiting_root)
         self._refresh_auto_notice()
+        self._refresh_auto_start_notice()
         self.notice_var.set(f"読み込み完了（{len(self.rows)}件 / 読めない報告 {len(self.broken)}件）")
         self._render_rows()
         self._render_broken()
@@ -364,12 +421,20 @@ class ReportsInboxWindow:
         record = self._auto_results.get(row.report.identity)
         return record.outcome if record is not None else ""
 
+    def _auto_start_result_label(self, row: inbox.ReportRow) -> str:
+        record = self._auto_start_results.get(row.report.identity)
+        if record is not None and record.result:
+            return record.result
+        if self._auto_start_waiting.get(row.report.identity):
+            return auto_start.RESULT_WAITING
+        return ""
+
     def _render_rows(self) -> None:
         rows = self.rows
         if self.unresolved_only_var.get():
             rows = inbox.unresolved_only(rows)
         self.visible_rows = rows
-        lines = [row_line(r, self._auto_outcome_label(r)) for r in rows]
+        lines = [row_line(r, self._auto_outcome_label(r), self._auto_start_result_label(r)) for r in rows]
         self.report_list.delete(0, "end")
         for line in lines:
             self.report_list.insert("end", line)
