@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import threading
 
@@ -456,6 +457,22 @@ class CodexProvider(Provider):
     display = "Codex"
     supports_resume = False
 
+    def child_env(self, role: str) -> dict[str, str]:
+        env = super().child_env(role)
+        if role == "main":
+            # The detached worker uses DCC's interpreter. Do not depend on the
+            # sandbox account's per-user Python launcher registration.
+            exe = Path(sys.executable)
+            if exe.name.lower() == "pythonw.exe":
+                exe = exe.with_name("python.exe")
+            env["AI_ORCHESTRATOR_PYTHON"] = str(exe)
+            entries = env.get("PATH", "").split(os.pathsep)
+            # Preserve the engine's repo-local venv precedence, when supplied.
+            index = 1 if self.extra_env and self.extra_env.get("VIRTUAL_ENV") else 0
+            entries.insert(index, str(exe.parent))
+            env["PATH"] = os.pathsep.join(entries)
+        return env
+
     def _command(self, worktree: Path, sandbox: str, ephemeral: bool = True) -> list[str]:
         command = [*resolved_command("codex"), "exec", "--json", "--sandbox", sandbox, "-C", str(worktree)]
         if ephemeral:
@@ -470,6 +487,13 @@ class CodexProvider(Provider):
         return self._call("review", self._command(worktree, "read-only"), worktree, prompt, timeout, hooks)
 
     def _call(self, role, command, worktree, prompt, timeout, hooks) -> AgentResult:
+        env = self.child_env(role)
+        if role == "main":
+            # Set just these entries in Codex's tool environment, without
+            # changing inheritance, sandbox permissions or user config files.
+            command = list(command)
+            for key in ("PATH", "AI_ORCHESTRATOR_PYTHON"):
+                command[-1:-1] = ["-c", f"shell_environment_policy.set.{key}={json.dumps(env[key], ensure_ascii=False)}"]
         events: list[str] = []
         live = hooks.on_line
 
@@ -483,7 +507,7 @@ class CodexProvider(Provider):
         proc_hooks = ProcessHooks(on_line=relay, stop=hooks.stop, registry=hooks.registry, label=f"codex-{role}")
         try:
             result = run_streaming(command, cwd=worktree, input_text=prompt, timeout=timeout,
-                                   env=self.child_env(role), hooks=proc_hooks)
+                                   env=env, hooks=proc_hooks)
         except StopRequested:
             raise
         except OrchestratorError as exc:

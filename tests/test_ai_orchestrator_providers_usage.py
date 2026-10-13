@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -387,6 +389,53 @@ class CodexParseTests(unittest.TestCase):
 
 
 class RoleTests(unittest.TestCase):
+    def test_codex_main_passes_worker_python_to_process_and_tool_environment(self):
+        provider = p.CodexProvider()
+        worktree = Path("isolated worktree")
+        exe = str(Path("Python 日本語") / "python.exe")
+        original = {"PATH": "original-path", "KEEP": "unchanged"}
+        with mock.patch.dict(os.environ, original, clear=True), \
+             mock.patch.object(p.sys, "executable", exe), \
+             mock.patch.object(p, "resolved_command", return_value=["fake-codex"]), \
+             mock.patch.object(p, "run_streaming", return_value=CommandResult(("fake",), 0, CODEX_OK, "")) as runner:
+            provider.run_main(worktree, "task", timeout=10, hooks=p.ProcessHooks())
+            command = runner.call_args.args[0]
+            env = runner.call_args.kwargs["env"]
+            self.assertEqual(env["AI_ORCHESTRATOR_PYTHON"], exe)
+            self.assertEqual(env["PATH"], str(Path(exe).parent) + os.pathsep + original["PATH"])
+            self.assertEqual(env["KEEP"], "unchanged")
+            self.assertEqual(env["GIT_CONFIG_VALUE_0"], "disabled://ai-orchestrator")
+            self.assertEqual(runner.call_args.kwargs["cwd"], worktree)
+            self.assertIn("workspace-write", command)
+            self.assertEqual(command[-1], "-")
+            overrides = [command[i + 1] for i, value in enumerate(command) if value == "-c"]
+            parsed = tomllib.loads("\n".join(overrides))["shell_environment_policy"]["set"]
+            self.assertEqual(parsed, {key: env[key] for key in ("PATH", "AI_ORCHESTRATOR_PYTHON")})
+            self.assertEqual(dict(os.environ), original)
+
+    def test_codex_main_keeps_repo_venv_first(self):
+        provider = p.CodexProvider()
+        provider.extra_env = {"PATH": "repo-venv" + os.pathsep + "original", "VIRTUAL_ENV": "repo"}
+        with mock.patch.object(p.sys, "executable", str(Path("dcc") / "python.exe")):
+            env = provider.child_env("main")
+        self.assertEqual(env["PATH"].split(os.pathsep), ["repo-venv", "dcc", "original"])
+        self.assertEqual(env["VIRTUAL_ENV"], "repo")
+
+    def test_pythonw_uses_console_sibling(self):
+        with mock.patch.object(p.sys, "executable", str(Path("dcc") / "pythonw.exe")):
+            env = p.CodexProvider().child_env("main")
+        self.assertEqual(env["AI_ORCHESTRATOR_PYTHON"], str(Path("dcc") / "python.exe"))
+
+    def test_reviewer_and_claude_environment_are_unchanged(self):
+        with mock.patch.dict(os.environ, {"PATH": "original"}, clear=True), \
+             mock.patch.object(p, "resolved_command", return_value=["fake-codex"]), \
+             mock.patch.object(p, "run_streaming", return_value=CommandResult(("fake",), 0, CODEX_OK, "")) as runner:
+            p.CodexProvider().run_review(Path("w"), "review", timeout=10, hooks=p.ProcessHooks())
+            self.assertEqual(runner.call_args.kwargs["env"], p.agent_env())
+            self.assertNotIn("-c", runner.call_args.args[0])
+            self.assertIn("read-only", runner.call_args.args[0])
+            self.assertEqual(p.ClaudeProvider().child_env("main"), p.agent_env())
+
     def test_defaults_are_claude_main_codex_reviewer(self):
         self.assertEqual((p.DEFAULT_MAIN_AGENT, p.DEFAULT_REVIEW_AGENT), ("claude", "codex"))
 
