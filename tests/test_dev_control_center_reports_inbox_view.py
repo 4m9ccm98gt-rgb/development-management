@@ -402,14 +402,16 @@ class ReportsInboxWindowCase(unittest.TestCase):
     def make_window(self, *, apps=None, scan_fn=None, clipboard=None, reports_config_fn=None, on_spec_ready=None,
                      auto_config_path=None, auto_results_root=None, auto_daily_count_path=None,
                      auto_start_config_path=None, auto_start_records_root=None,
-                     auto_start_daily_count_path=None, auto_start_waiting_root=None):
+                     auto_start_daily_count_path=None, auto_start_waiting_root=None,
+                     requeue_config_path=None, requeue_notice_fn=None):
         scan_fn = scan_fn or inbox.scan_all
         auto_kwargs = dict(auto_config_path=auto_config_path, auto_results_root=auto_results_root,
                             auto_daily_count_path=auto_daily_count_path,
                             auto_start_config_path=auto_start_config_path,
                             auto_start_records_root=auto_start_records_root,
                             auto_start_daily_count_path=auto_start_daily_count_path,
-                            auto_start_waiting_root=auto_start_waiting_root)
+                            auto_start_waiting_root=auto_start_waiting_root,
+                            requeue_config_path=requeue_config_path, requeue_notice_fn=requeue_notice_fn)
         if reports_config_fn is not None:
             self.window = view.ReportsInboxWindow(self.master, scan_fn=scan_fn, copy_to_clipboard=clipboard,
                                                   reports_config_fn=reports_config_fn, on_spec_ready=on_spec_ready,
@@ -603,6 +605,54 @@ class AutoStartResultAutoRefreshTests(ReportsInboxWindowCase):
             window._tick()
             self.assertEqual(window._auto_start_result_label(window.visible_rows[0]), "")
             self.assertNotIn(auto_start.RESULT_WAITING, window.report_list.get(0, "end")[0])
+
+
+class RequeueNoticeAutoRefreshTests(ReportsInboxWindowCase):
+    """DCC Task 19b, 仕様4, Reviewer finding 5: the fixed "本日の再実行の上限に達しました" notice
+    must actually reach the screen through this window's own existing periodic tick (the same
+    _tick -> _refresh_auto_results -> _refresh_requeue_notice wiring app.py relies on), not just
+    be computable in isolation. requeue_notice_fn here stands in for app.py's own closure (which
+    reads its one in-memory RequeueState) -- this test only has to prove the wiring end-to-end
+    reaches window.requeue_notice_var, including picking up a change on a later tick without a
+    manual 再読み込み."""
+
+    def test_notice_appears_and_updates_through_the_tick_without_a_manual_reload(self):
+        calls = []
+        text = {"value": ""}
+
+        def requeue_notice_fn():
+            calls.append(1)
+            return text["value"]
+
+        window = self.make_window(apps=[], requeue_notice_fn=requeue_notice_fn)
+        self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+        self.assertEqual(window.requeue_notice_var.get(), "")
+        self.assertGreaterEqual(len(calls), 1)  # already invoked once by the initial tick(s)
+
+        import scripts.dev_control_center.orchestrator_requeue as requeue_mod
+
+        text["value"] = requeue_mod.LIMIT_REACHED_TEXT
+        window._tick()
+        self.assertEqual(window.requeue_notice_var.get(), requeue_mod.LIMIT_REACHED_TEXT)
+
+        text["value"] = ""
+        window._tick()
+        self.assertEqual(window.requeue_notice_var.get(), "")
+
+    def test_a_broken_notice_callback_never_breaks_the_tick(self):
+        def exploding_notice_fn():
+            raise RuntimeError("boom")
+
+        window = self.make_window(apps=[], requeue_notice_fn=exploding_notice_fn)
+        self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+        window._tick()  # must not raise
+        self.assertEqual(window.requeue_notice_var.get(), "")
+
+    def test_absent_requeue_notice_fn_leaves_the_notice_empty(self):
+        window = self.make_window(apps=[])  # no requeue_notice_fn supplied (every pre-19b test)
+        self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+        window._tick()
+        self.assertEqual(window.requeue_notice_var.get(), "")
 
 
 class ConfigNoticeAndSourceDisplayTests(ReportsInboxWindowCase):
@@ -1025,6 +1075,7 @@ class AppReportsButtonTests(unittest.TestCase):
         self.app._badge_stop = threading.Event()
         self.app._auto_triage_stop = threading.Event()
         self.app._auto_start_stop = threading.Event()
+        self.app._requeue_stop = threading.Event()
         self.app.orchestrator_window = None
         self.app.selection = SimpleNamespace(close=lambda: None)
         self.app._on_close()  # must not raise even though the inbox window is still open

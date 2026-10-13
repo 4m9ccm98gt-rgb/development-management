@@ -884,11 +884,12 @@ class FakeOrchestratorWindowCase(unittest.TestCase):
                             SimpleNamespace(name="other", branch="main", initial_ai_task="", initial_test="")]
         self.window = self.make_window(initial_repo="app")
 
-    def make_window(self, *, initial_repo, monitor=None, drafts=None, definitions=None):
+    def make_window(self, *, initial_repo, monitor=None, drafts=None, definitions=None, requeue_label_fn=None):
         return view.OrchestratorWindow(
             object(), definitions if definitions is not None else self.definitions, initial_repo=initial_repo,
             drafts=drafts if drafts is not None else self.drafts, on_apply=self.on_apply,
-            monitor=monitor or self.monitor, repos_root=Path("C:/repos"), auto_usage=False)
+            monitor=monitor or self.monitor, repos_root=Path("C:/repos"), auto_usage=False,
+            requeue_label_fn=requeue_label_fn)
 
     def confirm_visible(self) -> bool:
         return bool(self.window.confirm_frame.grid_info())
@@ -1236,6 +1237,69 @@ class SpecHandoffResetsPendingConfirmTests(FakeOrchestratorWindowCase):
             self.window._confirm_start()
             self.pump(lambda: bool(captured))
         self.assertEqual(captured[0].spec.criteria[0]["text"], "B")
+
+
+class RequeueLabelDisplayTests(FakeOrchestratorWindowCase):
+    """DCC Task 19b, 仕様4, Reviewer finding 5: the fixed-word requeue status (枠の回復待ち /
+    人の確認が必要) must actually reach the run list through this window's own existing periodic
+    tick -- the real _tick() draining monitor.queue into apply_snapshot()/_render_runs(), the same
+    path app.py's real FakeMonitor-free RunMonitor drives in production -- not just be computable
+    by calling _run_line directly. Built without any real Tk widget (FakeOrchestratorWindowCase)."""
+
+    def push_and_tick(self, window, rec, *, liveness=rs.LIVE_RUNNING):
+        snapshot = {"runs": [{"record": rec, "liveness": liveness, "run_dir": None, "reason": "",
+                               "heartbeat_age": 1.0}],
+                    "usage": {}, "selected": None, "log": "", "log_reset": False, "at": NOW}
+        window.monitor.queue.put(snapshot)
+        window._tick()
+
+    @staticmethod
+    def make_rec(run_id="run-1"):
+        return record(run_id=run_id)
+
+    def test_waiting_label_appears_in_the_run_list_through_the_tick(self):
+        calls = []
+
+        def label_fn(run_id):
+            calls.append(run_id)
+            return "枠の回復待ち（再実行まで約15分）"
+
+        window = self.make_window(initial_repo="app", requeue_label_fn=label_fn)
+        self.push_and_tick(window, self.make_rec("run-wait"))
+        lines = window.run_list.get(0, "end")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("枠の回復待ち（再実行まで約15分）", lines[0])
+        self.assertIn("run-wait", calls)
+
+    def test_needs_human_label_appears_in_the_run_list_through_the_tick(self):
+        window = self.make_window(initial_repo="app", requeue_label_fn=lambda run_id: "人の確認が必要")
+        self.push_and_tick(window, self.make_rec("run-needs-human"))
+        lines = window.run_list.get(0, "end")
+        self.assertIn("人の確認が必要", lines[0])
+
+    def test_no_label_leaves_the_line_unchanged(self):
+        window = self.make_window(initial_repo="app", requeue_label_fn=lambda run_id: "")
+        self.push_and_tick(window, self.make_rec("run-plain"))
+        lines = window.run_list.get(0, "end")
+        self.assertNotIn("  [", lines[0])  # no appended requeue-status bracket (the role's own [C→C] stays)
+
+    def test_absent_requeue_label_fn_leaves_every_existing_line_unchanged(self):
+        """Every caller/test before this feature never passed requeue_label_fn -- the run list
+        must render exactly as before (no trailing bracketed status at all)."""
+        window = self.make_window(initial_repo="app")  # requeue_label_fn defaults to None
+        self.push_and_tick(window, self.make_rec("run-no-fn"))
+        lines = window.run_list.get(0, "end")
+        self.assertNotIn("  [", lines[0])  # no appended requeue-status bracket (the role's own [C→C] stays)
+
+    def test_a_broken_label_callback_never_breaks_the_run_list(self):
+        def exploding(_run_id):
+            raise RuntimeError("boom")
+
+        window = self.make_window(initial_repo="app", requeue_label_fn=exploding)
+        self.push_and_tick(window, self.make_rec("run-explode"))
+        lines = window.run_list.get(0, "end")
+        self.assertEqual(len(lines), 1)  # the run itself still renders, just without a label
+        self.assertNotIn("  [", lines[0])  # no appended requeue-status bracket (the role's own [C→C] stays)
 
 
 class CharacterMoodTests(ViewCase):

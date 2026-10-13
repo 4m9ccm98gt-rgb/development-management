@@ -111,7 +111,7 @@ class CheckbuttonUsesSharedStyleTests(unittest.TestCase):
     def test_reports_inbox_checkbuttons_use_the_default_checkbutton_style(self):
         text = (ROOT / "scripts" / "dev_control_center" / "reports_inbox_view.py").read_text(encoding="utf-8")
         checkbutton_calls = [line for line in text.splitlines() if "ttk.Checkbutton(" in line]
-        self.assertEqual(len(checkbutton_calls), 4, checkbutton_calls)
+        self.assertEqual(len(checkbutton_calls), 5, checkbutton_calls)
         for line in checkbutton_calls:
             self.assertNotIn("style=", line)
 

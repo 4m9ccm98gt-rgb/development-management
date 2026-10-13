@@ -211,7 +211,8 @@ def _set_enabled(button: ttk.Button, enabled: bool) -> None:
 class OrchestratorWindow:
     def __init__(self, master: tk.Misc, definitions, *, initial_repo: str | None, drafts: dict,
                  on_apply: Callable[[dict, Path], None] | None = None, monitor: RunMonitor | None = None,
-                 repos_root: Path | None = None, auto_usage: bool = True) -> None:
+                 repos_root: Path | None = None, auto_usage: bool = True,
+                 requeue_label_fn: Callable[[str], str] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._events: queue.Queue = queue.Queue()
@@ -220,6 +221,11 @@ class OrchestratorWindow:
         self.drafts = drafts
         self.on_apply = on_apply
         self.repos_root = repos_root
+        # DCC Task 19b: optional fixed-word requeue status (枠の回復待ち / 人の確認が必要) appended
+        # to a run's own list line. None (the default, and every existing caller/test) leaves the
+        # list exactly as before -- this feature is entirely additive and off unless the caller
+        # supplies it, matching every existing behaviour/test unchanged.
+        self._requeue_label_fn = requeue_label_fn
         self._closed = False
         self.spec: taskspec.Spec | None = None
         self.spec_path: Path | None = None
@@ -834,8 +840,16 @@ class OrchestratorWindow:
         stamp = str(record.get("created_at", ""))[5:16].replace("T", " ")
         repo = Path(str(record["repo"])).name
         repo = repo if len(repo) <= 20 else repo[:19] + "…"
-        return (f"{LIVE_MARK.get(item['liveness'], '-')} {stamp} {repo} {record['stage']} "
+        line = (f"{LIVE_MARK.get(item['liveness'], '-')} {stamp} {repo} {record['stage']} "
                 f"[{record['main_agent'][:1].upper()}→{record['review_agent'][:1].upper()}]")
+        if self._requeue_label_fn is not None:
+            try:
+                label = self._requeue_label_fn(record["run_id"])
+            except Exception:  # noqa: BLE001 - a broken status callback must not break the list
+                label = ""
+            if label:
+                line += f"  [{label}]"
+        return line
 
     def _render_runs(self) -> None:
         lines = [self._run_line(i) for i in self.run_items]

@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
+from . import orchestrator_requeue as requeue
 from . import reports_auto as auto
 from . import reports_auto_start as auto_start
 from . import reports_inbox as inbox
@@ -85,7 +86,8 @@ class ReportsInboxWindow:
                  current_roles: Callable[[], tuple[str, str]] | None = None,
                  auto_config_path=None, auto_results_root=None, auto_daily_count_path=None,
                  auto_start_config_path=None, auto_start_records_root=None,
-                 auto_start_daily_count_path=None, auto_start_waiting_root=None) -> None:
+                 auto_start_daily_count_path=None, auto_start_waiting_root=None,
+                 requeue_config_path=None, requeue_notice_fn: Callable[[], str] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._current_roles = current_roles
@@ -100,6 +102,12 @@ class ReportsInboxWindow:
         self._auto_start_records_root = auto_start_records_root
         self._auto_start_daily_count_path = auto_start_daily_count_path
         self._auto_start_waiting_root = auto_start_waiting_root
+        # DCC Task 19b: same test-only override convention, plus an optional caller-supplied
+        # closure for the fixed "本日の再実行の上限に達しました" notice (app.py computes it from
+        # the one in-memory RequeueState it owns for this DCC process; None/absent here just means
+        # the notice never shows, e.g. in tests that do not care about it).
+        self._requeue_config_path = requeue_config_path
+        self._requeue_notice_fn = requeue_notice_fn
         if reports_config_fn is not None:
             self._reports_config_fn = reports_config_fn
         elif configured_apps is not None:
@@ -141,6 +149,12 @@ class ReportsInboxWindow:
         self._auto_start_results: dict[tuple[str, str], "auto_start.AutoStartRecord"] = {}
         self._auto_start_waiting: dict[tuple[str, str], bool] = {}
         self.auto_start_notice_var = tk.StringVar(value="")
+        # DCC Task 19b: "枠不足のとき自動で再実行する" -- its own switch (initial OFF), gated by the
+        # same shared global switch above. The per-run waiting/needs-human status itself is shown
+        # in the Orchestrator window's own run list (where runs actually live); this window only
+        # owns the switch and the fixed "本日の再実行の上限に達しました" notice.
+        self.requeue_config = requeue.load_requeue_config(self._requeue_config_path)
+        self.requeue_notice_var = tk.StringVar(value="")
 
         self.window = tk.Toplevel(master)
         self.window.title("報告の受信箱")
@@ -200,9 +214,13 @@ class ReportsInboxWindow:
         self.auto_enabled_var = tk.BooleanVar(value=self.auto_config.enabled)
         ttk.Checkbutton(controls, text="自動モード（全体）", variable=self.auto_enabled_var,
                         command=self._on_auto_enabled_toggle).pack(side="left", padx=(12, 0))
+        self.requeue_enabled_var = tk.BooleanVar(value=self.requeue_config.enabled)
+        ttk.Checkbutton(controls, text="枠不足時に自動で再実行", variable=self.requeue_enabled_var,
+                        command=self._on_requeue_enabled_toggle).pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.notice_var, foreground=DARK_MUTED).pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.auto_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.auto_start_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
+        ttk.Label(controls, textvariable=self.requeue_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
 
         left = ttk.Frame(outer)
         left.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
@@ -296,6 +314,9 @@ class ReportsInboxWindow:
         self.auto_start_config = auto_start.set_app_start_allowed(
             app_key, allowed, path=self._auto_start_config_path)
 
+    def _on_requeue_enabled_toggle(self) -> None:
+        self.requeue_config = requeue.set_enabled(self.requeue_enabled_var.get(), path=self._requeue_config_path)
+
     def _refresh_auto_notice(self) -> None:
         """仕様2: the fixed "本日の上限に達しました" sentence, shown in the inbox window once the
         day's automatic-investigation count has reached the configured limit -- never built from
@@ -338,6 +359,19 @@ class ReportsInboxWindow:
                 self._render_rows()
         self._refresh_auto_notice()
         self._refresh_auto_start_notice()
+        self._refresh_requeue_notice()
+
+    def _refresh_requeue_notice(self) -> None:
+        """DCC Task 19b, 仕様4: the fixed "本日の再実行の上限に達しました" sentence, computed by
+        the caller-supplied closure (app.py, from the one in-memory RequeueState it owns) --
+        recomputed every tick so it is never stuck stale while this window stays open. Absent in
+        tests that do not supply requeue_notice_fn, in which case the notice simply never shows."""
+        if self._requeue_notice_fn is None:
+            return
+        try:
+            self.requeue_notice_var.set(self._requeue_notice_fn())
+        except Exception:  # noqa: BLE001 - a broken notice callback must not break the window
+            pass
 
     # ---------------------------------------------------------------- loading
     def _apply_config_metadata(self, config) -> None:

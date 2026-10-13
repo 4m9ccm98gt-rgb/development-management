@@ -253,6 +253,27 @@ class App(ttk.Frame):
         # inside reports_auto_start.run_auto_start_once() itself, re-read every cycle, same as
         # _start_auto_triage_loop.
         self._auto_start_stop = threading.Event()
+        # DCC Task 19b: periodic automatic requeue of a Run that stopped only for PROVIDER_QUOTA
+        # (off by default; the shared global switch above gates this too). All of its *scheduling*
+        # state lives only in this in-memory RequeueState for the life of this DCC process -- a
+        # restart never resumes a stopped run on its own (see orchestrator_requeue.py's module
+        # docstring). The same instance is handed to every OrchestratorWindow this App opens, so
+        # its run list can show the fixed-word status for a run awaiting requeue. daily_count_path
+        # lets the day's requeue count survive a same-day DCC restart; seed_startup_exclusions is
+        # called synchronously, right here, before anything else can ever call run_requeue_once --
+        # every run already sitting in PROVIDER_QUOTA at this exact moment must never be
+        # auto-requeued by this process, restart or not.
+        from . import orchestrator_requeue
+
+        self._requeue_stop = threading.Event()
+        self._requeue_state = orchestrator_requeue.RequeueState(
+            daily_count_path=orchestrator_requeue.daily_count_path())
+        try:
+            orchestrator_requeue.seed_startup_exclusions(self._requeue_state)
+        except Exception:  # noqa: BLE001 - startup exclusion must never block DCC from opening
+            import logging
+
+            logging.getLogger(__name__).exception("requeue startup exclusion failed")
         # Read on the auto-start background thread, written only on the Tk main thread
         # (_heartbeat_tick) -- a plain tuple-reference read/write, never a Tk widget access, so
         # the background thread never touches Tk.
@@ -302,6 +323,7 @@ class App(ttk.Frame):
         self.master.after(500, self._start_orchestrator_badge)
         self.master.after(700, self._start_auto_triage_loop)
         self.master.after(900, self._start_auto_start_loop)
+        self.master.after(1100, self._start_requeue_loop)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -330,6 +352,7 @@ class App(ttk.Frame):
         self._badge_stop.set()
         self._auto_triage_stop.set()
         self._auto_start_stop.set()
+        self._requeue_stop.set()
         window = self.orchestrator_window
         if window is not None and window.exists():
             window.close()
@@ -557,7 +580,8 @@ class App(ttk.Frame):
         # selected (the normal case after startup) — the form no longer preselects it.
         self.orchestrator_window = OrchestratorWindow(
             self.master, self.definitions, initial_repo=None,
-            drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT)
+            drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT,
+            requeue_label_fn=self._requeue_label)
 
     def open_reports_inbox(self) -> None:
         """Open (or focus) the reports inbox window. Display/local-decision only; see
@@ -570,7 +594,7 @@ class App(ttk.Frame):
             return
         self.reports_window = ReportsInboxWindow(
             self.master, on_spec_ready=self._send_spec_to_orchestrator,
-            current_roles=self._current_orchestrator_roles)
+            current_roles=self._current_orchestrator_roles, requeue_notice_fn=self._requeue_limit_notice)
 
     def _current_orchestrator_roles(self) -> tuple[str, str]:
         """DCC Task 14.5: "現在の DCC の設定" for 作成して開始's confirmation dialog -- the
@@ -593,7 +617,8 @@ class App(ttk.Frame):
         if window is None or not window.exists():
             window = OrchestratorWindow(
                 self.master, self.definitions, initial_repo=None,
-                drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT)
+                drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT,
+                requeue_label_fn=self._requeue_label)
             self.orchestrator_window = window
         else:
             # An existing window may already have a specific repo selected (Task 10 default);
@@ -1302,6 +1327,61 @@ class App(ttk.Frame):
                 stop.wait(reports_auto_start.AUTO_START_INTERVAL_SECONDS)
 
         threading.Thread(target=work, name="dcc-auto-start", daemon=True).start()
+
+    # --- DCC Task 19b: periodic automatic requeue of a PROVIDER_QUOTA-stopped Run -----
+    def _start_requeue_loop(self) -> None:
+        """Runs for the whole life of this DCC process, checking at most once every
+        orchestrator_requeue.REQUEUE_INTERVAL_SECONDS. Whether anything actually happens on a
+        given tick is decided entirely inside orchestrator_requeue.run_requeue_once() itself
+        (shared global switch, this feature's own switch, daily limit, per-lineage limit, busy
+        target repo) -- this loop only provides the periodic cadence and the single in-memory
+        RequeueState kept for this DCC process (never written to disk; a restart starts fresh).
+        Never touches a Tk widget directly from the background thread."""
+        if self._closed:
+            return
+        stop = self._requeue_stop
+
+        def work() -> None:
+            from . import orchestrator_requeue as req
+
+            while not stop.is_set():
+                try:
+                    req.run_requeue_once(
+                        state=self._requeue_state, global_config_path=self._auto_mode_config_path(),
+                        requeue_config_path=req.requeue_config_path(), stop_event=stop,
+                    )
+                except Exception:  # noqa: BLE001 - one bad cycle must not kill the loop or DCC
+                    import logging
+
+                    logging.getLogger(__name__).exception("requeue cycle failed")
+                stop.wait(req.REQUEUE_INTERVAL_SECONDS)
+
+        threading.Thread(target=work, name="dcc-requeue", daemon=True).start()
+
+    @staticmethod
+    def _auto_mode_config_path():
+        from . import reports_auto
+
+        return reports_auto.auto_mode_config_path()
+
+    def _requeue_label(self, run_id: str) -> str:
+        """DCC Task 19b, 仕様4: the fixed-word requeue status for one run, for OrchestratorWindow's
+        run list to show -- recomputed on every call (the window's own periodic UI tick), reading
+        only this App's in-memory RequeueState. Never the stopped run's own final_result.message."""
+        from . import orchestrator_requeue as req
+
+        return req.run_status_label(run_id, self._requeue_state)
+
+    def _requeue_limit_notice(self) -> str:
+        """DCC Task 19b, 仕様4: the fixed "本日の再実行の上限に達しました" sentence for the reports
+        inbox window's own notice label -- computed fresh from this App's in-memory RequeueState
+        and the two persisted switches, same as _requeue_label."""
+        from . import orchestrator_requeue as req
+        from . import reports_auto as auto
+
+        global_config = auto.load_auto_mode_config(self._auto_mode_config_path())
+        requeue_config = req.load_requeue_config(req.requeue_config_path())
+        return req.limit_notice(global_config, requeue_config, self._requeue_state, auto.today_str())
 
     def _drain_orchestrator_badge(self) -> None:
         try:
