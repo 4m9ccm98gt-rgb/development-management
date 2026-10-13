@@ -17,6 +17,7 @@ from typing import Callable
 from . import orchestrator_requeue as requeue
 from . import reports_auto as auto
 from . import reports_auto_start as auto_start
+from . import reports_auto_approve as approve
 from . import reports_inbox as inbox
 from .orchestrator_view import resolve_click_index
 
@@ -87,10 +88,14 @@ class ReportsInboxWindow:
                  auto_config_path=None, auto_results_root=None, auto_daily_count_path=None,
                  auto_start_config_path=None, auto_start_records_root=None,
                  auto_start_daily_count_path=None, auto_start_waiting_root=None,
+                 approval_config_path=None, approval_results_root=None,
                  requeue_config_path=None, requeue_notice_fn: Callable[[], str] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._current_roles = current_roles
+        self._approval_config_path = approval_config_path
+        self._approval_results_root = approval_results_root
+        self._approval_labels = {}
         # DCC Task 17: test-only overrides so the window never touches the real %LOCALAPPDATA%
         # unless a caller explicitly wants that (same pattern as reports_triage's logs_dir=).
         self._auto_config_path = auto_config_path
@@ -146,6 +151,7 @@ class ReportsInboxWindow:
         # app, independent of Task 17's「自動調査を許可」above) and the fixed-word result column
         # for any report this feature already started.
         self.auto_start_config = auto_start.load_auto_start_config(self._auto_start_config_path)
+        self.approval_config = approve.load_config(self._approval_config_path, start_config=self.auto_start_config)
         self._auto_start_results: dict[tuple[str, str], "auto_start.AutoStartRecord"] = {}
         self._auto_start_waiting: dict[tuple[str, str], bool] = {}
         self.auto_start_notice_var = tk.StringVar(value="")
@@ -187,6 +193,8 @@ class ReportsInboxWindow:
         self.app_status_vars: dict[str, tk.StringVar] = {}
         self.auto_app_vars: dict[str, tk.BooleanVar] = {}
         self.auto_start_app_vars: dict[str, tk.BooleanVar] = {}
+        self.approval_app_vars = {}
+        self.approval_buttons = {}
         for col, app in enumerate(initial_config.apps):
             var = tk.StringVar(value="読み込み中…")
             self.app_status_vars[app.app_key] = var
@@ -204,6 +212,13 @@ class ReportsInboxWindow:
             self.auto_start_app_vars[app.app_key] = auto_start_var
             ttk.Checkbutton(box, text="自動開始を許可", variable=auto_start_var,
                              command=lambda k=app.app_key: self._on_auto_start_app_toggle(k)).pack(anchor="w")
+            approval_var = tk.BooleanVar(value=self.approval_config.apps.get(app.app_key, False))
+            self.approval_app_vars[app.app_key] = approval_var
+            button = ttk.Checkbutton(box, text="承認から DRY-RUN まで自動（現在は判定のみ）", variable=approval_var,
+                                     command=lambda k=app.app_key: self._on_approval_app_toggle(k))
+            button.pack(anchor="w")
+            self.approval_buttons[app.app_key] = button
+            button.configure(state="normal" if approve.permission_possible(app.app_key, self.auto_start_config) else "disabled")
 
         controls = ttk.Frame(outer)
         controls.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -313,6 +328,18 @@ class ReportsInboxWindow:
         allowed = self.auto_start_app_vars[app_key].get()
         self.auto_start_config = auto_start.set_app_start_allowed(
             app_key, allowed, path=self._auto_start_config_path)
+        if not approve.permission_possible(app_key, self.auto_start_config):
+            self.approval_config = approve.set_app_allowed(
+                app_key, False, path=self._approval_config_path, start_config=self.auto_start_config)
+            self.approval_app_vars[app_key].set(False)
+        self.approval_buttons[app_key].configure(
+            state="normal" if approve.permission_possible(app_key, self.auto_start_config) else "disabled")
+
+    def _on_approval_app_toggle(self, app_key):
+        self.approval_config = approve.set_app_allowed(
+            app_key, self.approval_app_vars[app_key].get(), path=self._approval_config_path,
+            start_config=auto_start.load_auto_start_config(self._auto_start_config_path))
+        self.approval_app_vars[app_key].set(self.approval_config.apps.get(app_key, False))
 
     def _on_requeue_enabled_toggle(self) -> None:
         self.requeue_config = requeue.set_enabled(self.requeue_enabled_var.get(), path=self._requeue_config_path)
@@ -351,8 +378,14 @@ class ReportsInboxWindow:
             new_start_results = auto_start.load_auto_start_records(
                 identities, root=self._auto_start_records_root)
             new_waiting = auto_start.load_waiting_marks(identities, root=self._auto_start_waiting_root)
+            gc = auto.load_auto_mode_config(self._auto_config_path)
+            sc = auto_start.load_auto_start_config(self._auto_start_config_path)
+            ac = approve.load_config(self._approval_config_path, start_config=sc)
+            new_approval = approve.load_labels(identities, gc, sc, ac, results_dir=self._approval_results_root,
+                                               records_dir=self._auto_start_records_root)
             if (new_results != self._auto_results or new_start_results != self._auto_start_results
-                    or new_waiting != self._auto_start_waiting):
+                    or new_waiting != self._auto_start_waiting or new_approval != self._approval_labels):
+                self._approval_labels = new_approval
                 self._auto_results = new_results
                 self._auto_start_results = new_start_results
                 self._auto_start_waiting = new_waiting
@@ -452,6 +485,8 @@ class ReportsInboxWindow:
 
     # ---------------------------------------------------------------- list / selection
     def _auto_outcome_label(self, row: inbox.ReportRow) -> str:
+        if row.report.identity in self._approval_labels:
+            return self._approval_labels[row.report.identity]
         record = self._auto_results.get(row.report.identity)
         return record.outcome if record is not None else ""
 

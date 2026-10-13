@@ -1308,7 +1308,7 @@ class App(ttk.Frame):
         stop = self._auto_start_stop
 
         def work() -> None:
-            from . import reports_auto, reports_auto_start
+            from . import reports_auto, reports_auto_start, reports_auto_approve
 
             while not stop.is_set():
                 try:
@@ -1324,6 +1324,11 @@ class App(ttk.Frame):
                     import logging
 
                     logging.getLogger(__name__).exception("auto start cycle failed")
+                try:
+                    if not stop.is_set():
+                        reports_auto_approve.refresh_once()
+                except Exception:
+                    pass  # observation failure must not expose raw Run data or affect Task 18
                 stop.wait(reports_auto_start.AUTO_START_INTERVAL_SECONDS)
 
         threading.Thread(target=work, name="dcc-auto-start", daemon=True).start()
