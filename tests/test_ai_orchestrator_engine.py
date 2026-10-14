@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from tools.ai_orchestrator import runstate as rs
 from tools.ai_orchestrator.engine import Engine
@@ -47,6 +48,18 @@ class EngineCase(unittest.TestCase):
 
     def stages(self):
         return [item["stage"] for item in self.record["stage_history"] if item["stage"] != rs.PREFLIGHT]
+
+
+class TestTimeoutTests(EngineCase):
+    def test_default_test_timeout_is_passed_to_test_runner(self):
+        self.build([PASS], [("+impl", "implemented")])
+        with patch.object(self.host, "run_tests", wraps=self.host.run_tests) as run_tests:
+            self.assertEqual(self.engine.run(), rs.COMPLETED)
+        self.assertEqual(rs.DEFAULT_LIMITS.test_timeout, 1800)
+        self.assertEqual(self.record["limits"]["test_timeout"], 1800)
+        self.assertEqual(run_tests.call_args.args[1], 1800)
+        self.assertEqual(self.engine.limits.agent_timeout, 1800)
+        self.assertEqual(self.engine.limits.review_timeout, 1200)
 
 
 class RoleSelectionTests(EngineCase):

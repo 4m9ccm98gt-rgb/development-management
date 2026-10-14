@@ -81,7 +81,7 @@ run記録（`run.json`）: run ID、repo、Task、Main / Reviewer、stage、Test
 | `max_main_tokens` | 0（無制限） | `MAIN_BUDGET`（Main累計トークン。Claude: 入力＋cache作成＋出力、cache読取は除外 / Codex: 入力＋出力） |
 | `max_provider_retries` | 2 | transientのみ（下記） |
 | `max_runtime_minutes` | 360 | `MAX_RUNTIME` |
-| `agent_timeout` / `review_timeout` / `test_timeout` | 1800 / 1200 / 600秒 | process tree終了後、providerは `PROVIDER_ERROR`、Testsは失敗（`HANG`） |
+| `agent_timeout` / `review_timeout` / `test_timeout` | 1800 / 1200 / 1800秒 | process tree終了後、providerは `PROVIDER_ERROR`、Testsは失敗（`HANG`） |
 
 **Tests runner問題**: 終了コード0でも出力が `Ran 0 tests` / `NO TESTS RAN` / `collected 0 items` / `no tests ran` ならFAIL（`TEST RUNNER: 0 tests ran...` の診断行を付与）。0 tests、またはランナー起動不能（`is not recognized...`、`python: No module named <runner>`、`command not found`）は `failure_history[].runner_problem` に記録します。1回目はMainへ「discoveryを壊したなら直す。コマンド自体の問題ならテストを動かさず `IMPLEMENTATION_STATUS: BLOCKED`」と伝えて1回だけ修正させ、**連続2回目は Reviewer・追加repairを呼ばず `TEST_RUNNER_PROBLEM` で `needs_human`**（同一failureの無駄なAI呼出しを防ぐ）。
 

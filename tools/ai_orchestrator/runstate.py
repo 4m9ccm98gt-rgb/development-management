@@ -93,7 +93,7 @@ class Limits:
     max_runtime_minutes: int = 360
     agent_timeout: int = 1800
     review_timeout: int = 1200
-    test_timeout: int = 600
+    test_timeout: int = 1800
 
 
 DEFAULT_LIMITS = Limits()
