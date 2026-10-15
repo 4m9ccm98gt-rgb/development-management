@@ -20,6 +20,7 @@ from .common import (
     CommandResult, OrchestratorError, ProcessHooks, StopRequested, resolved_command, resolved_command_kind,
     run_streaming,
 )
+from .settings import validate_codex_main_python
 
 CLAUDE_MAIN_MAX_TURNS = 40   # fallback per invocation; the engine sets `turn_limit` from Limits (implementation / repair)
 CLAUDE_REVIEW_MAX_TURNS = 16
@@ -456,19 +457,21 @@ class CodexProvider(Provider):
     name = "codex"
     display = "Codex"
     supports_resume = False
+    codex_main_python: str = ""  # trusted DCC setting, snapshotted by prepare_run
 
     def child_env(self, role: str) -> dict[str, str]:
         env = super().child_env(role)
         if role == "main":
-            # The detached worker uses DCC's interpreter. Do not depend on the
-            # sandbox account's per-user Python launcher registration.
-            exe = Path(sys.executable)
+            # A trusted DCC override applies only to Main. Without one, preserve
+            # the worker's interpreter and repo-venv precedence from e8f98518.
+            configured = validate_codex_main_python(self.codex_main_python)
+            exe = Path(configured or sys.executable)
             if exe.name.lower() == "pythonw.exe":
                 exe = exe.with_name("python.exe")
             env["AI_ORCHESTRATOR_PYTHON"] = str(exe)
             entries = env.get("PATH", "").split(os.pathsep)
-            # Preserve the engine's repo-local venv precedence, when supplied.
-            index = 1 if self.extra_env and self.extra_env.get("VIRTUAL_ENV") else 0
+            # An explicit override must win even when the engine supplies a venv.
+            index = 1 if not configured and self.extra_env and self.extra_env.get("VIRTUAL_ENV") else 0
             entries.insert(index, str(exe.parent))
             env["PATH"] = os.pathsep.join(entries)
         return env

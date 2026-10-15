@@ -34,6 +34,25 @@ DCC側は `scripts/dev_control_center/orchestrator_view.py`（別画面。`RunMo
 
 ## Main / Reviewer
 
+Codex Main が使う Python は、PC ローカルの
+`%LOCALAPPDATA%\ShizenDev\DCC\orchestrator_local.toml` で指定できます
+（LOCALAPPDATA が無い場合はホーム配下の同じ配置）。例:
+
+```toml
+[orchestrator]
+codex_main_python = 'C:\ProgramData\ShizenDev\Python313\python.exe'
+```
+
+存在する `python.exe` ファイルだけを受け付けます。設定なし・空文字なら従来どおり
+DCC の Python（`pythonw.exe` は隣の `python.exe`）を使い、repo の `.venv` 優先を維持します。
+設定ありなら指定 Python のフォルダを Codex Main の PATH の先頭に置き、
+`AI_ORCHESTRATOR_PYTHON` に同じ実行ファイルを設定します。値は run 開始時に
+`run.json` へ保存し、worker 起動時・各 Main 呼び出し時にも存在を検証します。
+不正な値は `CODEX_MAIN_PYTHON_INVALID`、設定を読めない場合は
+`CODEX_MAIN_PYTHON_CONFIG_INVALID` で停止し、別の Python へ切り替えません。
+Claude Main と Codex Reviewer はこの設定を読まず、従来の呼び出しを維持します。
+Python の選択は環境変数の設定だけで、sandbox・ACL・許可ディレクトリは変更しません。
+
 - Orchestrator画面で Main AI / Reviewer AI を Claude / Codex から選択。**初期値は Main=Claude、Reviewer=Codex**。両方向（Claude→Codex、Codex→Claude）を実providerで確認済み。
 - 独立レビューの意味を優先し、**同一providerは選択不可**（画面が自動で入れ替え、`start` は `SAME_PROVIDER_ROLES` で拒否）。CLIの `--allow-same-provider` を明示した場合だけ許可し、runへ `same_provider_override` を記録します。
 - Mainだけがworktreeを編集（Claude: `acceptEdits` + 許可Bashのみ、gitの書込系は含めない / Codex: `--sandbox workspace-write`）。Reviewerは読み取り専用（Claude: `Read,Glob,Grep`のみ・shell / editor / MCP無し / Codex: `--sandbox read-only`）。Reviewer呼出し前後でdiff fingerprintを比較し、変更があれば `SAFETY_VIOLATION`。

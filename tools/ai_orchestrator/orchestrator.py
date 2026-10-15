@@ -31,6 +31,7 @@ from .providers import (
     make_provider, validate_roles,
 )
 from .taskspec import Spec, extract_target_repo_name, load_spec_file
+from .settings import load_codex_main_python, validate_codex_main_python
 from .usage import USAGE_PROVIDER_CLASSES, describe, make_usage_provider
 
 DM_ROOT = Path(__file__).resolve().parents[2]
@@ -573,6 +574,7 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
     if not request.tests and not request.allow_no_tests:
         raise OrchestratorError("at least one test command is required", "TESTS_MISSING")
     validate_roles(request.main_agent, request.review_agent, allow_same=request.allow_same_provider)
+    codex_main_python = load_codex_main_python() if request.main_agent == "codex" else ""
     for name in {request.main_agent, request.review_agent}:
         make_provider(name).preflight()
     resolved_command("git")
@@ -602,6 +604,8 @@ def prepare_run(request: StartRequest) -> tuple[Path, dict]:
             record["criteria"] = list(request.spec.criteria)
             record["criteria_source"] = "spec"
         record["billing_env_override"] = list(active)
+        if codex_main_python:
+            record["codex_main_python"] = codex_main_python
         record["same_provider_override"] = request.main_agent == request.review_agent
         record["source_preparation"] = preparation if request.prepare_source else None  # None: not requested
         (run_dir / "task.md").write_text(task + "\n", encoding="utf-8")
@@ -693,6 +697,8 @@ def worker_main(run_dir: Path, *, engine_factory=None, refresh_usage: bool = Tru
             rec.log(f"[source] {action}")
         main = make_provider(record["main_agent"])
         reviewer = make_provider(record["review_agent"])
+        if record["main_agent"] == "codex":
+            main.codex_main_python = validate_codex_main_python(record.get("codex_main_python", ""))
         validate_roles(record["main_agent"], record["review_agent"], allow_same=bool(record.get("same_provider_override")))
         main.preflight()
         reviewer.preflight()

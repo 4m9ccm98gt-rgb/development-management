@@ -67,6 +67,9 @@ class HostCase(unittest.TestCase):
         extra = mock.patch.dict(providers.PROVIDER_CLASSES, self.classes)
         extra.start()
         self.addCleanup(extra.stop)
+        settings_patch = mock.patch.object(orch, "load_codex_main_python", return_value="")
+        settings_patch.start()  # tests never depend on this PC's real DCC settings
+        self.addCleanup(settings_patch.stop)
         origin = self.tmp / "origin.git"
         self.repo = self.tmp / "app"
         subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True)
@@ -93,6 +96,25 @@ class HostCase(unittest.TestCase):
 
 
 class StartValidationTests(HostCase):
+    def test_codex_python_is_saved_from_dcc_config_only(self):
+        with mock.patch.object(orch, "load_codex_main_python", return_value=str(Path(sys.executable))) as loader:
+            _, record = orch.prepare_run(self.request(main_agent="codex", review_agent="claude"))
+        loader.assert_called_once_with()
+        self.assertEqual(record["codex_main_python"], str(Path(sys.executable)))
+
+    def test_claude_does_not_read_codex_python_config(self):
+        with mock.patch.object(orch, "load_codex_main_python", side_effect=AssertionError("must not load")):
+            _, record = orch.prepare_run(self.request())
+        self.assertNotIn("codex_main_python", record)
+
+    def test_invalid_codex_python_is_rejected_before_run_or_lock(self):
+        with mock.patch.object(orch, "load_codex_main_python",
+                               side_effect=OrchestratorError("invalid", "CODEX_MAIN_PYTHON_INVALID")):
+            with self.assertRaises(OrchestratorError):
+                orch.prepare_run(self.request(main_agent="codex", review_agent="claude"))
+        self.assertEqual(rs.list_runs(), [])
+        self.assertFalse(list(rs.locks_root().glob("*.json")))
+
     def test_long_japanese_task_is_saved_and_reported_in_full(self):
         from tools.ai_orchestrator.review import extract_acceptance, criteria_from_acceptance
 
@@ -193,6 +215,23 @@ class StartValidationTests(HostCase):
 
 
 class WorkerRunTests(HostCase):
+    def test_worker_gives_saved_python_only_to_codex_main(self):
+        exe = self.tmp / "python.exe"
+        exe.write_bytes(b"fake; provider is fake too")
+        seen = []
+        original_engine = orch.Engine
+
+        def factory(rec, host, main, reviewer, usage):
+            seen.append((main.codex_main_python, hasattr(reviewer, "codex_main_python")))
+            return original_engine(rec, host, main, reviewer, usage)
+
+        with mock.patch.object(orch, "load_codex_main_python", return_value=str(exe)), \
+             mock.patch.object(orch, "Engine", side_effect=factory):
+            _, record, code = self.run_worker(main_agent="codex", review_agent="claude")
+        self.assertEqual(code, 0)
+        self.assertEqual(record["stage"], rs.COMPLETED)
+        self.assertEqual(seen, [(str(exe.resolve()), False)])
+
     def test_completed_run_leaves_a_candidate_and_never_moves_the_source_branch(self):
         head_before = git(self.repo, "rev-parse", "HEAD").strip()
         run_dir, record, code = self.run_worker()
