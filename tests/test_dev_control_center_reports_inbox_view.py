@@ -23,6 +23,8 @@ from unittest import mock
 
 from scripts.dev_control_center import app as dcc
 from scripts.dev_control_center import reports_auto as auto
+from scripts.dev_control_center import reports_auto_approve as approve
+from scripts.dev_control_center import reports_auto_progress as progress
 from scripts.dev_control_center import reports_auto_start as auto_start
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_inbox_view as view
@@ -391,6 +393,28 @@ class ReportsInboxWindowCase(unittest.TestCase):
         ttk_patch = mock.patch.object(view, "ttk", _FAKE_TTK_MODULE)
         ttk_patch.start()
         self.addCleanup(ttk_patch.stop)
+        # Review fix (DCC Task 19c-2b): every setting/state path ReportsInboxWindow can read
+        # (Task 17/18/19b/19c-1/19c-2b's own config + result/record/label roots) must default to
+        # somewhere under this per-test temp folder, so a test that omits one of make_window's
+        # path kwargs still never touches the real %LOCALAPPDATA%\ShizenDev\DCC\... files on this
+        # machine. A test that explicitly passes its own path (most do, for the file it actually
+        # exercises) keeps using that path -- only the *unspecified* ones are redirected here.
+        self.state_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_tmp.cleanup)
+        state_root = Path(self.state_tmp.name)
+        self._default_state_paths = dict(
+            auto_config_path=state_root / "auto_config.json",
+            auto_results_root=state_root / "auto_results",
+            auto_daily_count_path=state_root / "auto_daily_count.json",
+            auto_start_config_path=state_root / "auto_start_config.json",
+            auto_start_records_root=state_root / "auto_start_records",
+            auto_start_daily_count_path=state_root / "auto_start_daily_count.json",
+            auto_start_waiting_root=state_root / "auto_start_waiting",
+            approval_config_path=state_root / "approval_config.json",
+            approval_results_root=state_root / "approval_results",
+            requeue_config_path=state_root / "requeue_config.json",
+            auto_progress_labels_root=state_root / "auto_progress_labels",
+        )
         self.master = object()
         self.window = None
         self.addCleanup(self._destroy)
@@ -403,15 +427,24 @@ class ReportsInboxWindowCase(unittest.TestCase):
                      auto_config_path=None, auto_results_root=None, auto_daily_count_path=None,
                      auto_start_config_path=None, auto_start_records_root=None,
                      auto_start_daily_count_path=None, auto_start_waiting_root=None,
-                     requeue_config_path=None, requeue_notice_fn=None):
+                     approval_config_path=None, approval_results_root=None,
+                     requeue_config_path=None, requeue_notice_fn=None,
+                     auto_progress_labels_root=None, auto_progress_notice_fn=None):
         scan_fn = scan_fn or inbox.scan_all
-        auto_kwargs = dict(auto_config_path=auto_config_path, auto_results_root=auto_results_root,
+        given_paths = dict(auto_config_path=auto_config_path, auto_results_root=auto_results_root,
                             auto_daily_count_path=auto_daily_count_path,
                             auto_start_config_path=auto_start_config_path,
                             auto_start_records_root=auto_start_records_root,
                             auto_start_daily_count_path=auto_start_daily_count_path,
                             auto_start_waiting_root=auto_start_waiting_root,
-                            requeue_config_path=requeue_config_path, requeue_notice_fn=requeue_notice_fn)
+                            approval_config_path=approval_config_path,
+                            approval_results_root=approval_results_root,
+                            requeue_config_path=requeue_config_path,
+                            auto_progress_labels_root=auto_progress_labels_root)
+        auto_kwargs = {key: (value if value is not None else self._default_state_paths[key])
+                       for key, value in given_paths.items()}
+        auto_kwargs["requeue_notice_fn"] = requeue_notice_fn
+        auto_kwargs["auto_progress_notice_fn"] = auto_progress_notice_fn
         if reports_config_fn is not None:
             self.window = view.ReportsInboxWindow(self.master, scan_fn=scan_fn, copy_to_clipboard=clipboard,
                                                   reports_config_fn=reports_config_fn, on_spec_ready=on_spec_ready,
@@ -653,6 +686,263 @@ class RequeueNoticeAutoRefreshTests(ReportsInboxWindowCase):
         self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
         window._tick()
         self.assertEqual(window.requeue_notice_var.get(), "")
+
+
+class AutoProgressColumnAutoRefreshTests(ReportsInboxWindowCase):
+    """DCC Task 19c-2b: 19c-2a's own progress state (reports_auto_progress.py) is written by
+    app.py's background auto-progress thread independently of this window. An already-open
+    window must show the fixed state word (plus a failed-stage word, when there is one) in the
+    same「自動調査の結果」column Task 17/19c-1 already use, and the RELEASE待ち / daily-limit
+    notices, all through this window's own existing tick loop -- never a manual 再読み込み."""
+
+    def _allowed_paths(self, tmp: Path, app_key: str = "app-a") -> dict:
+        """Review fix: the column/notice now apply 19c-2a's own *current* permission
+        (approve.allowed) to any saved label, not just gate new ones -- see
+        test_switching_permission_off_hides_an_existing_progress_label_and_release_notice. Any
+        test that expects a saved label to actually show must first grant that permission:
+        global switch ON, this app's 自動開始を許可 ON (a prerequisite -- see
+        approve.permission_possible), and 承認から DRY-RUN まで自動 ON."""
+        auto_config_path = tmp / "auto_config.json"
+        auto_start_config_path = tmp / "auto_start_config.json"
+        approval_config_path = tmp / "approval_config.json"
+        auto.save_auto_mode_config(auto.AutoModeConfig(enabled=True), path=auto_config_path)
+        start_config = auto_start.AutoStartConfig(apps={app_key: True})
+        auto_start.save_auto_start_config(start_config, path=auto_start_config_path)
+        approve.save_config(approve.ApprovalConfig(apps={app_key: True}), approval_config_path,
+                            start_config=start_config)
+        return dict(auto_config_path=auto_config_path, auto_start_config_path=auto_start_config_path,
+                    approval_config_path=approval_config_path)
+
+    def test_in_progress_release_ready_and_needs_human_all_appear_without_a_manual_reload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            labels_root = tmp / "progress-labels"
+            window = self.make_window(apps=apps, auto_progress_labels_root=labels_root,
+                                       **self._allowed_paths(tmp))
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+
+            # The background thread (app.py) writes this independently of the window.
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_IN_PROGRESS, failed_stage="")
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_IN_PROGRESS)
+            self.assertIn(progress.STATE_IN_PROGRESS, window.report_list.get(0, "end")[0])
+
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_RELEASE_READY)
+
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_NEEDS_HUMAN, failed_stage=progress.STAGE_BUILD)
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]),
+                             progress.format_progress_label(progress.STATE_NEEDS_HUMAN, progress.STAGE_BUILD))
+            self.assertIn(progress.STAGE_BUILD, window.report_list.get(0, "end")[0])
+
+    def test_release_ready_shows_the_fixed_release_notice_and_clears_once_resolved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            labels_root = tmp / "progress-labels"
+            window = self.make_window(apps=apps, auto_progress_labels_root=labels_root,
+                                       **self._allowed_paths(tmp))
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window.auto_progress_release_notice_var.get(), "")
+
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+            window._tick()
+            self.assertEqual(window.auto_progress_release_notice_var.get(), progress.RELEASE_READY_NOTICE_TEXT)
+
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_NEEDS_HUMAN, failed_stage="")
+            window._tick()
+            self.assertEqual(window.auto_progress_release_notice_var.get(), "")
+
+    def test_daily_limit_notice_appears_and_updates_through_the_tick_without_a_manual_reload(self):
+        calls = []
+        text = {"value": ""}
+
+        def auto_progress_notice_fn():
+            calls.append(1)
+            return text["value"]
+
+        window = self.make_window(apps=[], auto_progress_notice_fn=auto_progress_notice_fn)
+        self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+        self.assertEqual(window.auto_progress_limit_notice_var.get(), "")
+        self.assertGreaterEqual(len(calls), 1)  # already invoked once by the initial tick(s)
+
+        text["value"] = progress.LIMIT_REACHED_TEXT
+        window._tick()
+        self.assertEqual(window.auto_progress_limit_notice_var.get(), progress.LIMIT_REACHED_TEXT)
+
+        text["value"] = ""
+        window._tick()
+        self.assertEqual(window.auto_progress_limit_notice_var.get(), "")
+
+    def test_a_broken_notice_callback_never_breaks_the_tick(self):
+        def exploding_notice_fn():
+            raise RuntimeError("boom")
+
+        window = self.make_window(apps=[], auto_progress_notice_fn=exploding_notice_fn)
+        self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+        window._tick()  # must not raise
+        self.assertEqual(window.auto_progress_limit_notice_var.get(), "")
+
+    def test_absent_notice_fn_leaves_the_notice_empty(self):
+        window = self.make_window(apps=[])  # no auto_progress_notice_fn supplied
+        self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+        window._tick()
+        self.assertEqual(window.auto_progress_limit_notice_var.get(), "")
+
+    def test_broken_or_invalid_label_file_is_restricted_to_fixed_words_tick_keeps_going_and_recovers(self):
+        """仕様2: 記録が壊れている/読めない、または不正な値のときも定期更新は止まらず、次の
+        更新も必ず予約される。安全な表示（空、または人の確認が必要）になり、記録が直れば次の
+        更新で回復する。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            labels_root = tmp / "progress-labels"
+            window = self.make_window(apps=apps, auto_progress_labels_root=labels_root,
+                                       **self._allowed_paths(tmp))
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+
+            # Broken JSON: must not raise, and the next tick is still scheduled (pump() below
+            # keeps calling _tick successfully) -- the column shows nothing dangerous.
+            path = progress._label_path("app-a", "r1", root=labels_root)
+            path.parent.mkdir(parents=True)
+            path.write_text("{not json", encoding="utf-8")
+            window._tick()  # must not raise
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+            self.assertTrue(window.exists())  # the tick loop (after(TICK_MS, ...)) is still armed
+
+            # Valid JSON but an unknown state value: restricted to 人の確認が必要, never the raw
+            # unknown text leaking onto the screen.
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word="なにかの未知の語", failed_stage="")
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_NEEDS_HUMAN)
+
+            # Once the record is fixed, the next tick recovers the real state on its own.
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_RELEASE_READY)
+
+    def test_deeply_nested_label_file_never_stops_the_tick_loop_and_recovers(self):
+        """Review fix: a RecursionError from json.loads() on a pathologically deep-nested label
+        file is not an OSError/ValueError -- reports_auto_start._read_json does not catch it, so
+        it used to propagate out of _refresh_auto_results and skip the window.after(...) call
+        that arms the next tick entirely. Asserting on the fake Toplevel's own _after_calls (not
+        just window.exists()) proves the next tick is actually scheduled, not merely that the
+        Tk object itself is still alive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            labels_root = tmp / "progress-labels"
+            window = self.make_window(apps=apps, auto_progress_labels_root=labels_root,
+                                       **self._allowed_paths(tmp))
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+
+            path = progress._label_path("app-a", "r1", root=labels_root)
+            path.parent.mkdir(parents=True)
+            path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+
+            before = dict(window.window._after_calls)
+            window._tick()  # must not raise (RecursionError must never escape this call)
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+            self.assertTrue(window.exists())
+            # The old after() token was cancelled and a fresh one took its place: the next tick
+            # really is armed, not just left over from before this _tick() call.
+            after_calls = window.window._after_calls
+            self.assertEqual(len(after_calls), 1)
+            self.assertNotEqual(set(after_calls), set(before))
+
+            # Once the record is replaced by a valid one, the next tick recovers on its own.
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_RELEASE_READY)
+
+    def test_switching_permission_off_hides_an_existing_progress_label_and_release_notice(self):
+        """Review fix: a progress label already on disk (written while permission was ON) must
+        disappear from the column, and the RELEASE通知 it was driving must clear, the moment
+        either the global switch or this app's own 承認から DRY-RUN まで自動 permission goes OFF
+        -- not just block a *new* label from ever appearing. Switching back ON restores it from
+        the same unchanged file, with no rewrite needed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            labels_root = tmp / "progress-labels"
+            allowed_paths = self._allowed_paths(tmp)
+            auto_config_path = allowed_paths["auto_config_path"]
+            progress._write_progress_label(root=labels_root, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+
+            window = self.make_window(apps=apps, auto_progress_labels_root=labels_root, **allowed_paths)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_RELEASE_READY)
+            self.assertEqual(window.auto_progress_release_notice_var.get(), progress.RELEASE_READY_NOTICE_TEXT)
+
+            # The global stop switch going OFF must hide the label even though the file on disk
+            # is untouched -- the exact same file 19c-2a itself would still consider current.
+            auto.set_enabled(False, path=auto_config_path)
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+            self.assertEqual(window.auto_progress_release_notice_var.get(), "")
+
+            # Back ON: the still-RELEASE待ち record on disk reappears on its own.
+            auto.set_enabled(True, path=auto_config_path)
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), progress.STATE_RELEASE_READY)
+            self.assertEqual(window.auto_progress_release_notice_var.get(), progress.RELEASE_READY_NOTICE_TEXT)
+
+            # This app's own 承認から DRY-RUN まで自動 permission going OFF (this window's own
+            # checkbox) must likewise hide it, independent of the global switch.
+            window.approval_app_vars["app-a"].set(False)
+            window._on_approval_app_toggle("app-a")
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+            self.assertEqual(window.auto_progress_release_notice_var.get(), "")
+
+    def test_permission_off_display_is_unchanged_from_pre_19c_2b_behavior(self):
+        """仕様3: 19c-2a の許可が OFF で進行ラベルが一度も書かれないとき、「自動調査の結果」欄は
+        Task 17/19c-1 までの既存の表示のまま変わらない。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            share = make_shared_folder(tmp / "share")
+            write_report(share / "reports" / "pending", "r1")
+            apps = [("app-a", "アプリA", str(share))]
+            results_root = tmp / "auto-results"
+            labels_root = tmp / "progress-labels"  # never written to in this test
+            window = self.make_window(apps=apps, auto_results_root=results_root,
+                                       auto_progress_labels_root=labels_root)
+            self.pump(lambda: window.notice_var.get().startswith("読み込み完了"))
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), "")
+
+            # Task 17's own outcome still shows exactly as before 19c-2b -- no progress label was
+            # ever written (the auto-progress chain never had permission to run).
+            record = auto.AutoTriageRecord("app-a", "r1", auto.OUTCOME_PROCEED, "2026-01-01T00:00:00Z", 1.2)
+            auto._save_result(record, root=results_root)
+            window._tick()
+            self.assertEqual(window._auto_outcome_label(window.visible_rows[0]), auto.OUTCOME_PROCEED)
+            self.assertEqual(window._auto_progress_labels, {})
+            self.assertEqual(window.auto_progress_limit_notice_var.get(), "")
+            self.assertEqual(window.auto_progress_release_notice_var.get(), "")
 
 
 class ConfigNoticeAndSourceDisplayTests(ReportsInboxWindowCase):

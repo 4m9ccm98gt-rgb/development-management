@@ -18,6 +18,7 @@ from . import orchestrator_requeue as requeue
 from . import reports_auto as auto
 from . import reports_auto_start as auto_start
 from . import reports_auto_approve as approve
+from . import reports_auto_progress as progress
 from . import reports_inbox as inbox
 from .orchestrator_view import resolve_click_index
 
@@ -89,7 +90,9 @@ class ReportsInboxWindow:
                  auto_start_config_path=None, auto_start_records_root=None,
                  auto_start_daily_count_path=None, auto_start_waiting_root=None,
                  approval_config_path=None, approval_results_root=None,
-                 requeue_config_path=None, requeue_notice_fn: Callable[[], str] | None = None) -> None:
+                 requeue_config_path=None, requeue_notice_fn: Callable[[], str] | None = None,
+                 auto_progress_labels_root=None,
+                 auto_progress_notice_fn: Callable[[], str] | None = None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._current_roles = current_roles
@@ -113,6 +116,14 @@ class ReportsInboxWindow:
         # the notice never shows, e.g. in tests that do not care about it).
         self._requeue_config_path = requeue_config_path
         self._requeue_notice_fn = requeue_notice_fn
+        # DCC Task 19c-2b: same test-only override convention for 19c-2a's own per-report
+        # display label, plus an optional caller-supplied closure for the fixed daily-limit
+        # notice (app.py computes it from the one in-memory ProgressState it owns for this DCC
+        # process, mirroring _requeue_notice_fn above; None/absent here just means the notice
+        # never shows).
+        self._auto_progress_labels_root = auto_progress_labels_root
+        self._auto_progress_notice_fn = auto_progress_notice_fn
+        self._auto_progress_labels: dict = {}
         if reports_config_fn is not None:
             self._reports_config_fn = reports_config_fn
         elif configured_apps is not None:
@@ -161,6 +172,13 @@ class ReportsInboxWindow:
         # owns the switch and the fixed "本日の再実行の上限に達しました" notice.
         self.requeue_config = requeue.load_requeue_config(self._requeue_config_path)
         self.requeue_notice_var = tk.StringVar(value="")
+        # DCC Task 19c-2b: 19c-2a's own progress -- per-report state shown as a fixed word in the
+        # list's「自動調査の結果」column (see _auto_outcome_label), plus two window-level notices:
+        # the fixed daily-limit sentence (computed by app.py's own closure, same convention as
+        # requeue_notice_var) and the fixed "RELEASE の準備ができました" sentence, computed by
+        # this window itself from whichever rows' labels are currently RELEASE待ち.
+        self.auto_progress_limit_notice_var = tk.StringVar(value="")
+        self.auto_progress_release_notice_var = tk.StringVar(value="")
 
         self.window = tk.Toplevel(master)
         self.window.title("報告の受信箱")
@@ -236,6 +254,10 @@ class ReportsInboxWindow:
         ttk.Label(controls, textvariable=self.auto_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.auto_start_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
         ttk.Label(controls, textvariable=self.requeue_notice_var, foreground="#e3b341").pack(side="left", padx=(12, 0))
+        ttk.Label(controls, textvariable=self.auto_progress_limit_notice_var,
+                  foreground="#e3b341").pack(side="left", padx=(12, 0))
+        ttk.Label(controls, textvariable=self.auto_progress_release_notice_var,
+                  foreground="#e3b341").pack(side="left", padx=(12, 0))
 
         left = ttk.Frame(outer)
         left.grid(row=3, column=0, sticky="nsew", padx=(0, 8), pady=(8, 0))
@@ -383,16 +405,33 @@ class ReportsInboxWindow:
             ac = approve.load_config(self._approval_config_path, start_config=sc)
             new_approval = approve.load_labels(identities, gc, sc, ac, results_dir=self._approval_results_root,
                                                records_dir=self._auto_start_records_root)
+            # DCC Task 19c-2b: 19c-2a's own per-report progress label (自動で進行中 / RELEASE待ち /
+            # 人の確認が必要, with a failed stage word when there is one) -- restricted to the
+            # closed vocabulary by reports_auto_progress.load_progress_labels itself.
+            # Review fix: a saved label (and the RELEASE通知 it feeds, see
+            # _refresh_auto_progress_notice) must only be shown for an app that is *currently*
+            # allowed to run the 19c-2a chain -- the exact same gc/sc/ac predicate
+            # (approve.allowed) run_auto_progress_once itself checks before writing a new label.
+            # Switching the global switch or an app's permission OFF must hide any label already
+            # on disk for that app, not just block new ones from appearing.
+            # getattr defaults: pre-19c-2b test doubles built via __new__() (not __init__) never
+            # had these attributes; they must keep ticking without them, same as before this task.
+            progress_identities = [identity for identity in identities if approve.allowed(identity[0], gc, sc, ac)]
+            new_progress_labels = progress.load_progress_labels(
+                progress_identities, root=getattr(self, "_auto_progress_labels_root", None))
             if (new_results != self._auto_results or new_start_results != self._auto_start_results
-                    or new_waiting != self._auto_start_waiting or new_approval != self._approval_labels):
+                    or new_waiting != self._auto_start_waiting or new_approval != self._approval_labels
+                    or new_progress_labels != getattr(self, "_auto_progress_labels", {})):
                 self._approval_labels = new_approval
                 self._auto_results = new_results
                 self._auto_start_results = new_start_results
                 self._auto_start_waiting = new_waiting
+                self._auto_progress_labels = new_progress_labels
                 self._render_rows()
         self._refresh_auto_notice()
         self._refresh_auto_start_notice()
         self._refresh_requeue_notice()
+        self._refresh_auto_progress_notice()
 
     def _refresh_requeue_notice(self) -> None:
         """DCC Task 19b, 仕様4: the fixed "本日の再実行の上限に達しました" sentence, computed by
@@ -405,6 +444,30 @@ class ReportsInboxWindow:
             self.requeue_notice_var.set(self._requeue_notice_fn())
         except Exception:  # noqa: BLE001 - a broken notice callback must not break the window
             pass
+
+    def _refresh_auto_progress_notice(self) -> None:
+        """DCC Task 19c-2b, 仕様1: the fixed LIMIT_REACHED_TEXT sentence, computed by the
+        caller-supplied closure (app.py, from the one in-memory ProgressState it owns -- mirrors
+        _refresh_requeue_notice exactly), plus the fixed RELEASE_READY_NOTICE_TEXT sentence,
+        shown whenever any currently-loaded report's own progress label is RELEASE待ち. Both are
+        recomputed every tick so neither is ever stuck stale while this window stays open.
+        getattr defaults: pre-19c-2b test doubles built via __new__() (not __init__) never had
+        these StringVars/callback; they must keep ticking without them, same as before this task."""
+        notice_fn = getattr(self, "_auto_progress_notice_fn", None)
+        limit_var = getattr(self, "auto_progress_limit_notice_var", None)
+        if notice_fn is not None and limit_var is not None:
+            try:
+                limit_var.set(notice_fn())
+            except Exception:  # noqa: BLE001 - a broken notice callback must not break the window
+                pass
+        release_var = getattr(self, "auto_progress_release_notice_var", None)
+        if release_var is None:
+            return
+        labels = getattr(self, "_auto_progress_labels", {})
+        if any(label == progress.STATE_RELEASE_READY for label in labels.values()):
+            release_var.set(progress.RELEASE_READY_NOTICE_TEXT)
+        else:
+            release_var.set("")
 
     # ---------------------------------------------------------------- loading
     def _apply_config_metadata(self, config) -> None:
@@ -485,6 +548,12 @@ class ReportsInboxWindow:
 
     # ---------------------------------------------------------------- list / selection
     def _auto_outcome_label(self, row: inbox.ReportRow) -> str:
+        # DCC Task 19c-2b: once a report's candidate has entered the 19c-2a automatic chain, its
+        # own progress label (自動で進行中 / RELEASE待ち / 人の確認が必要, closed vocabulary only)
+        # is more specific than Task 19c-1's own plain ELIGIBLE/HUMAN label or Task 17's own
+        # outcome, so it takes priority in this same column.
+        if row.report.identity in self._auto_progress_labels:
+            return self._auto_progress_labels[row.report.identity]
         if row.report.identity in self._approval_labels:
             return self._approval_labels[row.report.identity]
         record = self._auto_results.get(row.report.identity)

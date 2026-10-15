@@ -109,6 +109,7 @@ class Fixture:
         self.results_dir = tmp / "approve_results"
         self.records_dir = tmp / "assoc_records"
         self.log_dir = tmp / "progress_log"
+        self.labels_dir = tmp / "progress_labels"
         save_decision(self.results_dir, app_key, report_id, sha, run_id=run_id, files=files, lines=lines,
                      reasons=reasons)
         save_association(self.records_dir, app_key, report_id, run_id)
@@ -132,7 +133,7 @@ class Fixture:
             resolve_repo_definition=lambda name, _d=self.definition: _d,
             active_runs_fn=lambda repo: [],
             latest_candidate_fn=lambda repo, _c=self.candidate_obj: _c,
-            log_dir=self.log_dir,
+            log_dir=self.log_dir, labels_dir=self.labels_dir,
         )
         base.update(overrides)
         return base
@@ -141,6 +142,9 @@ class Fixture:
         if not self.log_dir.is_dir():
             return []
         return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.log_dir.iterdir())]
+
+    def label(self, report_id: str | None = None) -> str:
+        return progress.load_progress_label(self.app_key, report_id or self.report_id, root=self.labels_dir)
 
 
 class RunOnceTests(unittest.TestCase):
@@ -499,6 +503,7 @@ class RunOnceTests(unittest.TestCase):
         first candidate finishes), so each cycle has exactly one eligible, unattempted SHA."""
         app_key = "next-day-setup"
         results_dir, records_dir, log_dir = tmp / "results", tmp / "records", tmp / "log"
+        labels_dir = tmp / "labels"
         definition = make_definition(name=app_key)
         repo_dir = tmp / "repo" / app_key
         save_decision(results_dir, app_key, "r1", SHA, run_id="run-1")
@@ -516,7 +521,7 @@ class RunOnceTests(unittest.TestCase):
                 today="2026-02-01", reports_config_fn=reports_config_for([app_key]), scan_fn=scan_fn_for([report]),
                 records_dir=records_dir, results_dir=results_dir, resolve_repo_dir=lambda k, _r=repo_dir: _r,
                 resolve_repo_definition=lambda n, _d=definition: _d, active_runs_fn=lambda repo: [],
-                latest_candidate_fn=lambda repo, _c=candidate_obj: _c, log_dir=log_dir,
+                latest_candidate_fn=lambda repo, _c=candidate_obj: _c, log_dir=log_dir, labels_dir=labels_dir,
                 reserve_fn=reserve_fn, release_fn=release_fn, **fns)
 
         return report_a, report_b, candidate_a, candidate_b, kwargs_for
@@ -859,7 +864,8 @@ class RunOnceTests(unittest.TestCase):
                 today="2026-02-01", reports_config_fn=reports_config_for([busy_app, free_app]),
                 scan_fn=scan_fn_for(reports), records_dir=fx_busy.records_dir, results_dir=fx_busy.results_dir,
                 resolve_repo_dir=resolve_repo_dir, resolve_repo_definition=resolve_repo_definition,
-                active_runs_fn=active_runs, latest_candidate_fn=latest_candidate, log_dir=tmp / "log", **fns)
+                active_runs_fn=active_runs, latest_candidate_fn=latest_candidate, log_dir=tmp / "log",
+                labels_dir=tmp / "labels", **fns)
             self.assertEqual(len(calls), 5)
 
     # ------------------------------------------------------------------ C13
@@ -895,6 +901,124 @@ class RunOnceTests(unittest.TestCase):
             progress.run_auto_progress_once(**fx.kwargs(**fns))
             self.assertNotIn("RELEASE", calls)
             self.assertEqual(calls[-1], progress.STAGE_DRY_RUN)  # the chain stops at the plan, never beyond
+
+
+class ProgressLabelTests(unittest.TestCase):
+    """DCC Task 19c-2b: the per-report display label this module now writes alongside the
+    existing run log (仕様3), and reads back restricted to the closed state/stage vocabulary
+    (仕様2). reports_inbox_view.py's own tests cover the screen side of this; here only the
+    read/write functions and run_auto_progress_once's own writes are exercised."""
+
+    def test_missing_label_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=Path(tmp) / "labels"), "")
+
+    def test_eligible_run_writes_in_progress_then_release_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            seen_mid_chain = {}
+            _, fns = stage_spies()
+
+            def approve_fn(candidate_obj, sha):
+                seen_mid_chain["label"] = fx.label()
+                return True
+
+            fns["approve_fn"] = approve_fn
+            progress.run_auto_progress_once(**fx.kwargs(**fns))
+            self.assertEqual(seen_mid_chain["label"], progress.STATE_IN_PROGRESS)
+            self.assertEqual(fx.label(), progress.STATE_RELEASE_READY)
+
+    def test_each_stage_failure_writes_needs_human_with_the_failed_stage_word(self):
+        for fail_stage in progress.STAGES:
+            with tempfile.TemporaryDirectory() as tmp:
+                fx = Fixture(Path(tmp))
+                _, fns = stage_spies(fail_at=fail_stage)
+                progress.run_auto_progress_once(**fx.kwargs(**fns))
+                self.assertEqual(fx.label(), progress.format_progress_label(
+                    progress.STATE_NEEDS_HUMAN, fail_stage))
+
+    def test_needs_human_candidate_via_select_candidate_is_labelled_too(self):
+        """A broken association (C11's own flag_needs_human path, before any stage ever runs)
+        must also reach the display label -- not just the run log."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            # Break the association's run_id so _select_candidate flags it instead of proceeding.
+            save_association(fx.records_dir, fx.app_key, fx.report_id, "run-OTHER")
+            calls, fns = stage_spies()
+            progress.run_auto_progress_once(**fx.kwargs(**fns))
+            self.assertEqual(calls, [])
+            self.assertEqual(fx.label(), progress.STATE_NEEDS_HUMAN)
+
+    def test_unknown_state_value_in_an_otherwise_valid_file_becomes_needs_human(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            labels_dir = Path(tmp) / "labels"
+            progress._write_progress_label(root=labels_dir, app_key="app-a", report_id="r1",
+                                           state_word="なにかの未知の語", failed_stage="")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir),
+                             progress.STATE_NEEDS_HUMAN)
+
+    def test_unknown_failed_stage_value_becomes_needs_human(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            labels_dir = Path(tmp) / "labels"
+            progress._write_progress_label(root=labels_dir, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_NEEDS_HUMAN, failed_stage="UNKNOWN-STAGE")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir),
+                             progress.STATE_NEEDS_HUMAN)
+
+    def test_corrupt_or_unreadable_file_is_simply_empty_never_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            labels_dir = Path(tmp) / "labels"
+            path = progress._label_path("app-a", "r1", root=labels_dir)
+            path.parent.mkdir(parents=True)
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir), "")
+
+    def test_a_pathologically_deep_json_file_is_simply_empty_never_raises(self):
+        """Review fix: json.loads() raises RecursionError (not OSError/ValueError) on
+        pathologically deep nesting, which reports_auto_start._read_json does not catch. The
+        display read must swallow that too, exactly like any other corrupt/unreadable record,
+        so a caller (reports_inbox_view's periodic tick) can rely on this function never raising
+        -- and therefore always reaching its own next window.after(...) reschedule."""
+        with tempfile.TemporaryDirectory() as tmp:
+            labels_dir = Path(tmp) / "labels"
+            path = progress._label_path("app-a", "r1", root=labels_dir)
+            path.parent.mkdir(parents=True)
+            path.write_text("[" * 100_000 + "]" * 100_000, encoding="utf-8")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir), "")
+
+            # Recovery: once replaced by a valid record, the very next read picks it up.
+            progress._write_progress_label(root=labels_dir, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir),
+                             progress.STATE_RELEASE_READY)
+
+    def test_recovery_once_a_broken_file_is_replaced_by_a_valid_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            labels_dir = Path(tmp) / "labels"
+            path = progress._label_path("app-a", "r1", root=labels_dir)
+            path.parent.mkdir(parents=True)
+            path.write_text("{not json", encoding="utf-8")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir), "")
+
+            progress._write_progress_label(root=labels_dir, app_key="app-a", report_id="r1",
+                                           state_word=progress.STATE_RELEASE_READY, failed_stage="")
+            self.assertEqual(progress.load_progress_label("app-a", "r1", root=labels_dir),
+                             progress.STATE_RELEASE_READY)
+
+    def test_limit_notice_is_fixed_text_only_when_enabled_and_limit_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = progress.ProgressState(daily_count_path=Path(tmp) / "daily.json",
+                                           attempted_index_path=Path(tmp) / "attempted.json")
+            state.seed_startup("2026-02-01")
+            approve_config = approve.ApprovalConfig(apps={"app-a": True}, daily_limit=1)
+            global_config = auto.AutoModeConfig(enabled=True)
+            self.assertEqual(progress.limit_notice(global_config, approve_config, state, "2026-02-01"), "")
+
+            state.record_daily_attempt("2026-02-01")
+            self.assertEqual(progress.limit_notice(global_config, approve_config, state, "2026-02-01"),
+                             progress.LIMIT_REACHED_TEXT)
+            self.assertEqual(progress.limit_notice(auto.AutoModeConfig(enabled=False), approve_config, state,
+                                                    "2026-02-01"), "")
 
 
 class ProgressStateTests(unittest.TestCase):
@@ -1056,6 +1180,35 @@ class AutoProgressAppWiringTests(unittest.TestCase):
             self.assertIsNotNone(app._reserve_active_operation("some-repo", "manual-test"))
         finally:
             app.ACTIVE_OPERATIONS.clear()
+
+    def test_auto_progress_limit_notice_reflects_in_memory_progress_state(self):
+        """DCC Task 19c-2b: App._auto_progress_limit_notice (wired as the reports inbox window's
+        auto_progress_notice_fn) must read this App's own in-memory ProgressState -- the exact
+        same object the background loop above advances -- never a fresh/zeroed one."""
+        from scripts.dev_control_center import app, reports_auto, reports_auto_approve, reports_auto_start
+        from scripts.dev_control_center import reports_auto_progress as progress_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            global_path, start_path, approve_path = tmp / "global.json", tmp / "start.json", tmp / "approve.json"
+            reports_auto.save_auto_mode_config(reports_auto.AutoModeConfig(enabled=True), path=global_path)
+            reports_auto_start.save_auto_start_config(reports_auto_start.AutoStartConfig(), path=start_path)
+            reports_auto_approve.save_config(
+                reports_auto_approve.ApprovalConfig(daily_limit=1), approve_path,
+                start_config=reports_auto_start.load_auto_start_config(start_path))
+
+            instance = app.App.__new__(app.App)
+            instance._auto_progress_state = progress_mod.ProgressState(
+                daily_count_path=tmp / "daily.json", attempted_index_path=tmp / "attempted.json")
+            instance._auto_progress_state.seed_startup(reports_auto.today_str())
+
+            with mock.patch.object(reports_auto, "auto_mode_config_path", return_value=global_path), \
+                    mock.patch.object(reports_auto_start, "auto_start_config_path", return_value=start_path), \
+                    mock.patch.object(reports_auto_approve, "config_path", return_value=approve_path):
+                self.assertEqual(instance._auto_progress_limit_notice(), "")
+
+                instance._auto_progress_state.record_daily_attempt(reports_auto.today_str())
+                self.assertEqual(instance._auto_progress_limit_notice(), progress_mod.LIMIT_REACHED_TEXT)
 
     def test_reserve_active_operation_is_atomic_check_and_insert(self):
         from scripts.dev_control_center import app

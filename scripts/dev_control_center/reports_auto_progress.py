@@ -56,6 +56,10 @@ STATE_NEEDS_HUMAN = "人の確認が必要"
 LIMIT_REACHED_TEXT = "本日の自動承認の上限に達しました"
 RECORD_KIND = "自動承認"
 
+# DCC Task 19c-2b, 仕様1: fixed sentence shown once any report's own progress label (below) is
+# currently STATE_RELEASE_READY -- never built from report or AI content.
+RELEASE_READY_NOTICE_TEXT = "RELEASE の準備ができました"
+
 STAGE_RUN_DEV = "RUN_DEV"
 STAGE_APPROVE = "自動承認"
 STAGE_PUSH = "PUSH"
@@ -88,6 +92,10 @@ def attempted_index_path() -> Path:
 
 def run_log_root() -> Path:
     return _root() / "run_log"
+
+
+def progress_labels_root() -> Path:
+    return _root() / "labels"
 
 
 # --------------------------------------------------------------------------- 実行済みキー
@@ -327,6 +335,79 @@ def _write_log_entry(*, log_dir: Path | None, app_key: str, sha: str | None, sta
         pass
 
 
+# --------------------------------------------------------------------------- DCC Task 19c-2b: 画面表示用ラベル
+# A best-effort, per-report mirror of this cycle's own state_word/failed_stage -- written purely
+# for reports_inbox_view.py's own「自動調査の結果」column. Never read back by this module itself
+# (the chain's own candidate/skip/retry decisions stay keyed by (app_key, sha) via ProgressState,
+# exactly as before); a write failure here can never affect the chain already decided, and the
+# run log's own payload shape (tested by test_record_is_fixed_words_and_numbers_only_and_marked_
+# auto_approval) is untouched -- this is a separate file, not a new key on that payload.
+
+def _label_path(app_key: str, report_id: str, *, root: Path | None = None) -> Path:
+    base = root if root is not None else progress_labels_root()
+    return base / start._hash(app_key) / f"{start._hash(report_id)}.json"
+
+
+def _write_progress_label(*, root: Path | None, app_key: str, report_id: str,
+                          state_word: str, failed_stage: str) -> None:
+    try:
+        start._write_json_atomic(_label_path(app_key, report_id, root=root), {
+            "state": state_word, "failed_stage": failed_stage,
+        })
+    except OSError:  # noqa: BLE001 - display-only write; never affects the chain already decided
+        pass
+
+
+def format_progress_label(state_word: str, failed_stage: str) -> str:
+    return f"{state_word}（{failed_stage}）" if failed_stage else state_word
+
+
+def load_progress_label(app_key: str, report_id: str, *, root: Path | None = None) -> str:
+    """表示用の読み込み（仕様2）: state/failed_stage は固定の語に限定し、知らない値は
+    STATE_NEEDS_HUMAN にする。記録が無い、または壊れていて読めないときは "" (空) -- 次の更新で
+    記録が直れば自然に回復する。例外は投げない -- start._read_json 自身が捕まえない例外（深く
+    ネストした JSON による RecursionError など）も、ここで安全な表示に変換する。呼び出し側
+    (reports_inbox_view._tick) は、この関数が例外を外に出さないことに頼って次の定期更新を
+    必ず予約できる。"""
+    try:
+        data = start._read_json(_label_path(app_key, report_id, root=root))
+    except Exception:  # noqa: BLE001 - 表示専用の読み込み。失敗は空 (記録が直れば次回回復)
+        return ""
+    if data is None:
+        return ""
+    if not isinstance(data, dict):
+        return STATE_NEEDS_HUMAN
+    state_word = data.get("state")
+    if state_word not in (STATE_IN_PROGRESS, STATE_RELEASE_READY, STATE_NEEDS_HUMAN):
+        return STATE_NEEDS_HUMAN
+    failed_stage = data.get("failed_stage", "")
+    if failed_stage and failed_stage not in STAGES:
+        return STATE_NEEDS_HUMAN
+    return format_progress_label(state_word, failed_stage)
+
+
+def load_progress_labels(identities, *, root: Path | None = None) -> dict:
+    """Mirrors reports_auto_start.load_auto_start_records: {identity: label} for every report
+    that already has one -- used by the inbox list's own column (DCC Task 19c-2b)."""
+    out: dict = {}
+    for app_key, report_id in identities:
+        label = load_progress_label(app_key, report_id, root=root)
+        if label:
+            out[(app_key, report_id)] = label
+    return out
+
+
+def limit_notice(global_config: "auto.AutoModeConfig", approve_config: "approve.ApprovalConfig",
+                  state: "ProgressState", today: str) -> str:
+    """DCC Task 19c-2b, 仕様1: the fixed LIMIT_REACHED_TEXT sentence for the reports inbox
+    window's own notice label, mirroring orchestrator_requeue.limit_notice -- reads only this
+    process's own in-memory ProgressState (the one app.py keeps for its whole life), never the
+    persisted mirror file directly."""
+    if global_config.enabled and state.limit_reached(today, approve_config.daily_limit):
+        return LIMIT_REACHED_TEXT
+    return ""
+
+
 # --------------------------------------------------------------------------- 候補の選択（C11）
 
 def _current(config, path, loader):
@@ -334,34 +415,37 @@ def _current(config, path, loader):
 
 
 def _select_candidate(app_key: str, reports: list, state: ProgressState, *, records_dir, results_dir,
-                      resolve_repo_dir, resolve_repo_definition, latest_candidate_fn, log_dir):
-    """Returns (repo_dir, definition, candidate_obj, sha, decision) for the first report of this
-    app that is 自動承認の対象 (ELIGIBLE), has a sound Task 18 association, and whose full SHA the
-    live Orchestrator candidate itself (not the decision's own display-only truncated field)
-    confirms -- or None when this app has nothing new to do this cycle. A broken association /
-    missing run_id / stale decision is never silently skipped like an ordinary non-candidate: it
-    is recorded 人の確認が必要 (C11) and left for a human, without consuming a 実行済み marker
-    (there is no SHA trustworthy enough yet to key one)."""
-    def flag_needs_human() -> None:
+                      resolve_repo_dir, resolve_repo_definition, latest_candidate_fn, log_dir, labels_dir=None):
+    """Returns (repo_dir, definition, candidate_obj, sha, decision, report_id) for the first
+    report of this app that is 自動承認の対象 (ELIGIBLE), has a sound Task 18 association, and
+    whose full SHA the live Orchestrator candidate itself (not the decision's own display-only
+    truncated field) confirms -- or None when this app has nothing new to do this cycle. A broken
+    association / missing run_id / stale decision is never silently skipped like an ordinary
+    non-candidate: it is recorded 人の確認が必要 (C11) and left for a human, without consuming a
+    実行済み marker (there is no SHA trustworthy enough yet to key one). report_id is also used
+    to mirror the fixed state word onto DCC Task 19c-2b's own per-report display label."""
+    def flag_needs_human(report_id: str) -> None:
         _write_log_entry(log_dir=log_dir, app_key=app_key, sha=None, state_word=STATE_NEEDS_HUMAN,
                          stages={}, failed_stage="", files=None, lines=None)
+        _write_progress_label(root=labels_dir, app_key=app_key, report_id=report_id,
+                              state_word=STATE_NEEDS_HUMAN, failed_stage="")
 
     for report in reports:
         directory = results_dir if results_dir is not None else approve.root() / "results"
         payload = start._read_json(approve._result_path(app_key, report.report_id, directory))
         if payload is None:
-            flag_needs_human()  # 判定の欠落 (C11): never a silent "not a candidate" skip
+            flag_needs_human(report.report_id)  # 判定の欠落 (C11): never a silent "not a candidate" skip
             continue
         decision = approve._payload_decision(payload)
         if decision is None:
-            flag_needs_human()  # 不正な payload (C11)
+            flag_needs_human(report.report_id)  # 不正な payload (C11)
             continue
         if decision.reasons:
             continue  # 人の確認が必要 by Task 19c-1's own evaluation -- normal, not eligible
 
         association = start.load_auto_start_record(app_key, report.report_id, root=records_dir)
         if association is None or not association.run_id:
-            flag_needs_human()
+            flag_needs_human(report.report_id)
             continue
 
         try:
@@ -382,7 +466,7 @@ def _select_candidate(app_key: str, reports: list, state: ProgressState, *, reco
         except Exception:  # noqa: BLE001 - transient git trouble: wait, do not flag as broken
             current = None
         if current is None or current.run_id != association.run_id:
-            flag_needs_human()
+            flag_needs_human(report.report_id)
             continue
 
         sha = current.sha
@@ -396,22 +480,22 @@ def _select_candidate(app_key: str, reports: list, state: ProgressState, *, reco
                 or not isinstance(raw_run_id, str) or not raw_run_id or raw_run_id == "不明"
                 or raw_candidate_full.lower() != sha.lower() or raw_run_id != current.run_id
                 or raw_run_id != association.run_id):
-            flag_needs_human()
+            flag_needs_human(report.report_id)
             continue
 
         if state.has_attempted(app_key, sha):
             continue
 
-        return repo_dir, definition, current, sha, decision
+        return repo_dir, definition, current, sha, decision, report.report_id
     return None
 
 
 # --------------------------------------------------------------------------- 1候補分の実行（仕様1/2）
 
 def _process_candidate(app_key: str, repo_dir: Path, definition, candidate_obj, sha: str, decision,
-                       state: ProgressState, today: str, *, active_runs_fn, busy_fn, reserve_fn, release_fn,
-                       run_dev_fn, approve_fn, push_fn, build_fn, dry_run_fn, latest_candidate_fn, log_dir,
-                       global_config, start_config, approve_config,
+                       state: ProgressState, today: str, *, report_id: str, active_runs_fn, busy_fn, reserve_fn,
+                       release_fn, run_dev_fn, approve_fn, push_fn, build_fn, dry_run_fn, latest_candidate_fn,
+                       log_dir, labels_dir, global_config, start_config, approve_config,
                        global_config_path, start_config_path, approve_config_path) -> None:
     repo_name = repo_dir.name
 
@@ -438,6 +522,8 @@ def _process_candidate(app_key: str, repo_dir: Path, definition, candidate_obj, 
         # record (RELEASE待ち or 人の確認が必要) below, never left as the last word on this SHA.
         _write_log_entry(log_dir=log_dir, app_key=app_key, sha=sha, state_word=STATE_IN_PROGRESS,
                          stages={}, failed_stage="", files=decision.files, lines=decision.lines)
+        _write_progress_label(root=labels_dir, app_key=app_key, report_id=report_id,
+                              state_word=STATE_IN_PROGRESS, failed_stage="")
 
         def boundary_ok() -> bool:
             g = _current(global_config, global_config_path, auto.load_auto_mode_config)
@@ -455,6 +541,8 @@ def _process_candidate(app_key: str, repo_dir: Path, definition, candidate_obj, 
         def finalize(state_word: str, failed_stage: str) -> None:
             _write_log_entry(log_dir=log_dir, app_key=app_key, sha=sha, state_word=state_word, stages=stages,
                              failed_stage=failed_stage, files=decision.files, lines=decision.lines)
+            _write_progress_label(root=labels_dir, app_key=app_key, report_id=report_id,
+                                  state_word=state_word, failed_stage=failed_stage)
 
         # Every stage, including RUN_DEV, is gated by a fresh re-read of the app's permission,
         # the global stop switch and the full SHA/run_id -- never just the state this candidate
@@ -483,6 +571,8 @@ def _process_candidate(app_key: str, repo_dir: Path, definition, candidate_obj, 
             stages[current_stage] = RESULT_FAIL
         _write_log_entry(log_dir=log_dir, app_key=app_key, sha=sha, state_word=STATE_NEEDS_HUMAN,
                          stages=stages, failed_stage=current_stage, files=decision.files, lines=decision.lines)
+        _write_progress_label(root=labels_dir, app_key=app_key, report_id=report_id,
+                              state_word=STATE_NEEDS_HUMAN, failed_stage=current_stage)
     finally:
         release_fn(repo_name, token)
 
@@ -546,6 +636,7 @@ def run_auto_progress_once(
     build_fn: Callable[[Path, object, object], bool] | None = None,
     dry_run_fn: Callable[[Path, object, object], bool] | None = None,
     log_dir: Path | None = None,
+    labels_dir: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> ProgressCycleOutcome:
     """Run one cycle (C1-C14). Each app is considered independently (仕様1: 他アプリを妨げない):
@@ -610,16 +701,17 @@ def run_auto_progress_once(
 
         picked = _select_candidate(app_key, app_reports, state, records_dir=records_dir, results_dir=results_dir,
                                    resolve_repo_dir=resolve_repo_dir, resolve_repo_definition=resolve_repo_definition,
-                                   latest_candidate_fn=latest_candidate_fn, log_dir=log_dir)
+                                   latest_candidate_fn=latest_candidate_fn, log_dir=log_dir, labels_dir=labels_dir)
         if picked is None:
             continue
-        repo_dir, definition, candidate_obj, sha, decision = picked
+        repo_dir, definition, candidate_obj, sha, decision, report_id = picked
 
         _process_candidate(
             app_key, repo_dir, definition, candidate_obj, sha, decision, state, today,
-            active_runs_fn=active_runs_fn, busy_fn=busy_fn, reserve_fn=reserve_fn, release_fn=release_fn,
-            run_dev_fn=run_dev_fn, approve_fn=approve_fn, push_fn=push_fn, build_fn=build_fn, dry_run_fn=dry_run_fn,
-            latest_candidate_fn=latest_candidate_fn, log_dir=log_dir, global_config=cur_global,
+            report_id=report_id, active_runs_fn=active_runs_fn, busy_fn=busy_fn, reserve_fn=reserve_fn,
+            release_fn=release_fn, run_dev_fn=run_dev_fn, approve_fn=approve_fn, push_fn=push_fn,
+            build_fn=build_fn, dry_run_fn=dry_run_fn, latest_candidate_fn=latest_candidate_fn,
+            log_dir=log_dir, labels_dir=labels_dir, global_config=cur_global,
             start_config=cur_start, approve_config=cur_approve,
             global_config_path=global_config_path, start_config_path=start_config_path,
             approve_config_path=approve_config_path,

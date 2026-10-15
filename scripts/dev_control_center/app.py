@@ -631,7 +631,8 @@ class App(ttk.Frame):
             return
         self.reports_window = ReportsInboxWindow(
             self.master, on_spec_ready=self._send_spec_to_orchestrator,
-            current_roles=self._current_orchestrator_roles, requeue_notice_fn=self._requeue_limit_notice)
+            current_roles=self._current_orchestrator_roles, requeue_notice_fn=self._requeue_limit_notice,
+            auto_progress_notice_fn=self._auto_progress_limit_notice)
 
     def _current_orchestrator_roles(self) -> tuple[str, str]:
         """DCC Task 14.5: "現在の DCC の設定" for 作成して開始's confirmation dialog -- the
@@ -1470,6 +1471,21 @@ class App(ttk.Frame):
         global_config = auto.load_auto_mode_config(self._auto_mode_config_path())
         requeue_config = req.load_requeue_config(req.requeue_config_path())
         return req.limit_notice(global_config, requeue_config, self._requeue_state, auto.today_str())
+
+    def _auto_progress_limit_notice(self) -> str:
+        """DCC Task 19c-2b, 仕様1: the fixed "本日の自動承認の上限に達しました" sentence for the
+        reports inbox window's own notice label -- computed fresh from this App's in-memory
+        ProgressState (self._auto_progress_state, owned for this process's whole life, same as
+        _requeue_limit_notice reads self._requeue_state) and the two persisted switches."""
+        from . import reports_auto as auto
+        from . import reports_auto_approve as approve
+        from . import reports_auto_progress as progress
+        from . import reports_auto_start as start
+
+        global_config = auto.load_auto_mode_config(self._auto_mode_config_path())
+        start_config = start.load_auto_start_config(start.auto_start_config_path())
+        approve_config = approve.load_config(approve.config_path(), start_config=start_config)
+        return progress.limit_notice(global_config, approve_config, self._auto_progress_state, auto.today_str())
 
     def _drain_orchestrator_badge(self) -> None:
         try:
