@@ -58,8 +58,24 @@ class TestTimeoutTests(EngineCase):
         self.assertEqual(rs.DEFAULT_LIMITS.test_timeout, 1800)
         self.assertEqual(self.record["limits"]["test_timeout"], 1800)
         self.assertEqual(run_tests.call_args.args[1], 1800)
-        self.assertEqual(self.engine.limits.agent_timeout, 1800)
+        self.assertEqual(self.engine.limits.agent_timeout, 3600)
         self.assertEqual(self.engine.limits.review_timeout, 1200)
+
+    def test_main_implementation_and_repair_use_3600_without_changing_other_timeouts(self):
+        for main, reviewer in (("claude", "codex"), ("codex", "claude")):
+            with self.subTest(main=main):
+                self.build([FAIL_A, PASS], [("+impl", "implemented"), ("+fix", "repaired")],
+                           main=main, reviewer=reviewer)
+                with patch.object(self.main, "run_main", wraps=self.main.run_main) as main_call, \
+                     patch.object(self.reviewer, "run_review", wraps=self.reviewer.run_review) as review_call, \
+                     patch.object(self.host, "run_tests", wraps=self.host.run_tests) as tests_call:
+                    self.assertEqual(self.engine.run(), rs.COMPLETED)
+                self.assertEqual(rs.DEFAULT_LIMITS.agent_timeout, 3600)
+                self.assertEqual(self.record["limits"]["agent_timeout"], 3600)
+                self.assertEqual([c.kwargs["timeout"] for c in main_call.call_args_list], [3600, 3600])
+                self.assertEqual([c.kwargs["timeout"] for c in review_call.call_args_list], [1200])
+                self.assertEqual([c.args[1] for c in tests_call.call_args_list], [1800, 1800])
+                self.assertEqual(self.engine.limits.max_runtime_minutes, 360)
 
 
 class RoleSelectionTests(EngineCase):

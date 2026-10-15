@@ -93,6 +93,21 @@ class HostCase(unittest.TestCase):
 
 
 class StartValidationTests(HostCase):
+    def test_long_japanese_task_is_saved_and_reported_in_full(self):
+        from tools.ai_orchestrator.review import extract_acceptance, criteria_from_acceptance
+
+        task = ("長文の依頼🙂" * 6000 + "\n## 受入条件\n"
+                + "\n".join(f"- 条件{i}を確認する" for i in range(1, 17))
+                + "\n## 範囲外\n範囲外の末尾\n## 制約\n制約の末尾")
+        run_dir, record = orch.prepare_run(self.request(task=task))
+        self.assertEqual(record["task"], task)
+        self.assertEqual(rs.read_record(run_dir)["task"], task)
+        self.assertEqual((run_dir / "task.md").read_text(encoding="utf-8"), task + "\n")
+        self.assertIn(task, rs.run_report(run_dir).replace("\r\n", "\n"))
+        criteria = criteria_from_acceptance(extract_acceptance(task))
+        self.assertEqual(len(criteria), 16)
+        self.assertEqual(criteria[-1]["text"], "条件16を確認する")
+
     def test_defaults_are_claude_main_and_codex_reviewer_and_are_saved_in_the_run(self):
         run_dir, record = orch.prepare_run(self.request())
         self.assertEqual((record["main_agent"], record["review_agent"]), ("claude", "codex"))

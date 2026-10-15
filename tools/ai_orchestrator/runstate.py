@@ -91,7 +91,7 @@ class Limits:
     main_turns_repair: int = 40           # Claude turns per Main call while repairing (the scope is already known)
     max_main_resumes: int = 2             # resumes after the Claude turn limit (each resume gets a fresh turn budget)
     max_runtime_minutes: int = 360
-    agent_timeout: int = 1800
+    agent_timeout: int = 3600
     review_timeout: int = 1200
     test_timeout: int = 1800
 

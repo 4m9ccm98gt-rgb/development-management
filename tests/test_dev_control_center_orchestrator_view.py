@@ -148,6 +148,27 @@ class RoleAndStartTests(ViewCase):
                 self.assertTrue(str(request.repo).replace("\\", "/").endswith("repos/app"))
                 self.pump(lambda: self.monitor.selected == "20260925-000000-000000")
 
+    def test_long_japanese_task_reaches_start_request_in_full(self):
+        task = ("長文の依頼🙂" * 6000 + "\n## 受入条件\n"
+                + "\n".join(f"- 条件{i}を確認する" for i in range(1, 17))
+                + "\n## 範囲外\n範囲外の末尾\n## 制約\n制約の末尾")
+        self.window.task_text.insert("1.0", task)
+        self.assertEqual(self.window.task_text.get("1.0", "end").strip(), task)
+        captured = []
+
+        def fake_start(request, **kwargs):
+            captured.append(request)
+            return Path("C:/runs/20260925-000000-000000")
+
+        with mock.patch.object(orch, "start_run", side_effect=fake_start):
+            self.window.start_run()
+            self.assertEqual(self.window._pending_start["task"], task)
+            self.assertIn("条件16を確認する", self.window.confirm_criteria_text.get("1.0", "end"))
+            self.window._confirm_start()
+            self.pump(lambda: bool(captured))
+        self.assertEqual(captured[0].task, task)
+        self.pump(lambda: self.monitor.selected == "20260925-000000-000000")
+
     def test_same_provider_can_not_be_selected(self):
         self.window.main_var.set("Codex")
         self.window.review_var.set("Codex")
