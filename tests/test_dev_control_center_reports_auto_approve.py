@@ -224,9 +224,12 @@ class PersistenceTests(unittest.TestCase):
         for file in self.logs.glob("*.json"):
             data = json.loads(file.read_text(encoding="utf-8"))
             self.assertNotIn(evil, str(data))
-            self.assertEqual(set(data), {"at", "app", "candidate", "result", "reasons", "files", "lines"})
+            self.assertEqual(set(data), {"at", "app", "candidate", "candidate_full", "run_id", "result",
+                                         "reasons", "files", "lines"})
             self.assertTrue(set(data["reasons"]) <= set(approval.REASONS))
             self.assertEqual(data["candidate"], "不明")
+            self.assertEqual(data["candidate_full"], "不明")
+            self.assertEqual(data["run_id"], "run-1")  # from the real Task 18 association, never Run text
             self.assertEqual(data["files"], "不明")
             self.assertEqual(data["lines"], "不明")
         for n in range(60):
@@ -251,8 +254,8 @@ class PersistenceTests(unittest.TestCase):
             data = json.loads(file.read_text(encoding="utf-8"))
             stamp = data.pop("at")
             self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-            self.assertEqual(data, dict(app=APP, candidate="b" * 12, result=approval.ELIGIBLE,
-                                        reasons=[], files=1, lines=300))
+            self.assertEqual(data, dict(app=APP, candidate="b" * 12, candidate_full="b" * 40, run_id="run-1",
+                                        result=approval.ELIGIBLE, reasons=[], files=1, lines=300))
 
     def test_periodic_tick_displays_both_decisions_and_removes_on_stop(self):
         self.associate()

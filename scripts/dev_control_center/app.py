@@ -51,7 +51,30 @@ BRANCHES_PATH = DM_ROOT / "scripts" / "dev_control_center_repos.toml"
 LAUNCHER_PATH = DM_ROOT / "DEV_CONTROL_CENTER.pyw"
 HEARTBEAT_MS = 50
 ACTIVE_OPERATIONS: dict[int, tuple[str, str]] = {}
+# Guards every check-then-insert against ACTIVE_OPERATIONS below: the Tk main thread (manual
+# RUN_DEV/push/BUILD/UPDATE buttons) and the Task 19c-2a auto-progress background thread must
+# never both observe a repo as free and reserve it at once.
+ACTIVE_OPERATIONS_LOCK = threading.Lock()
 LOADING_TEXT = "読込中..."
+
+
+def _reserve_active_operation(repo_name: str, label: str, *, exclude_token_id: int | None = None) -> object | None:
+    """Atomic check-and-insert against ACTIVE_OPERATIONS. Every reservation call site (manual
+    RUN_DEV/push/BUILD/UPDATE buttons and the Task 19c-2a auto-progress background thread) must
+    go through this single function so the membership check and the insert can never be
+    interleaved with another thread's own check-and-insert."""
+    with ACTIVE_OPERATIONS_LOCK:
+        if any(name == repo_name for key, (name, _) in ACTIVE_OPERATIONS.items() if key != exclude_token_id):
+            return None
+        token = object()
+        ACTIVE_OPERATIONS[id(token)] = (repo_name, label)
+        return token
+
+
+def _release_active_operation(token: object | None) -> None:
+    if token is not None:
+        with ACTIVE_OPERATIONS_LOCK:
+            ACTIVE_OPERATIONS.pop(id(token), None)
 STATE_CHANGED_TEXT = "CONFIRMEDの後に状態が変わったため中止しました。再確認してください"
 
 DARK_BG = "#0f1419"
@@ -274,6 +297,18 @@ class App(ttk.Frame):
             import logging
 
             logging.getLogger(__name__).exception("requeue startup exclusion failed")
+        # DCC Task 19c-2a: periodic automatic RUN_DEV -> 自動承認 -> Task 19a's combined execution
+        # (off by default; the shared global switch and Task 19c-1's own per-app permission both
+        # gate this too). The day's count and the 実行済み markers live in this ProgressState for
+        # the life of this process (reports_auto_progress.ProgressState.seed_startup refuses every
+        # cycle until its persisted mirrors are read successfully at least once -- never silently
+        # assumed empty).
+        from . import reports_auto_progress
+
+        self._auto_progress_stop = threading.Event()
+        self._auto_progress_state = reports_auto_progress.ProgressState(
+            daily_count_path=reports_auto_progress.daily_count_path(),
+            attempted_index_path=reports_auto_progress.attempted_index_path())
         # Read on the auto-start background thread, written only on the Tk main thread
         # (_heartbeat_tick) -- a plain tuple-reference read/write, never a Tk widget access, so
         # the background thread never touches Tk.
@@ -324,6 +359,7 @@ class App(ttk.Frame):
         self.master.after(700, self._start_auto_triage_loop)
         self.master.after(900, self._start_auto_start_loop)
         self.master.after(1100, self._start_requeue_loop)
+        self.master.after(1300, self._start_auto_progress_loop)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -353,6 +389,7 @@ class App(ttk.Frame):
         self._auto_triage_stop.set()
         self._auto_start_stop.set()
         self._requeue_stop.set()
+        self._auto_progress_stop.set()
         window = self.orchestrator_window
         if window is not None and window.exists():
             window.close()
@@ -1170,8 +1207,10 @@ class App(ttk.Frame):
                 "RELEASEはこの操作には含まれません（人が別に実行します）。\n\n実行しますか？",
                 parent=self.master):
             return
-        token = object()
-        ACTIVE_OPERATIONS[id(token)] = (definition.name, "combined")
+        token = _reserve_active_operation(definition.name, "combined")
+        if token is None:
+            self._log(f"{definition.name}: 競合する操作があるため開始しません")
+            return
         # `combined_run_tokens` keeps a strong reference to `token` for the whole run (not just
         # `id(token)`): without it nothing else holds the object, CPython can garbage-collect it
         # between stages, and a later unrelated object can be assigned the same id(), silently
@@ -1363,6 +1402,50 @@ class App(ttk.Frame):
 
         threading.Thread(target=work, name="dcc-requeue", daemon=True).start()
 
+    # --- DCC Task 19c-2a: periodic automatic RUN_DEV -> 自動承認 -> PUSH -> BUILD -> UPDATE-DRY-RUN
+    def _start_auto_progress_loop(self) -> None:
+        """Runs for the whole life of this DCC process, checking at most once every
+        reports_auto_progress.AUTO_PROGRESS_INTERVAL_SECONDS. Whether anything actually happens on
+        a given tick is decided entirely inside reports_auto_progress.run_auto_progress_once()
+        itself (shared global switch, Task 19c-1's own per-app auto-approval permission, daily
+        limit, eligibility, exclusion) -- this loop only provides the periodic cadence and hooks
+        this App's own ACTIVE_OPERATIONS reservation into that module's exclusion (so a candidate
+        this loop is working through is seen busy by the manual RUN_DEV / push / BUILD / UPDATE
+        buttons too, and a manual operation already running is seen busy here). Never touches a
+        Tk widget directly from the background thread; RELEASE is never called from here."""
+        if self._closed:
+            return
+        stop = self._auto_progress_stop
+
+        def busy(repo_name: str) -> bool:
+            return self._repo_name_busy(repo_name)
+
+        def reserve(repo_name: str):
+            return _reserve_active_operation(repo_name, "auto-progress")
+
+        def release(repo_name: str, token) -> None:
+            _release_active_operation(token)
+
+        def work() -> None:
+            from . import reports_auto, reports_auto_approve, reports_auto_start, reports_auto_progress
+
+            while not stop.is_set():
+                try:
+                    reports_auto_progress.run_auto_progress_once(
+                        state=self._auto_progress_state,
+                        global_config_path=reports_auto.auto_mode_config_path(),
+                        start_config_path=reports_auto_start.auto_start_config_path(),
+                        approve_config_path=reports_auto_approve.config_path(),
+                        busy_fn=busy, reserve_fn=reserve, release_fn=release, stop_event=stop,
+                    )
+                except Exception:  # noqa: BLE001 - one bad cycle must not kill the loop or DCC
+                    import logging
+
+                    logging.getLogger(__name__).exception("auto progress cycle failed")
+                stop.wait(reports_auto_progress.AUTO_PROGRESS_INTERVAL_SECONDS)
+
+        threading.Thread(target=work, name="dcc-auto-progress", daemon=True).start()
+
     @staticmethod
     def _auto_mode_config_path():
         from . import reports_auto
@@ -1519,15 +1602,30 @@ class App(ttk.Frame):
                     self._release_combined_run(exclude_token_id)
 
         on_error = (lambda: self._release_combined_run(exclude_token_id)) if exclude_token_id is not None else None
-        self._prepare_operation(definition.name, action, inspect, ready, on_error=on_error)
+        self._prepare_operation(definition.name, action, inspect, ready, on_error=on_error,
+                                exclude_token_id=exclude_token_id)
 
-    def _prepare_operation(self, repo_name: str, action: str, work, ready, on_error=None) -> None:
-        """`on_error` (no args) is DCC Task 19a's hook: when `work()` raises (a failed precondition
-        check, e.g. BUILD's candidate_flow.build_gate), `ready` is never called, so without this
-        hook a combined run's reservation would survive the failed check. Every other caller
-        passes none and behaviour is unchanged."""
-        token = object()
-        ACTIVE_OPERATIONS[id(token)] = (repo_name, action + "-check")
+    def _prepare_operation(self, repo_name: str, action: str, work, ready, on_error=None,
+                           exclude_token_id: int | None = None) -> None:
+        """Reserves through the same atomic `_reserve_active_operation` every other
+        ACTIVE_OPERATIONS entry point uses (manual PUSH/BUILD/UPDATE's `_start_lifecycle` and the
+        Task 19c-2a auto-progress background thread's own "auto-progress" token), so a conflicting
+        reservation already held for this repo refuses this "-check" token exactly like
+        `_start_lifecycle` refuses a conflicting start -- instead of being inserted unconditionally
+        regardless of what else holds the repo. `exclude_token_id` is DCC Task 19a's combined run's
+        own reservation, held across this check too (see `launch`), so its own continuation is not
+        refused by its own earlier reservation. `on_error` (no args) is DCC Task 19a's hook: when
+        `work()` raises (a failed precondition check, e.g. BUILD's candidate_flow.build_gate) or
+        this reservation is refused outright, `ready` is never called, so without this hook a
+        combined run's reservation would survive. Every other caller passes none and behaviour is
+        unchanged."""
+        token = _reserve_active_operation(repo_name, action + "-check", exclude_token_id=exclude_token_id)
+        if token is None:
+            self._log(f"{repo_name}: 競合する操作があるため開始しません")
+            if on_error is not None:
+                on_error()
+            self._set_button_states()
+            return
         self.banner_var.set(f"{repo_name}: {action.upper()}開始条件を確認中...")
 
         def inspect():
@@ -1542,14 +1640,13 @@ class App(ttk.Frame):
 
     def _start_lifecycle(self, command: list[str], repo_name: str, action: str,
                          exclude_token_id: int | None = None) -> bool:
-        if any(name == repo_name for key, (name, _) in ACTIVE_OPERATIONS.items() if key != exclude_token_id):
+        token = _reserve_active_operation(repo_name, action, exclude_token_id=exclude_token_id)
+        if token is None:
             self._log(f"{repo_name}: 競合する操作があるため開始しません")
             return False
-        token = object()
         self.lifecycle_jobs[repo_name] = token
         cancel = threading.Event()
         self.lifecycle_cancellations[repo_name] = cancel
-        ACTIVE_OPERATIONS[id(token)] = (repo_name, action)
         self.selection.process_boundary(repo_name, f"process-start:{action}")
         self._log(f"{repo_name}: {action.upper()}開始（非対話・バックグラウンド）")
 

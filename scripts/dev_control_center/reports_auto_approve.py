@@ -257,12 +257,18 @@ def load_labels(identities, global_config, start_config, config, *, results_dir=
     return labels
 
 
-def record_decision(app_key, report_id, candidate, decision, *, results_dir=None, log_dir=None):
+def record_decision(app_key, report_id, candidate, decision, *, run_id=None, results_dir=None, log_dir=None):
     directory = results_dir if results_dir is not None else root() / "results"
     logs = log_dir if log_dir is not None else root() / "run_log"
     # app_key originates in local config, but even a corrupted config must not leak paths.
     safe_app = app_key if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}", app_key) else "不明"
+    # candidate_full/run_id are DCC Task 19c-2a's own strict-match keys (never report- or
+    # AI-derived -- candidate comes from the same trusted Run record as `candidate`, run_id from
+    # Task 18's own association); `candidate` above stays the display-only truncated field so
+    # Task 19c-1's own screen/log shape is unchanged.
+    safe_run_id = run_id if isinstance(run_id, str) and run_id else "不明"
     payload = dict(app=safe_app, candidate=candidate[:12].lower() if _sha(candidate) else "不明",
+                   candidate_full=candidate.lower() if _sha(candidate) else "不明", run_id=safe_run_id,
                    result=HUMAN if decision.reasons else ELIGIBLE, reasons=list(decision.reasons),
                    files=decision.files if _number(decision.files) else "不明",
                    lines=decision.lines if _number(decision.lines) else "不明")
@@ -314,7 +320,7 @@ def refresh(reports, global_config, start_config, config, *, records_dir=None,
         if not _sha(candidate):
             decision = Decision(tuple(dict.fromkeys((*decision.reasons, UNAVAILABLE))), decision.files, decision.lines)
         try:
-            record_decision(report.app_key, report.report_id, candidate, decision,
+            record_decision(report.app_key, report.report_id, candidate, decision, run_id=association.run_id,
                             results_dir=results_dir, log_dir=log_dir)
         except OSError:
             pass
