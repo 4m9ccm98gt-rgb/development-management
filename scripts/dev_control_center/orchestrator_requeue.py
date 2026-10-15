@@ -250,6 +250,7 @@ def _parse_quota_reset(message: str) -> tuple[int, int, int] | None:
     """(hour24, minute, utc_offset_minutes) parsed out of `message`'s one strict "resets H(:MM)
     am/pm (Region/City)" phrase, or None when the message does not contain exactly that shape --
     including when the region/city does not resolve to one of the known, DST-free zones above.
+    Minute-bearing times are accepted only for Asia/Tokyo; hour-only zones remain unchanged.
     Rejects: any message with a newline, a match whose immediate lead-in is not a sentence
     boundary (a command-like "echo resets ..." prefix, a path, a word like "presets"), and a
     match followed by anything other than trailing punctuation/whitespace."""
@@ -262,6 +263,8 @@ def _parse_quota_reset(message: str) -> tuple[int, int, int] | None:
     if not _has_allowed_lead(message, start):
         return None
     if message[end:].strip(_ALLOWED_TRAILING):
+        return None
+    if match.group(2) is not None and match.group(4) != "Asia/Tokyo":
         return None
     offset_minutes = _resolve_offset_minutes(match.group(4))
     if offset_minutes is None:

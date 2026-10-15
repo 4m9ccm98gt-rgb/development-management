@@ -98,6 +98,66 @@ class RequiredFieldsTests(unittest.TestCase):
 
 
 class DelayCalculationTests(unittest.TestCase):
+    def test_minute_format_parses_tokyo_time_and_computes_delay(self):
+        now = datetime(2026, 3, 10, 7, 0, tzinfo=timezone.utc)  # 16:00 JST
+        for clock, parsed, delay in (
+            ("5:20pm", (17, 20, 540), 85),
+            ("5:00pm", (17, 0, 540), 65),
+            ("5:59pm", (17, 59, 540), 124),
+        ):
+            with self.subTest(clock=clock):
+                message = f"resets {clock} (Asia/Tokyo)"
+                self.assertEqual(req._parse_quota_reset(message), parsed)
+                self.assertEqual(req.requeue_delay_minutes(message, now=now), delay)
+
+    def test_twelve_am_and_pm_with_minutes(self):
+        for clock, hour, now in (
+            ("12:30am", 0, datetime(2026, 3, 10, 15, 0, tzinfo=timezone.utc)),
+            ("12:30pm", 12, datetime(2026, 3, 10, 3, 0, tzinfo=timezone.utc)),
+        ):
+            with self.subTest(clock=clock):
+                message = f"resets {clock} (Asia/Tokyo)"
+                self.assertEqual(req._parse_quota_reset(message), (hour, 30, 540))
+                self.assertEqual(req.requeue_delay_minutes(message, now=now), 35)
+
+    def test_hour_only_parsing_is_unchanged(self):
+        for clock, hour in (("5pm", 17), ("12am", 0), ("12pm", 12), ("1am", 1)):
+            with self.subTest(clock=clock):
+                self.assertEqual(req._parse_quota_reset(f"resets {clock} (Asia/Tokyo)"),
+                                 (hour, 0, 540))
+
+    def test_invalid_minute_formats_fall_back_to_sixty_minutes(self):
+        for phrase in (
+            "5:75pm (Asia/Tokyo)", "5:60pm (Asia/Tokyo)",
+            "0:20pm (Asia/Tokyo)", "13:20pm (Asia/Tokyo)",
+            "05:20pm (Asia/Tokyo)", "5:2pm (Asia/Tokyo)",
+            "5:200pm (Asia/Tokyo)", "5:-1pm (Asia/Tokyo)",
+            "5:20 (Asia/Tokyo)", "5:20xm (Asia/Tokyo)",
+            "5.20pm (Asia/Tokyo)", "5:20pm Asia/Tokyo",
+            "5:20pm (Asia/Shanghai)", "5:20pm (America/New_York)",
+            "5:20pm (Asia/Tokyo) && echo unsafe",
+            "5:20pm (Asia/Tokyo)\nextra text",
+        ):
+            with self.subTest(phrase=phrase):
+                message = f"resets {phrase}"
+                self.assertIsNone(req._parse_quota_reset(message))
+                self.assertEqual(req.requeue_delay_minutes(message, now=NOW), 60)
+
+    def test_minute_format_preserves_bounds_and_next_day_rollover(self):
+        message = "resets 5:20pm (Asia/Tokyo)"
+        for hour, minute, second, expected in (
+            (8, 19, 59, 6),  # one second away, rounded up, plus the existing 5-minute buffer
+            (2, 0, 0, 360),  # more than six hours away
+            (8, 20, 0, 360),  # equal to reset: next day, as with hour-only times
+            (8, 21, 0, 360),  # already past reset: next day
+        ):
+            with self.subTest(hour=hour, minute=minute, second=second):
+                now = datetime(2026, 3, 10, hour, minute, second, tzinfo=timezone.utc)
+                delay = req.requeue_delay_minutes(message, now=now)
+                self.assertEqual(delay, expected)
+                self.assertGreaterEqual(delay, 5)
+                self.assertLessEqual(delay, 360)
+
     # ------------------------------------------------------------------ C3
     def test_strict_format_computes_minutes_past_the_reset_time_in_its_own_zone(self):
         # 07:00 UTC == 16:00 in Asia/Tokyo (UTC+9): the next 17:00 there is 1h away -- this would
