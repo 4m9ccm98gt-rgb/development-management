@@ -58,6 +58,40 @@ class ConfigTests(unittest.TestCase):
             config = wr.load_workflow_runner_config(path)
             self.assertTrue(config.plans.get("Plan-1"))
 
+
+class DailyLimitReachedReadOnlyCheckTests(unittest.TestCase):
+    """wr.daily_limit_reached: workflow_plan_view.py's own read-only display check (DCC Task
+    WF-3a), mirroring reports_auto.daily_limit_reached's convention -- never gates the real
+    execution loop (WorkflowRunnerState.seed_startup's own strict read does that)."""
+
+    def test_missing_file_is_not_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(wr.daily_limit_reached(TODAY, 1, path=Path(tmp) / "no-such-file.json"))
+
+    def test_count_below_limit_is_not_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "count.json"
+            path.write_text('{"date": "%s", "count": 1}' % TODAY, encoding="utf-8")
+            self.assertFalse(wr.daily_limit_reached(TODAY, 2, path=path))
+
+    def test_count_at_or_above_limit_is_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "count.json"
+            path.write_text('{"date": "%s", "count": 2}' % TODAY, encoding="utf-8")
+            self.assertTrue(wr.daily_limit_reached(TODAY, 2, path=path))
+
+    def test_a_different_date_in_the_file_is_not_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "count.json"
+            path.write_text('{"date": "2025-01-01", "count": 99}', encoding="utf-8")
+            self.assertFalse(wr.daily_limit_reached(TODAY, 1, path=path))
+
+    def test_corrupt_file_degrades_to_not_reached_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "count.json"
+            path.write_text("not json{{{", encoding="utf-8")
+            self.assertFalse(wr.daily_limit_reached(TODAY, 1, path=path))
+
     def test_plan_auto_run_allowed_requires_both_global_switch_and_own_permission(self):
         both_off = auto.AutoModeConfig(enabled=False)
         plan_off = wr.WorkflowRunnerConfig(plans={"Plan-1": False})

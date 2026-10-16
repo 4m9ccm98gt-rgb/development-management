@@ -236,6 +236,7 @@ class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         self.orchestrator_window = None
         self.reports_window = None
+        self.workflow_plan_window = None
         self._closed = False
         configure_dark_theme(master)
         super().__init__(master, padding=14)
@@ -408,6 +409,11 @@ class App(ttk.Frame):
         reports_window = self.reports_window
         if reports_window is not None and reports_window.exists():
             reports_window.close()
+        # getattr default: a pre-WF-3a test double built via App.__new__() (not __init__) never
+        # had this attribute; it must keep closing without it, same as before this task.
+        workflow_plan_window = getattr(self, "workflow_plan_window", None)
+        if workflow_plan_window is not None and workflow_plan_window.exists():
+            workflow_plan_window.close()
         if TIMING.enabled:
             TIMING.event("ui-lag-summary", **self._heartbeat.stats())
         self.selection.close()
@@ -506,6 +512,8 @@ class App(ttk.Frame):
         self.orchestrator_button.pack(side="left", padx=(0, 6))
         self.reports_button = ttk.Button(top_buttons, text="報告", command=self.open_reports_inbox)
         self.reports_button.pack(side="left")
+        self.workflow_plan_button = ttk.Button(top_buttons, text="開発計画", command=self.open_workflow_plan)
+        self.workflow_plan_button.pack(side="left", padx=(6, 0))
         ttk.Label(right, textvariable=self.meta_var, wraplength=580).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
         # Local and GitHub state side by side: the candidate flow needs the vertical space at 1080x720.
@@ -645,6 +653,17 @@ class App(ttk.Frame):
             self.master, on_spec_ready=self._send_spec_to_orchestrator,
             current_roles=self._current_orchestrator_roles, requeue_notice_fn=self._requeue_limit_notice,
             auto_progress_notice_fn=self._auto_progress_limit_notice)
+
+    def open_workflow_plan(self) -> None:
+        """Open (or focus) the development-plan window (DCC Task WF-3a). Display and human
+        operations only -- see workflow_plan_view.py."""
+        from .workflow_plan_view import WorkflowPlanWindow
+
+        window = self.workflow_plan_window
+        if window is not None and window.exists():
+            window.focus()
+            return
+        self.workflow_plan_window = WorkflowPlanWindow(self.master)
 
     def _current_orchestrator_roles(self) -> tuple[str, str]:
         """DCC Task 14.5: "現在の DCC の設定" for 作成して開始's confirmation dialog -- the

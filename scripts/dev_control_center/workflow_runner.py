@@ -114,6 +114,19 @@ def records_root() -> Path:
     return _root() / "records"
 
 
+def daily_limit_reached(today: str, limit: int, *, path: Path | None = None) -> bool:
+    """Read-only display check for a caller that only wants to *show* the shared
+    "本日の計画の自動実行の上限に達しました" notice (workflow_plan_view.py) without owning a
+    WorkflowRunnerState -- mirrors reports_auto.daily_limit_reached's convention exactly. Missing
+    or unparseable count file reads as "not reached" here (display-only); the real execution loop
+    still gates starts on WorkflowRunnerState.seed_startup's own strict read, never on this."""
+    try:
+        count = progress._read_daily_count_strict(today, path)
+    except Exception:  # noqa: BLE001 - display-only: never blocks the notice from rendering
+        return False
+    return count >= limit
+
+
 def run_log_root() -> Path:
     return _root() / "run_log"
 
