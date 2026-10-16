@@ -1367,6 +1367,7 @@ class AppReportsButtonTests(unittest.TestCase):
         self.app._auto_start_stop = threading.Event()
         self.app._requeue_stop = threading.Event()
         self.app._auto_progress_stop = threading.Event()
+        self.app._workflow_runner_stop = threading.Event()
         self.app.orchestrator_window = None
         self.app.selection = SimpleNamespace(close=lambda: None)
         self.app._on_close()  # must not raise even though the inbox window is still open

@@ -309,6 +309,16 @@ class App(ttk.Frame):
         self._auto_progress_state = reports_auto_progress.ProgressState(
             daily_count_path=reports_auto_progress.daily_count_path(),
             attempted_index_path=reports_auto_progress.attempted_index_path())
+        # DCC Task WF-2: periodic workflow execution -- off by default (no workflow_plan.py plan
+        # has its own permission ON, and the shared global switch above gates this too). Its own
+        # checks happen inside workflow_runner.run_workflow_runner_once() itself, re-read every
+        # cycle, same as _start_auto_progress_loop. The daily count lives in this process-lifetime
+        # WorkflowRunnerState, same convention as reports_auto_progress.ProgressState.
+        from . import workflow_runner
+
+        self._workflow_runner_stop = threading.Event()
+        self._workflow_runner_state = workflow_runner.WorkflowRunnerState(
+            daily_count_path=workflow_runner._daily_count_path())
         # Read on the auto-start background thread, written only on the Tk main thread
         # (_heartbeat_tick) -- a plain tuple-reference read/write, never a Tk widget access, so
         # the background thread never touches Tk.
@@ -360,6 +370,7 @@ class App(ttk.Frame):
         self.master.after(900, self._start_auto_start_loop)
         self.master.after(1100, self._start_requeue_loop)
         self.master.after(1300, self._start_auto_progress_loop)
+        self.master.after(1500, self._start_workflow_runner_loop)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -390,6 +401,7 @@ class App(ttk.Frame):
         self._auto_start_stop.set()
         self._requeue_stop.set()
         self._auto_progress_stop.set()
+        self._workflow_runner_stop.set()
         window = self.orchestrator_window
         if window is not None and window.exists():
             window.close()
@@ -1446,6 +1458,58 @@ class App(ttk.Frame):
                 stop.wait(reports_auto_progress.AUTO_PROGRESS_INTERVAL_SECONDS)
 
         threading.Thread(target=work, name="dcc-auto-progress", daemon=True).start()
+
+    # --- DCC Task WF-2: periodic workflow execution (workflow_plan.py -> Orchestrator)
+    def _start_workflow_runner_loop(self) -> None:
+        """Sends an already-approved workflow_plan.py task to the Orchestrator, one at a time,
+        respecting depends_on and plan order -- off until a human turns a plan's own permission ON
+        (workflow_runner.set_plan_auto_run_allowed) and the shared global switch is ON; both are
+        re-read inside workflow_runner.run_workflow_runner_once() itself every cycle, same as
+        _start_auto_progress_loop. Hooks this App's own ACTIVE_OPERATIONS reservation into the same
+        busy_fn exclusion _start_auto_progress_loop already uses (so a plan task this loop starts
+        is seen busy by the manual RUN_DEV/push/BUILD/UPDATE buttons too, and a manual operation
+        already running on that repo is seen busy here), and additionally reserves/releases that
+        same ACTIVE_OPERATIONS slot for the window between the busy check and the real start (the
+        same reserve_fn/release_fn pair _start_auto_progress_loop already passes), closing the gap
+        a busy_fn-only check leaves open. main_ai/reviewer_ai are read fresh off this App's own
+        current Orchestrator role selection (self._current_roles_snapshot, read-only on this
+        background thread -- see its own definition for why that is safe) whenever a plan task
+        does not specify its own. Approval, PUSH, BUILD, UPDATE and RELEASE are never called from
+        here -- this loop only ever reaches "a candidate branch exists"."""
+        if self._closed:
+            return
+        stop = self._workflow_runner_stop
+
+        def busy(repo_name: str) -> bool:
+            return self._repo_name_busy(repo_name)
+
+        def reserve(repo_name: str):
+            return _reserve_active_operation(repo_name, "workflow-runner")
+
+        def release(repo_name: str, token) -> None:
+            _release_active_operation(token)
+
+        def work() -> None:
+            from . import workflow_runner
+
+            while not stop.is_set():
+                try:
+                    main_agent, review_agent = self._current_roles_snapshot
+                    workflow_runner.run_workflow_runner_once(
+                        state=self._workflow_runner_state,
+                        global_config_path=self._auto_mode_config_path(),
+                        runner_config_path=workflow_runner.workflow_runner_config_path(),
+                        busy_fn=busy, reserve_fn=reserve, release_fn=release,
+                        default_main_agent=main_agent, default_review_agent=review_agent,
+                        stop_event=stop,
+                    )
+                except Exception:  # noqa: BLE001 - one bad cycle must not kill the loop or DCC
+                    import logging
+
+                    logging.getLogger(__name__).exception("workflow runner cycle failed")
+                stop.wait(workflow_runner.WORKFLOW_RUNNER_INTERVAL_SECONDS)
+
+        threading.Thread(target=work, name="dcc-workflow-runner", daemon=True).start()
 
     @staticmethod
     def _auto_mode_config_path():

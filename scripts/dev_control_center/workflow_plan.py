@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import threading
 
 
 class WorkflowError(ValueError):
@@ -307,3 +308,70 @@ def load_plan(plan_id, *, root=None, registered_keys=None):
         return plan
     except (OSError, UnicodeError, ValueError, RecursionError):
         raise WorkflowStorageError('WORKFLOW_STORAGE_ERROR') from None
+
+
+# --------------------------------------------------------------------------- shared serialization
+#
+# save_plan's own docstring says "callers serialize access to each plan" -- this is that one
+# shared serialization point. Every writer of a plan (today: a human's own apply_proposal, and
+# workflow_runner.py's executor-owned status transitions) must go through update_plan rather than
+# calling load_plan/save_plan separately, so a concurrent write from the other side is never
+# silently lost to a last-writer-wins race, and the plan's own revision always advances on every
+# change (including an executor-owned one) -- so a human's own stale-base_revision proposal is
+# always rejected by apply_proposal's WORKFLOW_STALE check, never silently applied on top of a
+# change it never saw.
+
+_PLAN_LOCKS: dict[tuple, threading.Lock] = {}
+_PLAN_LOCKS_GUARD = threading.Lock()
+
+
+def _plan_lock(plan_id, root) -> threading.Lock:
+    key = (str(plans_root() if root is None else root), plan_id)
+    with _PLAN_LOCKS_GUARD:
+        lock = _PLAN_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PLAN_LOCKS[key] = lock
+        return lock
+
+
+def update_plan(plan_id, mutate, *, root=None, registered_keys=None):
+    """Atomically load, mutate and save one plan under that plan's own lock (held for this
+    process's lifetime, keyed by (root, plan_id)). `mutate(plan)` returns either a new plan dict
+    to save (its own 'revision' is the caller's responsibility to advance) or None, meaning no
+    change should be saved at all (the plan is returned unchanged). Raises WorkflowStorageError if
+    the load or the save fails; `mutate` itself should never raise for an ordinary "nothing to do"
+    outcome -- it should return None instead."""
+    with _plan_lock(plan_id, root):
+        plan = load_plan(plan_id, root=root, registered_keys=registered_keys)
+        new_plan = mutate(plan)
+        if new_plan is None:
+            return plan
+        save_plan(new_plan, root=root, registered_keys=registered_keys)
+        return new_plan
+
+
+def apply_and_save_proposal(plan_id, proposal, *, actor, root=None, registered_keys=None):
+    """The one atomic save entry point for a human's own proposal: load_plan, apply_proposal and
+    save_plan all happen inside update_plan's own per-plan lock, exactly like an executor-owned
+    status change (workflow_runner.py's own update_plan-based transitions). A caller that instead
+    did load_plan() -> apply_proposal() -> save_plan() as three separate steps could load a plan,
+    then lose its own change to a concurrent executor update that saved in between (last-writer-
+    wins), or silently overwrite that executor's own change with a stale-looking write that still
+    passes save_plan's validation (save_plan performs no revision check of its own). Routing
+    through update_plan means the proposal's base_revision is always checked against the plan
+    actually on disk *at save time*, under the same lock an executor-owned change takes -- so a
+    stale proposal is rejected (apply_proposal's own WORKFLOW_STALE) instead of applied on top of a
+    change it never saw, and a proposal built against the current revision is never lost to a
+    concurrent executor write either. apply_proposal/preview_proposal remain pure functions for
+    callers that only want to validate or preview against their own in-memory plan; only an actual
+    save must go through this."""
+    summary_box: list = []
+
+    def mutate(plan):
+        new_plan, summary = apply_proposal(plan, proposal, actor=actor, registered_keys=registered_keys)
+        summary_box.append(summary)
+        return new_plan
+
+    new_plan = update_plan(plan_id, mutate, root=root, registered_keys=registered_keys)
+    return new_plan, summary_box[0]
