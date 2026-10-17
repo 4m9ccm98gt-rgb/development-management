@@ -142,6 +142,7 @@ class _FakeVar:
 class _FakeTkWidget:
     def __init__(self, master=None, **_kwargs):
         self.master = master
+        self.bindings = {}
 
     def pack(self, **_kwargs):
         pass
@@ -158,8 +159,8 @@ class _FakeTkWidget:
     def configure(self, **_kwargs):
         pass
 
-    def bind(self, _sequence, _func):
-        pass
+    def bind(self, sequence, func, **_kwargs):
+        self.bindings[sequence] = func
 
 
 class _FakeButton(_FakeTkWidget):
@@ -315,6 +316,9 @@ _FAKE_TTK_MODULE = SimpleNamespace(
 
 class WorkflowPlanWindowCase(unittest.TestCase):
     def setUp(self):
+        popup_patch = mock.patch.object(dcc, "configure_combobox_popup")
+        self.popup_colors = popup_patch.start()
+        self.addCleanup(popup_patch.stop)
         tk_patch = mock.patch.object(view, "tk", _FAKE_TK_MODULE)
         tk_patch.start()
         self.addCleanup(tk_patch.stop)
@@ -351,6 +355,15 @@ class WorkflowPlanWindowCase(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- C1/C2: list & detail
+
+class ComboboxThemeTests(WorkflowPlanWindowCase):
+    def test_popup_colors_are_applied_on_creation_and_each_theme_change(self):
+        window = self.make_window()
+        self.popup_colors.assert_called_once_with(window.plan_combo)
+        for _ in range(2):  # dark -> light -> dark, without rebuilding the window
+            window.plan_combo.bindings["<<ThemeChanged>>"](None)
+        self.assertEqual(self.popup_colors.call_args_list,
+                         [mock.call(window.plan_combo)] * 3)
 
 class ListAndDetailRenderingTests(WorkflowPlanWindowCase):
     def test_list_shows_order_status_and_depends_for_a_real_plan(self):

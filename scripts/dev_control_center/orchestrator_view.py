@@ -182,23 +182,11 @@ class Draft:
 
 
 def _style_dark_comboboxes(master: tk.Misc) -> None:
-    """The shared DCC theme does not cover ttk.Combobox; give it the same dark palette."""
-    from . import app as theme
+    from .app import configure_dark_comboboxes
 
     style = ttk.Style(master)
-    style.configure("TCombobox", fieldbackground=theme.DARK_FIELD, background=theme.DARK_FIELD,
-                    foreground=theme.DARK_FG, arrowcolor=theme.DARK_FG, bordercolor=theme.DARK_BORDER,
-                    lightcolor=theme.DARK_BORDER, darkcolor=theme.DARK_BORDER, insertcolor=theme.DARK_FG,
-                    selectbackground=theme.DARK_FIELD, selectforeground=theme.DARK_FG, padding=(6, 4))
-    style.map("TCombobox",
-              fieldbackground=[("readonly", theme.DARK_FIELD), ("disabled", theme.DARK_DISABLED_BG)],
-              foreground=[("readonly", theme.DARK_FG), ("disabled", theme.DARK_DISABLED_FG)],
-              selectbackground=[("readonly", theme.DARK_FIELD)], selectforeground=[("readonly", theme.DARK_FG)],
-              background=[("active", theme.DARK_SELECTION)], bordercolor=[("focus", theme.DARK_ACCENT)])
-    master.option_add("*TCombobox*Listbox.background", theme.DARK_SURFACE)
-    master.option_add("*TCombobox*Listbox.foreground", theme.DARK_FG)
-    master.option_add("*TCombobox*Listbox.selectBackground", theme.DARK_SELECTION)
-    master.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    configure_dark_comboboxes(master, style)
+    style.configure("TCombobox", padding=(6, 4))
 
 
 def _set_enabled(button: ttk.Button, enabled: bool) -> None:

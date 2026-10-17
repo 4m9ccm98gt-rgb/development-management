@@ -215,7 +215,8 @@ class WorkflowPlanWindow:
                  set_plan_auto_run_fn=None, load_runner_config_fn=None,
                  daily_limit_reached_fn=None, copy_to_clipboard: Callable[[str], None] | None = None,
                  ) -> None:
-        from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
+        from .app import (DARK_BG, DARK_MUTED, configure_combobox_popup,
+                          configure_dark_listbox, configure_dark_text)
 
         # _list_plans (unlike every workflow_plan.py/workflow_runner.py function below) is this
         # module's own helper and never defaults a None root itself, so plans_root/daily_count_path
@@ -268,6 +269,9 @@ class WorkflowPlanWindow:
         ttk.Label(select_row, text="計画:").pack(side="left")
         self.plan_combo = ttk.Combobox(select_row, textvariable=self.plan_select_var,
                                         state="readonly", width=40)
+        configure_combobox_popup(self.plan_combo)
+        self.plan_combo.bind("<<ThemeChanged>>",
+                             lambda _e: configure_combobox_popup(self.plan_combo), add="+")
         self.plan_combo.pack(side="left", padx=(4, 12))
         self.plan_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_plan_combo_selected())
         ttk.Entry(select_row, textvariable=self.new_plan_name_var, width=24).pack(side="left")

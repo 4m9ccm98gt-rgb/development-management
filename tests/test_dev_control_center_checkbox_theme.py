@@ -18,8 +18,14 @@ WHITE_LIKE = {"#ffffff", "#fff", "white"}
 
 
 class _FakeMaster:
+    def __init__(self):
+        self.options = {}
+
     def configure(self, **_kwargs):
         pass
+
+    def option_add(self, key, value):
+        self.options[key] = value
 
 
 class _RecordingStyle:
@@ -38,6 +44,11 @@ class _RecordingStyle:
 
     def map(self, style_name, **kwargs):
         self.mapped.setdefault(style_name, {}).update(kwargs)
+
+    def lookup(self, style_name, option, state=()):
+        if state:
+            return self.state_value(option, style_name, state[0]) or ""
+        return self.configured.get(style_name, {}).get(option, "")
 
     def state_value(self, option, style_name, state_name):
         """Resolve the value ttk.Style.lookup would pick for a single named state:
@@ -105,6 +116,51 @@ class CheckbuttonRadiobuttonThemeTests(unittest.TestCase):
             for option in ("foreground", "background"):
                 for _statespec, value in self.style.mapped[style_name][option]:
                     self.assertIn(value.lower(), {v.lower() for v in dark_values})
+
+    def test_combobox_closed_field_uses_existing_dark_palette(self):
+        self.assertEqual(self.style.lookup("TCombobox", "fieldbackground", ("readonly",)), dcc.DARK_FIELD)
+        self.assertEqual(self.style.lookup("TCombobox", "foreground", ("readonly",)), dcc.DARK_FG)
+        self.assertNotIn("padding", self.style.configured["TCombobox"])
+
+    def test_popup_defaults_match_orchestrator_palette(self):
+        master = _FakeMaster()
+        dcc.configure_dark_comboboxes(master, self.style)
+        self.assertEqual(master.options, {
+            "*TCombobox*Listbox.background": dcc.DARK_SURFACE,
+            "*TCombobox*Listbox.foreground": dcc.DARK_FG,
+            "*TCombobox*Listbox.selectBackground": dcc.DARK_SELECTION,
+            "*TCombobox*Listbox.selectForeground": "#ffffff",
+        })
+
+    def test_existing_popup_tracks_dark_light_and_dark_without_overwriting_theme(self):
+        widget = unittest.mock.Mock()
+        widget.tk.call.return_value = ".combo.popdown"
+        for bg, fg, selected in ((dcc.DARK_FIELD, dcc.DARK_FG, dcc.DARK_SELECTION),
+                                 ("#ffffff", "#000000", "#cce8ff"),
+                                 (dcc.DARK_FIELD, dcc.DARK_FG, dcc.DARK_SELECTION)):
+            style = _RecordingStyle()
+            style.configure("TCombobox", fieldbackground=bg, foreground=fg)
+            style.map("TCombobox", background=[("active", selected)])
+            with patch.object(dcc.ttk, "Style", return_value=style):
+                dcc.configure_combobox_popup(widget)
+            args = widget.tk.call.call_args.args
+            self.assertEqual(args[:2], (".combo.popdown.f.l", "configure"))
+            self.assertEqual(dict(zip(args[2::2], args[3::2])), {
+                "-background": bg, "-foreground": fg,
+                "-selectbackground": selected, "-selectforeground": fg,
+            })
+            self.assertEqual(style.configured["TCombobox"], {"fieldbackground": bg, "foreground": fg})
+
+    def test_popup_uses_entry_color_when_light_theme_has_no_combobox_field_override(self):
+        widget = unittest.mock.Mock()
+        widget.tk.call.return_value = ".combo.popdown"
+        style = _RecordingStyle()
+        style.configure(".", foreground="#000000", background="#eeeeee")
+        style.configure("TEntry", fieldbackground="#ffffff")
+        with patch.object(dcc.ttk, "Style", return_value=style):
+            dcc.configure_combobox_popup(widget)
+        args = widget.tk.call.call_args.args
+        self.assertEqual(dict(zip(args[2::2], args[3::2]))["-background"], "#ffffff")
 
 
 class CheckbuttonUsesSharedStyleTests(unittest.TestCase):

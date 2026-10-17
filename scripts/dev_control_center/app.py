@@ -188,6 +188,37 @@ def configure_dark_theme(master: tk.Tk) -> None:
             ],
         )
 
+    configure_dark_comboboxes(master, style)
+
+
+def configure_dark_comboboxes(master: tk.Misc, style: ttk.Style) -> None:
+    """Shared closed-field and popup colors, also used by the Orchestrator."""
+    style.configure("TCombobox", fieldbackground=DARK_FIELD, background=DARK_FIELD,
+                    foreground=DARK_FG, arrowcolor=DARK_FG, bordercolor=DARK_BORDER,
+                    lightcolor=DARK_BORDER, darkcolor=DARK_BORDER, insertcolor=DARK_FG,
+                    selectbackground=DARK_FIELD, selectforeground=DARK_FG)
+    style.map("TCombobox",
+              fieldbackground=[("readonly", DARK_FIELD), ("disabled", DARK_DISABLED_BG)],
+              foreground=[("readonly", DARK_FG), ("disabled", DARK_DISABLED_FG)],
+              selectbackground=[("readonly", DARK_FIELD)], selectforeground=[("readonly", DARK_FG)],
+              background=[("active", DARK_SELECTION)], bordercolor=[("focus", DARK_ACCENT)])
+    master.option_add("*TCombobox*Listbox.background", DARK_SURFACE)
+    master.option_add("*TCombobox*Listbox.foreground", DARK_FG)
+    master.option_add("*TCombobox*Listbox.selectBackground", DARK_SELECTION)
+    master.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+
+
+def configure_combobox_popup(widget: ttk.Combobox) -> None:
+    """Recolor even an already-created popup from the current ttk theme."""
+    style = ttk.Style(widget)
+    fg = style.lookup("TCombobox", "foreground", ("readonly",)) or style.lookup(".", "foreground")
+    bg = (style.lookup("TCombobox", "fieldbackground", ("readonly",))
+          or style.lookup("TEntry", "fieldbackground") or style.lookup(".", "background"))
+    selected = style.lookup("TCombobox", "background", ("active",)) or bg
+    popdown = widget.tk.call("ttk::combobox::PopdownWindow", widget)
+    widget.tk.call(f"{popdown}.f.l", "configure", "-background", bg, "-foreground", fg,
+                   "-selectbackground", selected, "-selectforeground", fg)
+
 
 def configure_dark_listbox(widget: tk.Listbox) -> None:
     widget.configure(
