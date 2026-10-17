@@ -1,8 +1,21 @@
 """DCC Task WF-3a: a human-facing window over Task WF-1's plan data (workflow_plan.py) and
 Task WF-2's executor (workflow_runner.py) -- plan selection/creation, the task list and its
 read-only body, human-only task operations, the per-plan automatic-run permission, and a
-manager-facing "state copy" to the clipboard. Importing a plan's proposed changes (WF-3b) is a
-separate, later window; this one never applies anything but a human-actor WF-1 proposal.
+manager-facing "state copy" to the clipboard. Importing a plan's proposed changes (WF-3b,
+WorkflowImportDialog below) is a separate dialog opened from this window's own "変更案を取り込む"
+button; this window itself never applies anything but a human-actor WF-1 proposal.
+
+DCC Task WF-3b (WorkflowImportDialog): a human pastes an external manager AI's proposal JSON,
+clicks 検証 to preview it through WF-1 (workflow_plan.preview_proposal, actor="manager" --
+never "human", so a pasted "approve" op is always rejected by WF-1's own
+WORKFLOW_HUMAN_REQUIRED check, exactly like the TaskSpec's security section requires), reviews
+the diff summary, and only reaches 反映 (apply_and_save_proposal, one call, behind its own
+messagebox confirmation) once validation against the *current* pasted text succeeded. Editing
+the paste box after a successful 検証 disables 反映 again until the human re-validates. The
+pasted text is untrusted data start to finish: it is never used to choose a command, a path or
+a repository, and every failure the human sees is one of this module's own fixed Japanese
+reason strings (never raw exception text, never a copy of the pasted JSON) -- see
+validate_proposal_text and the IMPORT_REASON_* constants below.
 
 Security posture (same family as reports_inbox_view.py):
  - A plan's title/name is untrusted display text (the TaskSpec's own words: "計画のタイトルなどの
@@ -26,6 +39,14 @@ Security posture (same family as reports_inbox_view.py):
    fixed-text explanation of WF-1's own proposal JSON shape -- so a manager AI reading the copy
    can draft a next proposal without ever seeing (or needing) a task's full acceptance-criteria
    text.
+ - WorkflowImportDialog always calls workflow_plan.preview_proposal/apply_and_save_proposal with
+   actor="manager", never "human" -- a pasted "approve" op is rejected by WF-1's own
+   WORKFLOW_HUMAN_REQUIRED check every time, and a human's own approval still only ever happens
+   through this window's own 承認 button above. Like every other button in this module, it never
+   calls a candidate-approval, push, BUILD, UPDATE or RELEASE entry point, and the pasted JSON is
+   never used to choose a command, a path or a repository -- only task_id values and numbers
+   (already validated by WF-1's own _identifier()) and this module's own fixed Japanese reason
+   strings ever reach the screen; an exception's own message text is never shown.
 """
 from __future__ import annotations
 
@@ -73,6 +94,83 @@ ops の各要素は次のいずれかです（approve はここでは使えま�
   {"op": "cancel", "task_id": "t2"}
   {"op": "update_body", "task_id": "t2", "body": "..."}
   {"op": "set_depends_on", "task_id": "t2", "depends_on": ["t1"]}"""
+
+# --------------------------------------------------------------------------- WF-3b: import dialog
+#
+# Fixed, content-free vocabulary only: every one of these strings is shown as-is, never built
+# from the pasted text, a JSON value inside it, or an exception's own message.
+
+PROPOSAL_PASTE_MAX_CHARS = 100_000
+IMPORT_REASON_TOO_LONG = f"貼り付けが長すぎます（上限 {PROPOSAL_PASTE_MAX_CHARS} 文字）。検証していません。"
+IMPORT_REASON_INVALID_FORMAT = "変更案の書式が正しくありません。JSON の形式と plan_id / base_revision / ops を確認してください。"
+IMPORT_REASON_PLAN_ID_MISMATCH = "変更案の plan_id が、この計画と一致しません。"
+IMPORT_REASON_STALE = "計画が更新されています。最新の状態をコピーして、マネージャーに案を作り直してもらってください。"
+IMPORT_REASON_APPROVE_NOT_ALLOWED = "承認の操作はここでは使えません。承認は人が計画の画面の「承認」ボタンで行ってください。"
+IMPORT_REASON_LOCKED = "実行中のタスクは変更できません。"
+IMPORT_REASON_GENERIC_INVALID = "変更案の検証に失敗しました（依存関係の循環などタスクの内容を確認してください）。"
+IMPORT_APPLY_FAILED_TEXT = "反映に失敗しました。計画を再読み込みしてください。"
+IMPORT_APPLY_SUCCESS_TEXT = "反映しました。"
+IMPORT_APPLY_CONFIRM_TEXT = "この変更案を計画に反映しますか？"
+IMPORT_STALE_SINCE_VALIDATION_TEXT = "貼り付けの内容が変わりました。もう一度検証してください。"
+
+# WF-1's own default WorkflowError code ('WORKFLOW_INVALID', workflow_plan._require's own
+# default) covers many different shapes of "invalid" (malformed ops, bad task fields, a
+# circular dependency, ...) under one string -- this window cannot and does not try to tell
+# those apart beyond what the three pre-checks in validate_proposal_text already do locally
+# (paste length, JSON shape, plan_id, base_revision); anything else WF-1 rejects lands on
+# IMPORT_REASON_GENERIC_INVALID, which names the circular-dependency case explicitly since that
+# is the one the TaskSpec calls out by name.
+_IMPORT_ERROR_REASONS = {
+    "WORKFLOW_STALE": IMPORT_REASON_STALE,
+    "WORKFLOW_HUMAN_REQUIRED": IMPORT_REASON_APPROVE_NOT_ALLOWED,
+    "WORKFLOW_LOCKED": IMPORT_REASON_LOCKED,
+}
+
+
+def validate_proposal_text(text: str, plan: dict, *, preview_fn, registered_keys):
+    """Pure classification of one pasted proposal (Tk-free, easy to unit test) against the
+    currently loaded plan. Returns (proposal, summary, new_revision, None) on success, or
+    (None, None, None, reason) on failure where reason is always one of this module's own
+    fixed Japanese strings above -- never exception text, never a fragment of the pasted JSON.
+    preview_fn is always called with actor="manager" (never "human"): a pasted "approve" op is
+    therefore always rejected by WF-1's own WORKFLOW_HUMAN_REQUIRED check, never silently
+    accepted here."""
+    if len(text) > PROPOSAL_PASTE_MAX_CHARS:
+        return None, None, None, IMPORT_REASON_TOO_LONG
+    try:
+        proposal = json.loads(text)
+    except (ValueError, RecursionError):
+        # A deeply nested array/object (e.g. 2000 levels of "[") is within the length cap but
+        # still overflows the C json decoder's own recursion limit -- that is a malformed-input
+        # case to this dialog, not a crash, so it gets the same fixed reason as any other
+        # unparsable paste.
+        return None, None, None, IMPORT_REASON_INVALID_FORMAT
+    if not (isinstance(proposal, dict) and set(proposal) == {"plan_id", "base_revision", "ops"}):
+        return None, None, None, IMPORT_REASON_INVALID_FORMAT
+    if not isinstance(proposal.get("plan_id"), str) or proposal["plan_id"] != plan["plan_id"]:
+        return None, None, None, IMPORT_REASON_PLAN_ID_MISMATCH
+    if type(proposal.get("base_revision")) is not int or proposal["base_revision"] != plan["revision"]:
+        return None, None, None, IMPORT_REASON_STALE
+    try:
+        summary = preview_fn(plan, proposal, actor="manager", registered_keys=registered_keys)
+    except wf.WorkflowError as exc:
+        return None, None, None, _IMPORT_ERROR_REASONS.get(str(exc), IMPORT_REASON_GENERIC_INVALID)
+    return proposal, summary, plan["revision"] + 1, None
+
+
+def import_summary_text(summary: dict, new_revision: int) -> str:
+    """Pure formatting of WF-1's own diff_summary() plus the next revision number. Every value
+    shown here is either a fixed Japanese word, an already-validated task_id
+    (workflow_plan._identifier's own alphabet -- safe to display as-is, same reasoning as
+    task_row_line above) or a plain int; never proposal free text."""
+    lines = []
+    for key, label in (("added", "追加"), ("changed", "変更"), ("deleted", "削除"),
+                        ("reordered", "並べ替え")):
+        entry = summary[key]
+        ids = ",".join(entry["task_ids"]) if entry["task_ids"] else NO_DEPENDS_WORD
+        lines.append(f"{label}: {entry['count']}件  {ids}")
+    lines.append(f"反映後の revision: {new_revision}")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- pure display helpers
@@ -328,6 +426,10 @@ class WorkflowPlanWindow:
         copy_row = ttk.Frame(right)
         copy_row.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(copy_row, text="状態をコピー", command=self._on_copy_status).pack(side="left")
+        self.import_button = ttk.Button(copy_row, text="変更案を取り込む",
+                                         command=self._on_import_proposal)
+        self.import_button.pack(side="left", padx=(8, 0))
+        _set_enabled(self.import_button, False)
 
         self._reload_plan_list()
         self._tick_id = self.window.after(TICK_MS, self._tick)
@@ -421,6 +523,7 @@ class WorkflowPlanWindow:
         self._render_tasks()
         self._refresh_pause_and_limit_notice()
         self._refresh_auto_run_checkbox()
+        _set_enabled(self.import_button, self.plan is not None)
 
     def _render_tasks(self) -> None:
         tasks = self.plan["tasks"] if self.plan else []
@@ -513,6 +616,20 @@ class WorkflowPlanWindow:
     def _on_retry(self) -> None:
         self._do_task_op("approve", "このタスクを再試行しますか？（承認済みに戻します）")
 
+    # ---------------------------------------------------------------- WF-3b: import a proposal
+    def _on_import_proposal(self) -> None:
+        if self.plan is None:
+            return
+        WorkflowImportDialog(
+            self.window, plan=self.plan, plans_root=self._plans_root,
+            registered_keys=self._registered_keys, apply_proposal_fn=self._apply_proposal_fn,
+            on_applied=self._on_import_applied)
+
+    def _on_import_applied(self, new_plan: dict) -> None:
+        if self.plan is not None and new_plan["plan_id"] == self.plan["plan_id"]:
+            self.plan = new_plan
+            self._render_plan()
+
     # ---------------------------------------------------------------- automatic-run permission
     def _refresh_auto_run_checkbox(self) -> None:
         if self.plan is None:
@@ -597,3 +714,175 @@ class WorkflowPlanWindow:
             # something other than the WorkflowError it already converts to a fixed notice above --
             # a periodic update must never silently stop firing.
             self._tick_id = self.window.after(TICK_MS, self._tick)
+
+
+class WorkflowImportDialog:
+    """DCC Task WF-3b: paste one external manager AI's proposal JSON, validate+preview it
+    against the plan snapshot the parent window already had loaded, and only reflect it into
+    the plan once a human has seen the diff summary and pressed 反映 followed by its own
+    confirmation dialog. See the module docstring and validate_proposal_text above for the
+    security posture; this class only wires that pure logic to widgets.
+
+    plan is only the parent WorkflowPlanWindow's own self.plan snapshot at the moment this dialog
+    was opened, used to know which plan_id to reload. Every 検証 reloads that plan_id fresh via
+    load_plan_fn (trusted plan_id + plans_root, never anything from the pasted text) before
+    validating, so a plan that was changed on disk after this dialog opened is validated against
+    its *current* revision, not a stale one. apply_proposal_fn then re-checks base_revision again
+    against whatever is actually on disk at save time (workflow_plan.update_plan's own per-plan
+    lock), so a plan that moved on between a successful 検証 and 反映 still fails safely
+    (WORKFLOW_STALE -> IMPORT_REASON_STALE) rather than silently applying on stale data."""
+
+    def __init__(self, master: tk.Misc, *, plan: dict, plans_root, registered_keys,
+                 load_plan_fn=None, preview_proposal_fn=None, apply_proposal_fn=None,
+                 on_applied: Callable[[dict], None] | None = None) -> None:
+        from .app import DARK_BG, configure_dark_text
+
+        self._plan = plan
+        self._plans_root = plans_root
+        self._registered_keys = registered_keys
+        self._load_plan_fn = load_plan_fn or wf.load_plan
+        self._preview_proposal_fn = preview_proposal_fn or wf.preview_proposal
+        self._apply_proposal_fn = apply_proposal_fn or wf.apply_and_save_proposal
+        self._on_applied = on_applied
+        self._closed = False
+        self._validated_text: str | None = None
+        self._validated_proposal: dict | None = None
+
+        self.window = tk.Toplevel(master)
+        self.window.title("変更案を取り込む")
+        self.window.geometry("640x700")
+        self.window.minsize(560, 600)
+        self.window.configure(background=DARK_BG)
+        self.window.protocol("WM_DELETE_WINDOW", self._close)
+
+        outer = ttk.Frame(self.window, padding=12)
+        outer.pack(fill="both", expand=True)
+
+        ttk.Label(outer, text=f"変更案（JSON、上限 {PROPOSAL_PASTE_MAX_CHARS} 文字）を貼り付けてください").pack(
+            anchor="w")
+        self.paste_text = tk.Text(outer, height=12, wrap="word")
+        configure_dark_text(self.paste_text)
+        self.paste_text.pack(fill="both", expand=True, pady=(4, 8))
+        # <<Modified>> (not <KeyRelease>) so a middle-click/Ctrl+V paste or any other edit that
+        # never fires a key-release still disables 反映 until the human re-validates.
+        self.paste_text.bind("<<Modified>>", self._on_text_modified)
+
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill="x")
+        self.validate_button = ttk.Button(buttons, text="検証", command=self._on_validate)
+        self.validate_button.pack(side="left")
+        self.apply_button = ttk.Button(buttons, text="反映", command=self._on_apply)
+        self.apply_button.pack(side="left", padx=(8, 0))
+        self.apply_button.state(["disabled"])
+        ttk.Button(buttons, text="閉じる", command=self._close).pack(side="left", padx=(8, 0))
+
+        ttk.Label(outer, text="差分の要約（読み取り専用）").pack(anchor="w", pady=(10, 0))
+        self.summary_text = tk.Text(outer, height=10, wrap="word", state="disabled")
+        configure_dark_text(self.summary_text)
+        self.summary_text.pack(fill="both", expand=True, pady=(4, 4))
+
+        self.notice_var = tk.StringVar(value="")
+        ttk.Label(outer, textvariable=self.notice_var, foreground="#e3b341", wraplength=600,
+                  justify="left").pack(anchor="w", pady=(4, 0))
+
+    def exists(self) -> bool:
+        return not self._closed and bool(self.window.winfo_exists())
+
+    # ---------------------------------------------------------------- paste box
+    def _current_paste_text(self) -> str:
+        # A real tk.Text always reports a trailing newline from its own final character; this
+        # strips exactly that one artifact so length-checking and change-detection act on what
+        # the human actually pasted/typed, not on a widget implementation detail.
+        text = self.paste_text.get("1.0", "end")
+        if text.endswith("\n"):
+            text = text[:-1]
+        return text
+
+    def _on_text_modified(self, _event=None) -> None:
+        # Tk only fires <<Modified>> when the flag actually changes, so resetting it to False
+        # below fires this handler once more with edit_modified() already False -- a harmless
+        # second call that does nothing, never an infinite loop.
+        if self.paste_text.edit_modified():
+            self._on_paste_changed()
+            self.paste_text.edit_modified(False)
+
+    def _on_paste_changed(self) -> None:
+        if self._current_paste_text() != self._validated_text:
+            self._validated_proposal = None
+            self.apply_button.state(["disabled"])
+
+    # ---------------------------------------------------------------- 検証
+    def _set_summary_text(self, text: str) -> None:
+        self.summary_text.configure(state="normal")
+        self.summary_text.delete("1.0", "end")
+        if text:
+            self.summary_text.insert("1.0", text)
+        self.summary_text.configure(state="disabled")
+
+    def _on_validate(self) -> None:
+        text = self._current_paste_text()
+        self._validated_text = text
+        self._validated_proposal = None
+        self.apply_button.state(["disabled"])
+        try:
+            # Reload the plan_id this dialog was opened for -- never anything from the pasted
+            # text -- so validation always runs against the plan's *current* on-disk revision,
+            # not a stale snapshot taken when this dialog was opened.
+            current_plan = self._load_plan_fn(self._plan["plan_id"], root=self._plans_root,
+                                               registered_keys=self._registered_keys)
+        except wf.WorkflowError:
+            self.notice_var.set(LOAD_FAILED_TEXT)
+            self._set_summary_text("")
+            return
+        self._plan = current_plan
+        proposal, summary, new_revision, reason = validate_proposal_text(
+            text, self._plan, preview_fn=self._preview_proposal_fn,
+            registered_keys=self._registered_keys)
+        if reason is not None:
+            self.notice_var.set(reason)
+            self._set_summary_text("")
+            return
+        self._validated_proposal = proposal
+        self.notice_var.set("")
+        self._set_summary_text(import_summary_text(summary, new_revision))
+        self.apply_button.state(["!disabled"])
+
+    # ---------------------------------------------------------------- 反映
+    def _on_apply(self) -> None:
+        if self._validated_proposal is None:
+            return
+        if self._current_paste_text() != self._validated_text:
+            # Defense in depth: the paste box changed without this button's state catching up
+            # (should already be disabled by _on_paste_changed) -- never reflect text that was
+            # not the text 検証 actually previewed.
+            self.notice_var.set(IMPORT_STALE_SINCE_VALIDATION_TEXT)
+            self.apply_button.state(["disabled"])
+            return
+        if not messagebox.askyesno("変更案を取り込む", IMPORT_APPLY_CONFIRM_TEXT, parent=self.window):
+            return
+        proposal = self._validated_proposal
+        try:
+            new_plan, _summary = self._apply_proposal_fn(
+                self._plan["plan_id"], proposal, actor="manager",
+                root=self._plans_root, registered_keys=self._registered_keys)
+        except wf.WorkflowError as exc:
+            # apply_and_save_proposal re-checks base_revision against the plan actually on disk
+            # at save time: if it moved on since 検証 succeeded (e.g. a human operation landed in
+            # between), this is WORKFLOW_STALE, same fixed reason as a stale paste would get at
+            # 検証 time -- never the generic failure text for that one well-known case.
+            self.notice_var.set(_IMPORT_ERROR_REASONS.get(str(exc), IMPORT_APPLY_FAILED_TEXT))
+            self._validated_proposal = None
+            self.apply_button.state(["disabled"])
+            return
+        self._plan = new_plan
+        self._validated_proposal = None
+        self.apply_button.state(["disabled"])
+        self.notice_var.set(f"{IMPORT_APPLY_SUCCESS_TEXT}（revision: {new_plan['revision']}）")
+        if self._on_applied is not None:
+            self._on_applied(new_plan)
+
+    def _close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.window.destroy()
