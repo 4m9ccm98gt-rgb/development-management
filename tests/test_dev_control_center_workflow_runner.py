@@ -806,6 +806,393 @@ class RunWorkflowRunnerOnceTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
 
+class PlanStartBlockReasonTests(unittest.TestCase):
+    """DCC Task WF-4a: wr.plan_start_block_reason -- workflow_plan_view.py's own read-only
+    explanation of why plan_id's next task has not started. Every scenario below also drives the
+    real run_workflow_runner_once with the exact same plan/config/fakes, so a mismatch between the
+    two would fail the test (C4), never just trusted by inspection."""
+
+    def _save_plan(self, tmp: Path, p: dict) -> None:
+        wf.save_plan(p, root=tmp / "plans", registered_keys=KEYS)
+
+    def _reason(self, p, tmp, *, global_config, runner_config, state, resolve_repo_dir=None, busy_fn=None,
+                repo_run_blocked_fn=None):
+        return wr.plan_start_block_reason(
+            p, global_config=global_config, runner_config=runner_config, state=state,
+            today=TODAY, resolve_repo_dir=resolve_repo_dir, busy_fn=busy_fn,
+            repo_run_blocked_fn=repo_run_blocked_fn)
+
+    def _assert_agrees_with_real_cycle(self, tmp, p, *, global_config, runner_config,
+                                        resolve_repo_dir=None, busy_fn=None, repo_run_blocked_fn=None,
+                                        state=None):
+        # The exact same fakes -- and, crucially, the exact same WorkflowRunnerState instance --
+        # must back both the reason computation and the real cycle below: a difference in defaults
+        # (e.g. the real orchestrator's own repo registry) or a *second* WorkflowRunnerState (which
+        # would re-read the daily count from disk independently) could make the two disagree for a
+        # reason that has nothing to do with the judgment itself (C4; see the reviewer finding this
+        # guards against -- a fresh WorkflowRunnerState per call never would have caught it).
+        resolve_repo_dir = resolve_repo_dir if resolve_repo_dir is not None else (lambda k: tmp / "repos" / k)
+        busy_fn = busy_fn if busy_fn is not None else (lambda n: False)
+        repo_run_blocked_fn = repo_run_blocked_fn if repo_run_blocked_fn is not None else (lambda r: False)
+        state = state if state is not None else wr.WorkflowRunnerState(daily_count_path=tmp / "daily.json")
+
+        reason = self._reason(p, tmp, global_config=global_config, runner_config=runner_config, state=state,
+                               resolve_repo_dir=resolve_repo_dir, busy_fn=busy_fn,
+                               repo_run_blocked_fn=repo_run_blocked_fn)
+        calls = []
+
+        def fake_create_and_start(shim, criteria_lines, **kwargs):
+            calls.append(shim.identity)
+            return cas.StartResult(True, "", run_dir=Path("/fake/run-1"))
+
+        wr.run_workflow_runner_once(
+            state=state, today=TODAY,
+            global_config=global_config, runner_config=runner_config,
+            plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records", log_dir=tmp / "log",
+            resolve_repo_dir=resolve_repo_dir, busy_fn=busy_fn, repo_run_blocked_fn=repo_run_blocked_fn,
+            create_and_start_fn=fake_create_and_start)
+        self.assertEqual(reason.code == wr.START_BLOCK_CAN_START, bool(calls))
+        return reason
+
+    # ------------------------------------------------------------------ C2 (list all 10 fixed codes)
+    def test_global_switch_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=False),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+            self.assertEqual(reason.code, wr.START_BLOCK_GLOBAL_OFF)
+
+    def test_plan_auto_run_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": False}))
+            self.assertEqual(reason.code, wr.START_BLOCK_PLAN_AUTO_RUN_OFF)
+
+    def test_no_approved_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="proposed"))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+            self.assertEqual(reason.code, wr.START_BLOCK_NO_APPROVED)
+
+    def test_unmet_dependency_names_the_incomplete_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="proposed"), task("T2", status="approved", depends_on=["T1"]))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+            self.assertEqual(reason.code, wr.START_BLOCK_DEPENDS_INCOMPLETE)
+            self.assertEqual(reason.task_id, "T1")
+
+    def test_plan_paused_by_failed_or_needs_human_names_that_task(self):
+        for blocking_status in ("failed", "needs_human"):
+            with self.subTest(status=blocking_status):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp = Path(tmp)
+                    p = plan(task("T1", status=blocking_status))
+                    self._save_plan(tmp, p)
+                    reason = self._assert_agrees_with_real_cycle(
+                        tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                        runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+                    self.assertEqual(reason.code, wr.START_BLOCK_PAUSED)
+                    self.assertEqual(reason.task_id, "T1")
+
+    def test_task_already_running_or_candidate_ready_names_that_task(self):
+        for blocking_status in ("running", "candidate_ready"):
+            with self.subTest(status=blocking_status):
+                with tempfile.TemporaryDirectory() as tmp:
+                    tmp = Path(tmp)
+                    p = plan(task("T1", status=blocking_status))
+                    self._save_plan(tmp, p)
+                    reason = self._assert_agrees_with_real_cycle(
+                        tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                        runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+                    self.assertEqual(reason.code, wr.START_BLOCK_RUNNING)
+                    self.assertEqual(reason.task_id, "T1")
+
+    def test_repo_busy_via_busy_fn(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}), busy_fn=lambda n: True)
+            self.assertEqual(reason.code, wr.START_BLOCK_REPO_BUSY)
+
+    def test_repo_busy_via_unresolvable_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}), resolve_repo_dir=lambda k: None)
+            self.assertEqual(reason.code, wr.START_BLOCK_REPO_BUSY)
+
+    def test_daily_limit_reached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            (tmp / "daily.json").write_text(json.dumps({"date": TODAY, "count": 1}), encoding="utf-8")
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}, daily_limit=1))
+            self.assertEqual(reason.code, wr.START_BLOCK_LIMIT_REACHED)
+
+    # ------------------------------------------------------------------ C4 (reviewer finding)
+    def test_limit_reached_after_a_persisted_daily_save_failure_blocks_both_screen_and_real_start(self):
+        """Regression for the reviewer's finding: a *fresh* WorkflowRunnerState per call (the old
+        test shape) always re-reads the daily count from disk and would never observe a save
+        failure another attempt already absorbed into memory. Here the one continuing state
+        object reaches the daily limit while its own persisted mirror write fails (C10) -- disk
+        still shows the count *below* the limit, yet plan_start_block_reason (given that same
+        state) must still say LIMIT_REACHED, and the real cycle sharing it must still refuse to
+        start, exactly like record_daily_attempt's own "memory is authoritative" guarantee
+        requires."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            state = wr.WorkflowRunnerState(daily_count_path=tmp / "daily.json")
+            state.seed_startup(TODAY)
+            with mock.patch.object(wr.start, "_write_json_atomic", side_effect=OSError("disk full")):
+                state.record_daily_attempt(TODAY)  # reaches daily_limit=1; the mirror write fails
+            self.assertFalse((tmp / "daily.json").exists())  # disk never caught up with memory
+
+            runner_config = wr.WorkflowRunnerConfig(plans={"Plan-1": True}, daily_limit=1)
+            global_config = auto.AutoModeConfig(enabled=True)
+            reason = self._reason(p, tmp, global_config=global_config, runner_config=runner_config,
+                                   state=state, resolve_repo_dir=lambda k: tmp / "repos" / k,
+                                   busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False)
+            self.assertEqual(reason.code, wr.START_BLOCK_LIMIT_REACHED)
+
+            calls = []
+
+            def fake_create_and_start(shim, criteria_lines, **kwargs):
+                calls.append(shim.identity)
+                return cas.StartResult(True, "", run_dir=Path("/fake/run-1"))
+
+            wr.run_workflow_runner_once(
+                state=state, today=TODAY, global_config=global_config, runner_config=runner_config,
+                plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records", log_dir=tmp / "log",
+                resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
+                repo_run_blocked_fn=lambda r: False, create_and_start_fn=fake_create_and_start)
+            self.assertEqual(calls, [])  # the real cycle, sharing the same state, is blocked too
+
+    def test_record_unavailable_when_daily_count_file_is_corrupt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            (tmp / "daily.json").write_text("not json{{{", encoding="utf-8")
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+            self.assertEqual(reason.code, wr.START_BLOCK_RECORD_UNAVAILABLE)
+
+    def test_can_start_when_nothing_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            reason = self._assert_agrees_with_real_cycle(
+                tmp, p, global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+            self.assertEqual(reason.code, wr.START_BLOCK_CAN_START)
+
+    # ------------------------------------------------------------------ C3
+    def test_never_starts_anything_or_writes_any_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            plan_file = next((tmp / "plans").iterdir())
+            before_plan_bytes = plan_file.read_bytes()
+            before_snapshot = json.loads(json.dumps(p))
+            runner_path = tmp / "runner.json"
+            wr.save_workflow_runner_config(wr.WorkflowRunnerConfig(plans={"Plan-1": True}), path=runner_path)
+            before_runner_bytes = runner_path.read_bytes()
+            daily_path = tmp / "daily.json"
+
+            for _ in range(3):
+                wr.plan_start_block_reason(
+                    p, global_config=auto.AutoModeConfig(enabled=True), runner_config_path=runner_path,
+                    daily_count_path=daily_path, today=TODAY,
+                    resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
+                    repo_run_blocked_fn=lambda r: False)
+
+            self.assertEqual(p, before_snapshot)  # the passed-in plan dict was never mutated
+            self.assertEqual(plan_file.read_bytes(), before_plan_bytes)  # no plan write happened
+            self.assertEqual(runner_path.read_bytes(), before_runner_bytes)  # no config write happened
+            self.assertFalse(daily_path.exists())  # no daily-count/record file was ever created
+
+            # Same guarantee through the `state`-sharing path (DCC Task WF-4a's own fix): passing
+            # a live WorkflowRunnerState must not write anything either -- seed_startup/
+            # limit_reached/daily_count are read-only, same as the module's own docstring for them.
+            state = wr.WorkflowRunnerState(daily_count_path=daily_path)
+            for _ in range(3):
+                wr.plan_start_block_reason(
+                    p, global_config=auto.AutoModeConfig(enabled=True), runner_config_path=runner_path,
+                    state=state, today=TODAY,
+                    resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
+                    repo_run_blocked_fn=lambda r: False)
+
+            self.assertEqual(p, before_snapshot)
+            self.assertEqual(plan_file.read_bytes(), before_plan_bytes)
+            self.assertEqual(runner_path.read_bytes(), before_runner_bytes)
+            self.assertFalse(daily_path.exists())  # seed_startup only read -- still never created it
+
+
+class SharedStartJudgmentTests(unittest.TestCase):
+    """DCC Task WF-4a repair (reviewer round 3): plan_start_block_reason and the real start path
+    (_start_eligible_task / run_workflow_runner_once) must call the exact same read-only judgment
+    functions (wr._decide_plan_start, wr._global_start_block) instead of each expressing the
+    plan-permission/daily-limit/eligible-task/repo-busy conditions a second time on their own.
+    PlanStartBlockReasonTests above only checks that the two sides' *outputs* happen to agree for
+    a handful of scenarios (a black-box check); these tests patch the shared functions themselves
+    and observe that both callers are actually wired through them, so a future change that quietly
+    re-introduces a second, separately-expressed copy of the same conditions would fail here even
+    if its outputs still happened to agree on every scenario PlanStartBlockReasonTests covers."""
+
+    def _save_plan(self, tmp: Path, p: dict) -> None:
+        wf.save_plan(p, root=tmp / "plans", registered_keys=KEYS)
+
+    def test_plan_start_block_reason_delegates_to_the_shared_decision_function(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            self._save_plan(tmp, p)
+            sentinel = wr.PlanStartBlockReason(wr.START_BLOCK_PAUSED, "SOME_TASK")
+            with mock.patch.object(wr, "_decide_plan_start",
+                                   return_value=wr._PlanStartDecision(sentinel)) as spy:
+                reason = wr.plan_start_block_reason(
+                    p, global_config=auto.AutoModeConfig(enabled=True),
+                    runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}), today=TODAY,
+                    resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
+                    repo_run_blocked_fn=lambda r: False)
+            spy.assert_called_once()
+            self.assertIs(reason, sentinel)
+
+    def test_start_eligible_task_never_starts_when_the_shared_decision_blocks(self):
+        """Patch _decide_plan_start to block a plan/config combination that is otherwise entirely
+        clean (would start on its own): if _start_eligible_task re-implemented its own
+        eligibility/permission/limit/busy checks instead of trusting this one function's result,
+        it would still start the task regardless of the patch."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self._save_plan(tmp, plan(task()))
+            calls = []
+            blocked = wr._PlanStartDecision(wr.PlanStartBlockReason(wr.START_BLOCK_REPO_BUSY))
+
+            def fake_create_and_start(shim, criteria_lines, **kwargs):
+                calls.append(shim.identity)
+                return cas.StartResult(True, "", run_dir=Path("/fake/run-1"))
+
+            with mock.patch.object(wr, "_decide_plan_start", return_value=blocked):
+                wr.run_workflow_runner_once(
+                    state=wr.WorkflowRunnerState(daily_count_path=tmp / "daily.json"), today=TODAY,
+                    global_config=auto.AutoModeConfig(enabled=True),
+                    runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}),
+                    plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
+                    log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
+                    busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False,
+                    create_and_start_fn=fake_create_and_start)
+            self.assertEqual(calls, [])
+
+    def test_start_eligible_task_starts_the_exact_task_the_shared_decision_names(self):
+        """Patch _decide_plan_start to say CAN_START for T2 -- a *different* task than plan order
+        would otherwise pick (T1 comes first) -- proving _start_eligible_task starts whichever
+        task/repo_dir the shared decision itself names, rather than recomputing _eligible_task a
+        second time and possibly disagreeing with it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self._save_plan(tmp, plan(task("T1"), task("T2")))
+            loaded = wf.load_plan("Plan-1", root=tmp / "plans", registered_keys=KEYS)
+            t2 = next(t for t in loaded["tasks"] if t["task_id"] == "T2")
+            repo_dir = tmp / "repos" / "sample-repo"
+            decision = wr._PlanStartDecision(
+                wr.PlanStartBlockReason(wr.START_BLOCK_CAN_START), task=t2, repo_dir=repo_dir)
+            calls = []
+
+            def fake_create_and_start(shim, criteria_lines, **kwargs):
+                calls.append(shim.identity)
+                return cas.StartResult(True, "", run_dir=Path("/fake/run-1"))
+
+            with mock.patch.object(wr, "_decide_plan_start", return_value=decision):
+                wr.run_workflow_runner_once(
+                    state=wr.WorkflowRunnerState(daily_count_path=tmp / "daily.json"), today=TODAY,
+                    global_config=auto.AutoModeConfig(enabled=True),
+                    runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}),
+                    plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
+                    log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
+                    busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False,
+                    create_and_start_fn=fake_create_and_start)
+            self.assertEqual(calls, [("Plan-1", "T2")])
+            reloaded = wf.load_plan("Plan-1", root=tmp / "plans", registered_keys=KEYS)
+            self.assertEqual(next(t for t in reloaded["tasks"] if t["task_id"] == "T2")["status"], "running")
+            self.assertEqual(next(t for t in reloaded["tasks"] if t["task_id"] == "T1")["status"], "approved")
+
+    def test_cycle_level_disabled_short_circuit_uses_the_shared_global_check(self):
+        """run_workflow_runner_once's own early-exit (STATUS_DISABLED) must read the same
+        _global_start_block this module's per-plan decision reads first, not a second, separately
+        -expressed `if not global_config.enabled`. Patching _global_start_block to report
+        GLOBAL_OFF, even though the real global_config passed in is enabled=True, must still stop
+        the otherwise-clean plan below from starting."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            self._save_plan(tmp, plan(task()))
+            calls = []
+
+            def fake_create_and_start(shim, criteria_lines, **kwargs):
+                calls.append(shim.identity)
+                return cas.StartResult(True, "", run_dir=Path("/fake/run-1"))
+
+            with mock.patch.object(wr, "_global_start_block",
+                                   return_value=wr.PlanStartBlockReason(wr.START_BLOCK_GLOBAL_OFF)):
+                outcome = wr.run_workflow_runner_once(
+                    state=wr.WorkflowRunnerState(daily_count_path=tmp / "daily.json"), today=TODAY,
+                    global_config=auto.AutoModeConfig(enabled=True),
+                    runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}),
+                    plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
+                    log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
+                    busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False,
+                    create_and_start_fn=fake_create_and_start)
+            self.assertEqual(calls, [])
+            self.assertEqual(outcome.status, wr.STATUS_DISABLED)
+
+    def test_decide_plan_start_itself_delegates_the_global_half_to_global_start_block(self):
+        """_decide_plan_start must not keep its own copy of the global-switch/daily-limit check
+        either -- it is expected to call _global_start_block for that half and trust its result."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            p = plan(task("T1", status="approved"))
+            sentinel = wr.PlanStartBlockReason(wr.START_BLOCK_LIMIT_REACHED)
+            with mock.patch.object(wr, "_global_start_block", return_value=sentinel) as spy:
+                decision = wr._decide_plan_start(
+                    p, global_config=auto.AutoModeConfig(enabled=True),
+                    runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}), state=None,
+                    daily_count_path=tmp / "daily.json", today=TODAY,
+                    resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
+                    repo_run_blocked_fn=lambda r: False)
+            spy.assert_called_once()
+            self.assertIs(decision.reason, sentinel)
+            self.assertIsNone(decision.task)
+
+
 class DefaultRepoRunBlockedTests(unittest.TestCase):
     """wr._default_repo_run_blocked is the one place this module must distinguish "confirmed no
     runs for this repo" from "cannot tell" (C4) -- exercised directly here because every test in

@@ -112,6 +112,59 @@ class PureHelperTests(unittest.TestCase):
         self.assertIn("approve はここでは使えません", text)
 
 
+# --------------------------------------------------------------------------- DCC Task WF-4a: C1
+
+class ValidateNewPlanNameTests(unittest.TestCase):
+    def test_empty_or_whitespace_only_gets_the_exact_fixed_text(self):
+        for raw in ("", "   ", "\t\n"):
+            with self.subTest(raw=repr(raw)):
+                self.assertEqual(view.validate_new_plan_name(raw), view.NEW_PLAN_NAME_EMPTY_TEXT)
+
+    def test_too_long_or_disallowed_characters_get_a_fixed_reason(self):
+        for raw in ("あ" * 81, "計画/名前", "計画\x07名前"):
+            with self.subTest(raw=raw[:20]):
+                self.assertEqual(view.validate_new_plan_name(raw), view.NEW_PLAN_NAME_INVALID_TEXT)
+
+    def test_a_normal_name_is_accepted(self):
+        self.assertIsNone(view.validate_new_plan_name("  新しい計画  "))
+
+
+# --------------------------------------------------------------------------- DCC Task WF-4a: C2
+
+class StartBlockReasonTextTests(unittest.TestCase):
+    def test_every_fixed_code_has_a_non_empty_label(self):
+        for code in view.START_BLOCK_LABELS:
+            text = view.start_block_reason_text(wr.PlanStartBlockReason(code))
+            self.assertTrue(text, code)
+
+    def test_task_id_is_appended_when_present(self):
+        text = view.start_block_reason_text(wr.PlanStartBlockReason(wr.START_BLOCK_PAUSED, "T1"))
+        self.assertIn("T1", text)
+        self.assertIn(view.START_BLOCK_LABELS[wr.START_BLOCK_PAUSED], text)
+
+    def test_repo_busy_gets_the_orchestrator_hint_and_others_do_not(self):
+        busy_text = view.start_block_reason_text(wr.PlanStartBlockReason(wr.START_BLOCK_REPO_BUSY))
+        self.assertIn(view.START_BLOCK_REPO_BUSY_HINT_TEXT, busy_text)
+        other_text = view.start_block_reason_text(wr.PlanStartBlockReason(wr.START_BLOCK_CAN_START))
+        self.assertNotIn(view.START_BLOCK_REPO_BUSY_HINT_TEXT, other_text)
+
+    # ------------------------------------------------------------------ DCC Task WF-4a: C5
+    def test_output_is_only_ever_the_fixed_label_task_id_and_hint_nothing_else(self):
+        """Closed composition: for every fixed code and an arbitrary-looking task_id, the output
+        is exactly label (+task_id) (+hint) -- never an AI's output, a Task body, a path or
+        exception text, since start_block_reason_text never reads anything else."""
+        for code, label in view.START_BLOCK_LABELS.items():
+            for task_id in (None, "T1"):
+                with self.subTest(code=code, task_id=task_id):
+                    text = view.start_block_reason_text(wr.PlanStartBlockReason(code, task_id))
+                    expected = label
+                    if task_id:
+                        expected = f"{expected}（{task_id}）"
+                    if code == wr.START_BLOCK_REPO_BUSY:
+                        expected = f"{expected}。{view.START_BLOCK_REPO_BUSY_HINT_TEXT}"
+                    self.assertEqual(text, expected)
+
+
 # --------------------------------------------------------------------------- source-scan test (C8)
 
 class NeverCallsDeploymentOrApprovalOpsTests(unittest.TestCase):
@@ -365,10 +418,17 @@ class WorkflowPlanWindowCase(unittest.TestCase):
             self.window.close()
 
     def make_window(self, **overrides):
+        # plan_start_block_reason_fn defaults to a side-effect-free fake (DCC Task WF-4a):
+        # _render_plan calls it on every select_plan/_tick, and the real wr.plan_start_block_reason
+        # would otherwise fall back to auto.load_auto_mode_config(None) and the real Orchestrator
+        # repo registry -- reading the actual user's %LOCALAPPDATA% config from every window test
+        # that does not care about this notice at all (reviewer finding). Tests that *do* exercise
+        # the notice (StartReasonNoticeTests, StartReasonNoticeIsolationTests) override this.
         kwargs = dict(
             plans_root=self.plans_root, registered_keys=KEYS,
             runner_config_path=self.runner_config_path, daily_count_path=self.daily_count_path,
             records_dir=self.records_dir,
+            plan_start_block_reason_fn=lambda *_a, **_k: wr.PlanStartBlockReason(wr.START_BLOCK_CAN_START),
         )
         kwargs.update(overrides)
         self.window = view.WorkflowPlanWindow(self.master, **kwargs)
@@ -781,14 +841,172 @@ class PlanCreationTests(WorkflowPlanWindowCase):
         self.assertRegex(window.plan["plan_id"], r"^plan-[0-9a-f]{16}$")
         self.assertEqual(window.plan["tasks"], [])
 
+    # ------------------------------------------------------------------ DCC Task WF-4a: C1
+    def test_empty_name_shows_fixed_reason_and_creates_nothing(self):
+        window = self.make_window()
+        window.new_plan_name_var.set("")
+        window._on_create_plan()
+        self.assertIsNone(window.plan)
+        self.assertEqual(window.create_plan_notice_var.get(), view.NEW_PLAN_NAME_EMPTY_TEXT)
+
+    def test_whitespace_only_name_shows_fixed_reason_and_creates_nothing(self):
+        window = self.make_window()
+        window.new_plan_name_var.set("   ")
+        window._on_create_plan()
+        self.assertIsNone(window.plan)
+        self.assertEqual(window.create_plan_notice_var.get(), view.NEW_PLAN_NAME_EMPTY_TEXT)
+
+    def test_too_long_name_shows_fixed_reason_and_creates_nothing(self):
+        window = self.make_window()
+        window.new_plan_name_var.set("あ" * 81)
+        window._on_create_plan()
+        self.assertIsNone(window.plan)
+        self.assertEqual(window.create_plan_notice_var.get(), view.NEW_PLAN_NAME_INVALID_TEXT)
+
+    def test_invalid_character_name_shows_fixed_reason_and_creates_nothing(self):
+        window = self.make_window()
+        window.new_plan_name_var.set("計画/名前")
+        window._on_create_plan()
+        self.assertIsNone(window.plan)
+        self.assertEqual(window.create_plan_notice_var.get(), view.NEW_PLAN_NAME_INVALID_TEXT)
+
+    def test_fixing_the_name_after_a_rejected_attempt_clears_the_notice_and_creates_it(self):
+        window = self.make_window()
+        window.new_plan_name_var.set("")
+        window._on_create_plan()
+        self.assertEqual(window.create_plan_notice_var.get(), view.NEW_PLAN_NAME_EMPTY_TEXT)
+        window.new_plan_name_var.set("新しい計画")
+        window._on_create_plan()
+        self.assertEqual(window.create_plan_notice_var.get(), "")
+        self.assertIsNotNone(window.plan)
+
+
+# --------------------------------------------------------------------------- DCC Task WF-4a: C2/C5
+# 次のタスクが始まらない理由 -- always via the injected plan_start_block_reason_fn, never the real
+# workflow_runner defaults (which would resolve a real repo via the real Orchestrator registry):
+# this window's own test boundary stays Tk-free/Orchestrator-free (C8), while workflow_runner's own
+# plan_start_block_reason is exercised directly (with its own fakes) in
+# test_dev_control_center_workflow_runner.py.
+
+class StartReasonNoticeTests(WorkflowPlanWindowCase):
+    def test_no_plan_selected_shows_nothing(self):
+        window = self.make_window()
+        self.assertEqual(window.start_reason_var.get(), "")
+
+    def test_reason_shown_after_selecting_a_plan_using_the_stored_paths(self):
+        p = plan(task("T1", status="approved"))
+        self.save(p)
+        calls = []
+
+        def fake_reason(plan_arg, **kwargs):
+            calls.append((plan_arg["plan_id"], kwargs))
+            return wr.PlanStartBlockReason(wr.START_BLOCK_GLOBAL_OFF)
+
+        window = self.make_window(plan_start_block_reason_fn=fake_reason)
+        window.select_plan(p["plan_id"])
+        self.assertEqual(window.start_reason_var.get(), view.START_BLOCK_LABELS[wr.START_BLOCK_GLOBAL_OFF])
+        self.assertEqual(calls[-1][0], p["plan_id"])
+        self.assertEqual(calls[-1][1]["runner_config_path"], self.runner_config_path)
+        self.assertEqual(calls[-1][1]["daily_count_path"], self.daily_count_path)
+
+    def test_reason_with_task_id_is_shown_verbatim(self):
+        p = plan(task("T1", status="failed"))
+        self.save(p)
+        window = self.make_window(
+            plan_start_block_reason_fn=lambda *_a, **_k: wr.PlanStartBlockReason(
+                wr.START_BLOCK_PAUSED, "T1"))
+        window.select_plan(p["plan_id"])
+        self.assertEqual(window.start_reason_var.get(),
+                         view.start_block_reason_text(wr.PlanStartBlockReason(wr.START_BLOCK_PAUSED, "T1")))
+
+    def test_reason_rereads_on_tick(self):
+        p = plan(task("T1", status="approved"))
+        self.save(p)
+        codes = [wr.START_BLOCK_GLOBAL_OFF, wr.START_BLOCK_CAN_START]
+        window = self.make_window(
+            plan_start_block_reason_fn=lambda *_a, **_k: wr.PlanStartBlockReason(codes.pop(0)))
+        window.select_plan(p["plan_id"])
+        self.assertEqual(window.start_reason_var.get(), view.START_BLOCK_LABELS[wr.START_BLOCK_GLOBAL_OFF])
+        window._tick()
+        self.assertEqual(window.start_reason_var.get(), view.START_BLOCK_LABELS[wr.START_BLOCK_CAN_START])
+
+    def test_reason_rereads_on_auto_run_toggle(self):
+        p = plan(task("T1", status="approved"))
+        self.save(p)
+        codes = [wr.START_BLOCK_PLAN_AUTO_RUN_OFF, wr.START_BLOCK_CAN_START]
+        window = self.make_window(
+            plan_start_block_reason_fn=lambda *_a, **_k: wr.PlanStartBlockReason(codes.pop(0)),
+            set_plan_auto_run_fn=lambda *_a, **_k: None)
+        window.select_plan(p["plan_id"])
+        self.assertEqual(window.start_reason_var.get(), view.START_BLOCK_LABELS[wr.START_BLOCK_PLAN_AUTO_RUN_OFF])
+        window.auto_run_var.set(True)
+        with mock.patch.object(view.messagebox, "askyesno", return_value=True):
+            window._on_auto_run_toggle()
+        self.assertEqual(window.start_reason_var.get(), view.START_BLOCK_LABELS[wr.START_BLOCK_CAN_START])
+
+    def test_a_bad_read_clears_the_notice_instead_of_raising(self):
+        p = plan(task("T1", status="approved"))
+        self.save(p)
+
+        def raiser(*_a, **_k):
+            raise RuntimeError("boom")
+
+        window = self.make_window(plan_start_block_reason_fn=raiser)
+        window.select_plan(p["plan_id"])
+        self.assertEqual(window.start_reason_var.get(), "")
+
+
+# --------------------------------------------------------------------------- DCC Task WF-4a:
+# reviewer finding -- every window test (not just this class) must stay isolated from the real
+# global-mode config file and the real Orchestrator repo registry, never only the tests that
+# explicitly exercise the notice.
+
+class StartReasonNoticeIsolationTests(WorkflowPlanWindowCase):
+    def test_default_fixture_never_touches_real_global_config_or_repo_registry(self):
+        p = plan(task("T1", status="approved"))
+        self.save(p)
+        with mock.patch.object(wr.auto, "load_auto_mode_config") as loader, \
+             mock.patch("tools.ai_orchestrator.orchestrator.resolve_repo_dir_for_app") as resolver:
+            window = self.make_window()  # default plan_start_block_reason_fn -- no override
+            window.select_plan(p["plan_id"])
+            window._tick()
+        loader.assert_not_called()
+        resolver.assert_not_called()
+
+    def test_real_plan_start_block_reason_wired_through_the_window_stays_isolated(self):
+        """A caller that *does* want the real judgment (as app.py's own open_workflow_plan does)
+        must still only ever touch the temp paths/fakes this test wires -- global_config_path,
+        runner_config_path, state and resolve_repo_dir are all explicit, so this can never fall
+        through to the real %LOCALAPPDATA% config or the real Orchestrator registry either."""
+        p = plan(task("T1", status="approved"))
+        self.save(p)
+        # Never created: the real auto.load_auto_mode_config degrades a missing file to its own
+        # all-OFF default (enabled=False) -- never the real %LOCALAPPDATA% auto-mode config, since
+        # this explicit path (not None) is what the window below actually passes.
+        global_config_path = self.plans_root.parent / "global.json"
+        state = wr.WorkflowRunnerState(daily_count_path=self.daily_count_path)
+
+        def real_reason_fn(plan_arg, **kwargs):
+            return wr.plan_start_block_reason(
+                plan_arg, global_config_path=global_config_path, runner_config_path=kwargs["runner_config_path"],
+                state=kwargs["state"], resolve_repo_dir=lambda _k: self.plans_root.parent / "repos",
+                busy_fn=lambda _n: False, repo_run_blocked_fn=lambda _r: False)
+
+        with mock.patch("tools.ai_orchestrator.orchestrator.resolve_repo_dir_for_app") as resolver:
+            window = self.make_window(plan_start_block_reason_fn=real_reason_fn, runner_state=state)
+            window.select_plan(p["plan_id"])
+        resolver.assert_not_called()  # resolve_repo_dir is this test's own fake, never the real registry
+        self.assertEqual(window.start_reason_var.get(), view.START_BLOCK_LABELS[wr.START_BLOCK_GLOBAL_OFF])
+
 
 # --------------------------------------------------------------------------- app.py wiring
 
 class _FakeWorkflowPlanWindow:
     instances: list["_FakeWorkflowPlanWindow"] = []
 
-    def __init__(self, master, **_kwargs):
+    def __init__(self, master, **kwargs):
         self.master = master
+        self.kwargs = kwargs
         self._exists = True
         self.focus_calls = 0
         _FakeWorkflowPlanWindow.instances.append(self)
@@ -819,6 +1037,11 @@ class AppWorkflowPlanButtonTests(unittest.TestCase):
         self.app = dcc.App.__new__(dcc.App)
         self.app.master = SimpleNamespace(destroy=self._note_destroyed)
         self.app.workflow_plan_window = None
+        # DCC Task WF-4a: open_workflow_plan hands this one process-lifetime WorkflowRunnerState
+        # to the window (see test_open_workflow_plan_passes_the_shared_runner_state below) so the
+        # window's own "次のタスクが始まらない理由" notice shares the real background loop's
+        # in-memory daily count instead of a second, independently-drifting one.
+        self.app._workflow_runner_state = wr.WorkflowRunnerState()
 
     def _note_destroyed(self):
         self.destroyed = True
@@ -827,6 +1050,11 @@ class AppWorkflowPlanButtonTests(unittest.TestCase):
         source = inspect.getsource(dcc.App.__init__) + inspect.getsource(dcc.App._build)
         self.assertIn("self.workflow_plan_button", source)
         self.assertIn("command=self.open_workflow_plan", source)
+
+    def test_open_workflow_plan_passes_the_shared_runner_state(self):
+        self.app.open_workflow_plan()
+        window = self.app.workflow_plan_window
+        self.assertIs(window.kwargs.get("runner_state"), self.app._workflow_runner_state)
 
     def test_opening_twice_focuses_the_existing_window_instead_of_duplicating(self):
         self.app.open_workflow_plan()

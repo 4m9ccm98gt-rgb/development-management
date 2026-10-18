@@ -694,7 +694,8 @@ class App(ttk.Frame):
         if window is not None and window.exists():
             window.focus()
             return
-        self.workflow_plan_window = WorkflowPlanWindow(self.master)
+        self.workflow_plan_window = WorkflowPlanWindow(
+            self.master, runner_state=self._workflow_runner_state)
 
     def _current_orchestrator_roles(self) -> tuple[str, str]:
         """DCC Task 14.5: "現在の DCC の設定" for 作成して開始's confirmation dialog -- the

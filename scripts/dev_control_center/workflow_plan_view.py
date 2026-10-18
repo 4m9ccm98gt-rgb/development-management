@@ -73,6 +73,8 @@ LOAD_FAILED_TEXT = "計画を読み込めません"
 CREATE_FAILED_TEXT = "計画を作成できませんでした。名前を確認してください。"
 OP_FAILED_TEXT = "操作に失敗しました。計画を再読み込みしてください。"
 AUTO_RUN_CONFIRM_TEXT = "承認、PUSH、BUILD は人が行います。この計画を自動で実行しますか？"
+NEW_PLAN_NAME_EMPTY_TEXT = "計画の名前を入力してください"
+NEW_PLAN_NAME_INVALID_TEXT = "計画の名前を確認してください（長さや使える文字）。"
 NO_RESULT_WORD = "(なし)"
 NO_VALUE_WORD = "(既定)"
 NO_DEPENDS_WORD = "(なし)"
@@ -231,6 +233,36 @@ def plan_is_paused(plan: dict) -> bool:
     return any(t["status"] in ("failed", "needs_human") for t in plan["tasks"])
 
 
+# DCC Task WF-4a: workflow_runner.plan_start_block_reason's own fixed codes -> this module's own
+# fixed Japanese label, same convention as STATUS_LABELS above for a task's own status.
+START_BLOCK_LABELS = {
+    wr.START_BLOCK_PLAN_AUTO_RUN_OFF: "計画の自動実行が OFF",
+    wr.START_BLOCK_GLOBAL_OFF: "全体の停止スイッチが OFF",
+    wr.START_BLOCK_NO_APPROVED: "承認済みのタスクがない",
+    wr.START_BLOCK_DEPENDS_INCOMPLETE: "依存するタスクが完了していない",
+    wr.START_BLOCK_PAUSED: "計画が一時停止中",
+    wr.START_BLOCK_RUNNING: "実行中のタスクがある",
+    wr.START_BLOCK_REPO_BUSY: "対象のリポジトリで他の処理が動いている、または確認できない",
+    wr.START_BLOCK_LIMIT_REACHED: "本日の上限に達した",
+    wr.START_BLOCK_RECORD_UNAVAILABLE: "記録を取得できていない",
+    wr.START_BLOCK_CAN_START: "開始できる（次の周期で始まる）",
+}
+START_BLOCK_REPO_BUSY_HINT_TEXT = "Orchestrator の画面で、動いている Run や古い記録を確認してください"
+
+
+def start_block_reason_text(reason: "wr.PlanStartBlockReason") -> str:
+    """Pure formatting of one PlanStartBlockReason into the single line the plan window shows:
+    a fixed label, plus task_id (already-validated, workflow_plan._identifier's own alphabet --
+    safe to display as-is) when the reason has one, plus the fixed repo-busy hint when that is
+    the reason -- never an AI's output, a Task's own body, a path or exception text."""
+    label = START_BLOCK_LABELS.get(reason.code, "")
+    if reason.task_id:
+        label = f"{label}（{reason.task_id}）"
+    if reason.code == wr.START_BLOCK_REPO_BUSY:
+        label = f"{label}。{START_BLOCK_REPO_BUSY_HINT_TEXT}"
+    return label
+
+
 def build_status_copy_text(plan: dict, *, last_result_fn: Callable[[str, str], str]) -> str:
     """Manager-facing state copy: plan identity + task list (never a task body) + a fixed
     explanation of WF-1's own proposal JSON shape."""
@@ -257,6 +289,22 @@ def _today_str() -> str:
 
 def _generate_plan_id() -> str:
     return "plan-" + secrets.token_hex(8)
+
+
+def validate_new_plan_name(raw_name: str) -> str | None:
+    """Pure precheck for the new-plan name field: empty/whitespace-only gets the TaskSpec's own
+    exact fixed text; anything else workflow_plan._label would also reject on save (too long,
+    a character outside its own display-label alphabet) shares one fixed reason -- the
+    authoritative rule stays wf._label's own (reused, never re-expressed here), so this can never
+    accept a name save_plan would then reject. Returns None when the name is fine to save."""
+    name = raw_name.strip()
+    if not name:
+        return NEW_PLAN_NAME_EMPTY_TEXT
+    try:
+        wf._label(name)
+    except wf.WorkflowError:
+        return NEW_PLAN_NAME_INVALID_TEXT
+    return None
 
 
 def _is_valid_plan_id(value) -> bool:
@@ -308,10 +356,12 @@ def _set_enabled(widget, enabled: bool) -> None:
 class WorkflowPlanWindow:
     def __init__(self, master: tk.Misc, *, plans_root=None, registered_keys=None,
                  runner_config_path=None, daily_count_path=None, records_dir=None,
+                 runner_state: "wr.WorkflowRunnerState | None" = None,
                  list_plans_fn: Callable[[object], list] | None = None,
                  load_plan_fn=None, save_plan_fn=None, apply_proposal_fn=None,
                  set_plan_auto_run_fn=None, load_runner_config_fn=None,
-                 daily_limit_reached_fn=None, copy_to_clipboard: Callable[[str], None] | None = None,
+                 daily_limit_reached_fn=None, plan_start_block_reason_fn=None,
+                 copy_to_clipboard: Callable[[str], None] | None = None,
                  ) -> None:
         from .app import (DARK_BG, DARK_MUTED, configure_combobox_popup,
                           configure_dark_listbox, configure_dark_text)
@@ -326,6 +376,14 @@ class WorkflowPlanWindow:
         self._runner_config_path = runner_config_path
         self._daily_count_path = daily_count_path if daily_count_path is not None else wr._daily_count_path()
         self._records_dir = records_dir
+        # DCC Task WF-4a: the same WorkflowRunnerState instance app.py's own background loop holds
+        # for this DCC process's lifetime (never a second one this window would own) -- so
+        # _refresh_start_reason_notice's call into plan_start_block_reason shares the real cycle's
+        # own in-memory daily count (see plan_start_block_reason's own docstring for why a second,
+        # independent disk read cannot be trusted to agree with it after a save failure). None here
+        # (every test, and any standalone caller) falls back to plan_start_block_reason's own
+        # disk-only path -- correct in isolation, just not tied to a live cycle's own state.
+        self._runner_state = runner_state
         self._list_plans_fn = list_plans_fn or _list_plans
         self._load_plan_fn = load_plan_fn or wf.load_plan
         self._save_plan_fn = save_plan_fn or wf.save_plan
@@ -333,6 +391,7 @@ class WorkflowPlanWindow:
         self._set_plan_auto_run_fn = set_plan_auto_run_fn or wr.set_plan_auto_run_allowed
         self._load_runner_config_fn = load_runner_config_fn or wr.load_workflow_runner_config
         self._daily_limit_reached_fn = daily_limit_reached_fn or wr.daily_limit_reached
+        self._plan_start_block_reason_fn = plan_start_block_reason_fn or wr.plan_start_block_reason
         self._copy_to_clipboard = copy_to_clipboard
 
         self._closed = False
@@ -351,9 +410,11 @@ class WorkflowPlanWindow:
 
         self.plan_select_var = tk.StringVar(value="")
         self.new_plan_name_var = tk.StringVar(value="")
+        self.create_plan_notice_var = tk.StringVar(value="")
         self.load_notice_var = tk.StringVar(value="")
         self.pause_notice_var = tk.StringVar(value="")
         self.limit_notice_var = tk.StringVar(value="")
+        self.start_reason_var = tk.StringVar(value="")
         self.auto_run_var = tk.BooleanVar(value=False)
 
         outer = ttk.Frame(self.window, padding=12)
@@ -375,6 +436,8 @@ class WorkflowPlanWindow:
         ttk.Entry(select_row, textvariable=self.new_plan_name_var, width=24).pack(side="left")
         ttk.Button(select_row, text="新規計画の作成", command=self._on_create_plan).pack(
             side="left", padx=(4, 0))
+        ttk.Label(select_row, textvariable=self.create_plan_notice_var, foreground="#e3b341").pack(
+            side="left", padx=(8, 0))
 
         notice_row = ttk.Frame(outer)
         notice_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
@@ -422,6 +485,9 @@ class WorkflowPlanWindow:
         ttk.Checkbutton(auto_row, text="この計画を自動で実行する（候補の作成まで）",
                         variable=self.auto_run_var, command=self._on_auto_run_toggle).pack(
             side="left")
+        ttk.Label(auto_row, text="次のタスク:").pack(side="left", padx=(12, 0))
+        ttk.Label(auto_row, textvariable=self.start_reason_var, foreground=DARK_MUTED).pack(
+            side="left", padx=(4, 0))
 
         copy_row = ttk.Frame(right)
         copy_row.grid(row=4, column=0, sticky="ew", pady=(8, 0))
@@ -503,16 +569,21 @@ class WorkflowPlanWindow:
         self._render_plan()
 
     def _on_create_plan(self) -> None:
-        name = self.new_plan_name_var.get().strip()
-        if not name:
+        raw_name = self.new_plan_name_var.get()
+        reason = validate_new_plan_name(raw_name)
+        if reason is not None:
+            self.create_plan_notice_var.set(reason)
             return
+        name = raw_name.strip()
         plan_id = _generate_plan_id()
         new_plan = {"plan_id": plan_id, "name": name, "revision": 0, "tasks": []}
         try:
             self._save_plan_fn(new_plan, root=self._plans_root, registered_keys=self._registered_keys)
         except (wf.WorkflowError, wf.WorkflowStorageError):
+            self.create_plan_notice_var.set("")
             messagebox.showerror("開発計画", CREATE_FAILED_TEXT, parent=self.window)
             return
+        self.create_plan_notice_var.set("")
         self.new_plan_name_var.set("")
         self._reload_plan_list()
         self.plan_select_var.set(self._plan_display(plan_id, name))
@@ -523,6 +594,7 @@ class WorkflowPlanWindow:
         self._render_tasks()
         self._refresh_pause_and_limit_notice()
         self._refresh_auto_run_checkbox()
+        self._refresh_start_reason_notice()
         _set_enabled(self.import_button, self.plan is not None)
 
     def _render_tasks(self) -> None:
@@ -652,6 +724,7 @@ class WorkflowPlanWindow:
             self._set_plan_auto_run_fn(self.plan["plan_id"], desired, path=self._runner_config_path)
         except OSError:
             self.auto_run_var.set(not desired)
+        self._refresh_start_reason_notice()
 
     # ---------------------------------------------------------------- pause / daily-limit notices
     def _refresh_pause_and_limit_notice(self) -> None:
@@ -667,6 +740,24 @@ class WorkflowPlanWindow:
         except Exception:  # noqa: BLE001 - never block rendering on a bad config/count read
             reached = False
         self.limit_notice_var.set(wr.LIMIT_REACHED_TEXT if reached else "")
+
+    def _refresh_start_reason_notice(self) -> None:
+        """DCC Task WF-4a: one fixed-vocabulary line for the selected plan's own next task,
+        re-read on every reload/tick (_render_plan) and on every auto-run toggle. Delegates the
+        actual judgment to workflow_runner.plan_start_block_reason -- never re-decided here --
+        and only ever displays that function's own fixed code/task_id (see start_block_reason_text
+        above): never an AI's output, a Task's own body, a path or exception text."""
+        if self.plan is None:
+            self.start_reason_var.set("")
+            return
+        try:
+            reason = self._plan_start_block_reason_fn(
+                self.plan, runner_config_path=self._runner_config_path,
+                state=self._runner_state, daily_count_path=self._daily_count_path)
+        except Exception:  # noqa: BLE001 - never block rendering on a bad config/count/repo read
+            self.start_reason_var.set("")
+            return
+        self.start_reason_var.set(start_block_reason_text(reason))
 
     # ---------------------------------------------------------------- state copy
     def _last_result_word(self, plan_id: str, task_id: str) -> str:

@@ -98,7 +98,13 @@ _TERMINAL_STAGE_TO_STATUS = {
     "stopped": "failed",
 }
 
-_BLOCKING_STATUSES = frozenset(("running", "candidate_ready", "failed", "needs_human"))
+# Split in two for plan_start_block_reason's own sake (paused-for-a-human vs. already-running are
+# different fixed reasons on screen) -- _BLOCKING_STATUSES itself stays exactly the set
+# _eligible_task already checked (仕様1), just expressed as the union of the two, so the two
+# checks can never drift apart from what _eligible_task itself treats as blocking.
+_PAUSED_STATUSES = frozenset(("failed", "needs_human"))
+_RUNNING_STATUSES = frozenset(("running", "candidate_ready"))
+_BLOCKING_STATUSES = _PAUSED_STATUSES | _RUNNING_STATUSES
 
 
 def _root() -> Path:
@@ -128,6 +134,16 @@ def daily_limit_reached(today: str, limit: int, *, path: Path | None = None) -> 
     except Exception:  # noqa: BLE001 - display-only: never blocks the notice from rendering
         return False
     return count >= limit
+
+
+def _daily_count_or_none(today: str, path: Path | None) -> int | None:
+    """Same strict read WorkflowRunnerState.seed_startup itself uses, exposed as None-on-failure
+    rather than a bool -- plan_start_block_reason below needs to tell "record unreadable" apart
+    from "readable and under the limit", which daily_limit_reached's own bool collapses together."""
+    try:
+        return progress._read_daily_count_strict(today, path)
+    except Exception:  # noqa: BLE001 - caller decides what an unreadable record means to it
+        return None
 
 
 def run_log_root() -> Path:
@@ -619,34 +635,25 @@ def _start_eligible_task(plan_id: str, *, global_config, global_config_path, run
     except wf.WorkflowStorageError:
         return
 
-    task = _eligible_task(plan)
-    if task is None:
-        return
-
     # C5: re-confirm right before starting -- a human (or DCC shutting down) may have flipped
     # either switch, or the daily limit may have just been reached, since the top-of-cycle check.
     if stop_event is not None and stop_event.is_set():
         return
     latest_global = _current_global(global_config_path, global_config)
     latest_runner = _current_runner(runner_config_path, runner_config)
-    if not plan_auto_run_allowed(latest_global, latest_runner, plan_id):
-        return
-    if state.limit_reached(today, latest_runner.daily_limit):
-        return
 
-    try:
-        repo_dir = resolve_repo_dir(task["repo_key"])
-    except Exception:  # noqa: BLE001 - registry trouble: wait, do not guess
-        repo_dir = None
-    if repo_dir is None:
-        return  # cannot resolve this cycle -- try again later, never guess a path
-
-    try:
-        blocked = bool(repo_run_blocked_fn(str(repo_dir))) or bool(busy_fn(repo_dir.name))
-    except Exception:  # noqa: BLE001 - C4: 確認できないときも進まない
-        blocked = True
-    if blocked:
+    # C4: the exact same judgment plan_start_block_reason shows on screen decides whether this
+    # cycle may actually start something -- never a second, separately-expressed copy of the
+    # plan-permission / daily-limit / eligible-task / repo-busy conditions it already checks.
+    decision = _decide_plan_start(
+        plan, global_config=latest_global, runner_config=latest_runner, state=state,
+        daily_count_path=None, today=today, resolve_repo_dir=resolve_repo_dir,
+        busy_fn=busy_fn, repo_run_blocked_fn=repo_run_blocked_fn,
+    )
+    if decision.reason.code != START_BLOCK_CAN_START:
         return
+    task = decision.task
+    repo_dir = decision.repo_dir
 
     # Close the TOCTOU gap between the busy check above and the real start below: hold this
     # repo's own exclusive-operation reservation for that whole window, exactly like
@@ -743,6 +750,197 @@ def _start_eligible_task(plan_id: str, *, global_config, global_config_path, run
         release_fn(repo_dir.name, token)
 
 
+# --------------------------------------------------------------------------- DCC Task WF-4a: 開始
+# してよいかの共通判定（画面表示と実際の開始の両方がこれを呼ぶ）
+#
+# _decide_plan_start is the *one* place that implements "may plan_id's next task start right now,
+# and if not, why" -- plan_start_block_reason (workflow_plan_view.py's read-only screen text) and
+# _start_eligible_task (the real start path, below) both call this same function instead of each
+# expressing the global switch / shared daily limit / this plan's own permission / _eligible_task /
+# repo-busy conditions on their own (the reviewer finding this fixes: a screen-only copy of these
+# conditions could silently drift from what the real cycle actually checks). Neither caller's own
+# behaviour changes: _start_eligible_task still re-confirms stop_event, still re-reads the latest
+# global/runner config right before starting (C5), and still does its own reserve/compare-and-set/
+# guarded_start_run dance after this function says CAN_START -- this function only ever decides
+# whether that dance may begin, and starts nothing and writes nothing itself (C3).
+#
+# The daily record/limit check is the one place a second, independent disk read would not be
+# enough: WorkflowRunnerState.record_daily_attempt keeps its in-memory daily_count authoritative
+# even when the mirroring disk write fails (C10, see its own docstring), so a caller that re-reads
+# the count file fresh every time could say CAN_START right after the real cycle's own state has
+# already reached the limit. Passing `state` -- the same WorkflowRunnerState instance app.py's
+# background loop (and _start_eligible_task) holds for the process's lifetime -- makes this
+# function read that process's own authoritative count (state.limit_reached, via the same
+# seed_startup/daily_count this module's own real start path uses) instead of a second disk read
+# that could drift from it. `state` is used strictly read-only here: seed_startup only reads a file
+# into memory the first time it is called (never writes), and limit_reached/daily_count never
+# mutate anything. Omitting `state` (e.g. a standalone caller/test with no live runner process)
+# falls back to the old disk-only read via daily_count_path -- correct in isolation, just not
+# guaranteed to agree with a concurrently running cycle's own in-memory state the way passing
+# `state` is.
+
+START_BLOCK_GLOBAL_OFF = "GLOBAL_OFF"
+START_BLOCK_RECORD_UNAVAILABLE = "RECORD_UNAVAILABLE"
+START_BLOCK_LIMIT_REACHED = "LIMIT_REACHED"
+START_BLOCK_PLAN_AUTO_RUN_OFF = "PLAN_AUTO_RUN_OFF"
+START_BLOCK_PAUSED = "PAUSED"
+START_BLOCK_RUNNING = "RUNNING"
+START_BLOCK_NO_APPROVED = "NO_APPROVED"
+START_BLOCK_DEPENDS_INCOMPLETE = "DEPENDS_INCOMPLETE"
+START_BLOCK_REPO_BUSY = "REPO_BUSY"
+START_BLOCK_CAN_START = "CAN_START"
+
+
+@dataclass(frozen=True)
+class PlanStartBlockReason:
+    """code is always one of the START_BLOCK_* constants above; task_id (an already-validated
+    workflow_plan._identifier value, never free text) is only ever set for PAUSED/RUNNING/
+    DEPENDS_INCOMPLETE. The Japanese label text lives in workflow_plan_view.py, same as
+    STATUS_LABELS there for a task's own status -- this module stays judgment-only."""
+
+    code: str
+    task_id: str | None = None
+
+
+@dataclass(frozen=True)
+class _PlanStartDecision:
+    """reason.code == START_BLOCK_CAN_START if and only if task/repo_dir are populated -- the real
+    start path (_start_eligible_task) reads exactly those two fields instead of recomputing
+    _eligible_task/resolve_repo_dir itself, so it can never pick a different task than the one this
+    same decision already named."""
+
+    reason: PlanStartBlockReason
+    task: dict | None = None
+    repo_dir: Path | None = None
+
+
+def _global_start_block(
+    *,
+    global_config: "auto.AutoModeConfig",
+    runner_config: WorkflowRunnerConfig,
+    state: "WorkflowRunnerState | None",
+    daily_count_path: Path | None,
+    today: str,
+) -> PlanStartBlockReason | None:
+    """The plan-*independent* half of _decide_plan_start's own priority chain -- the global switch
+    and the shared daily record/limit, checked before any particular plan is even loaded. Factored
+    out so run_workflow_runner_once's own cycle-level short-circuit (STATUS_DISABLED/
+    STATUS_LIMIT_REACHED, and the per-plan loop's own early stop) reads this exact same function
+    instead of re-expressing "global off" / "limit reached" a second time with its own separate
+    condition -- the reviewer finding this fixes. Returns None when neither blocks (a caller with a
+    specific plan in hand, i.e. _decide_plan_start, takes over the per-plan checks from there)."""
+    if not global_config.enabled:
+        return PlanStartBlockReason(START_BLOCK_GLOBAL_OFF)
+
+    if state is not None:
+        if not state.seed_startup(today):
+            return PlanStartBlockReason(START_BLOCK_RECORD_UNAVAILABLE)
+        limit_reached = state.limit_reached(today, runner_config.daily_limit)
+    else:
+        count = _daily_count_or_none(today, daily_count_path)
+        if count is None:
+            return PlanStartBlockReason(START_BLOCK_RECORD_UNAVAILABLE)
+        limit_reached = count >= runner_config.daily_limit
+    if limit_reached:
+        return PlanStartBlockReason(START_BLOCK_LIMIT_REACHED)
+    return None
+
+
+def _decide_plan_start(
+    plan: dict,
+    *,
+    global_config: "auto.AutoModeConfig",
+    runner_config: WorkflowRunnerConfig,
+    state: "WorkflowRunnerState | None",
+    daily_count_path: Path | None,
+    today: str,
+    resolve_repo_dir: Callable[[str], Path | None],
+    busy_fn: Callable[[str], bool],
+    repo_run_blocked_fn: Callable[[str], bool],
+) -> _PlanStartDecision:
+    """Checks in the one priority both callers rely on: global switch -> shared daily record/
+    limit (both via _global_start_block) -> this plan's own permission -> _eligible_task (blocking
+    status, then no approved task, then an unmet dependency) -> whether the eligible task's own
+    repository looks free. Never calls reserve_fn, _set_task_status, create_and_start_fn or
+    anything else that could start a task or write a file -- see the module docstring's own
+    承認/PUSH/BUILD/UPDATE/RELEASE boundary, which this function stays strictly on the read side
+    of (C3)."""
+    blocked = _global_start_block(global_config=global_config, runner_config=runner_config, state=state,
+                                   daily_count_path=daily_count_path, today=today)
+    if blocked is not None:
+        return _PlanStartDecision(blocked)
+
+    if not runner_config.plans.get(plan["plan_id"], False):
+        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_PLAN_AUTO_RUN_OFF))
+
+    task = _eligible_task(plan)
+    if task is None:
+        paused = next((t for t in plan["tasks"] if t["status"] in _PAUSED_STATUSES), None)
+        if paused is not None:
+            return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_PAUSED, paused["task_id"]))
+        running = next((t for t in plan["tasks"] if t["status"] in _RUNNING_STATUSES), None)
+        if running is not None:
+            return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_RUNNING, running["task_id"]))
+        approved = [t for t in plan["tasks"] if t["status"] == "approved"]
+        if not approved:
+            return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_NO_APPROVED))
+        landed = {t["task_id"] for t in plan["tasks"] if t["status"] == "landed"}
+        blocked_task = approved[0]
+        missing = next((dep for dep in blocked_task["depends_on"] if dep not in landed), None)
+        return _PlanStartDecision(
+            PlanStartBlockReason(START_BLOCK_DEPENDS_INCOMPLETE, missing or blocked_task["task_id"]))
+
+    try:
+        repo_dir = resolve_repo_dir(task["repo_key"])
+    except Exception:  # noqa: BLE001 - C4: cannot confirm this repo is free, same as the real check
+        repo_dir = None
+    if repo_dir is None:
+        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_REPO_BUSY))
+    try:
+        blocked = bool(repo_run_blocked_fn(str(repo_dir))) or bool(busy_fn(repo_dir.name))
+    except Exception:  # noqa: BLE001
+        blocked = True
+    if blocked:
+        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_REPO_BUSY))
+
+    return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_CAN_START), task=task, repo_dir=repo_dir)
+
+
+def plan_start_block_reason(
+    plan: dict,
+    *,
+    global_config: "auto.AutoModeConfig | None" = None,
+    global_config_path: Path | None = None,
+    runner_config: WorkflowRunnerConfig | None = None,
+    runner_config_path: Path | None = None,
+    state: "WorkflowRunnerState | None" = None,
+    daily_count_path: Path | None = None,
+    today: str | None = None,
+    resolve_repo_dir: Callable[[str], Path | None] | None = None,
+    busy_fn: Callable[[str], bool] | None = None,
+    repo_run_blocked_fn: Callable[[str], bool] | None = None,
+) -> PlanStartBlockReason:
+    """workflow_plan_view.py's only way to explain, in one of this module's own fixed codes, why
+    plan_id's next task has not started. Resolves the same defaults _start_eligible_task itself
+    falls back to, then delegates the actual judgment to _decide_plan_start -- the function the
+    real start path calls too -- so this can never disagree with what the real cycle does next
+    (C4). `state`, when given, must be the same WorkflowRunnerState instance the real cycle itself
+    holds for this process -- see the comment above _decide_plan_start for why that (not
+    daily_count_path's own fresh disk read) is what keeps this in agreement with a save failure the
+    real cycle's own in-memory count already absorbed (C10/C4)."""
+    today = today if today is not None else auto.today_str()
+    global_config = global_config if global_config is not None else auto.load_auto_mode_config(global_config_path)
+    runner_config = runner_config if runner_config is not None else load_workflow_runner_config(runner_config_path)
+    resolve_repo_dir = resolve_repo_dir or _default_resolve_repo_dir
+    busy_fn = busy_fn or _default_busy
+    repo_run_blocked_fn = repo_run_blocked_fn or _default_repo_run_blocked
+    return _decide_plan_start(
+        plan, global_config=global_config, runner_config=runner_config, state=state,
+        daily_count_path=daily_count_path, today=today, resolve_repo_dir=resolve_repo_dir,
+        busy_fn=busy_fn, repo_run_blocked_fn=repo_run_blocked_fn,
+    ).reason
+
+
 # --------------------------------------------------------------------------- 実行本体
 
 @dataclass(frozen=True)
@@ -817,9 +1015,13 @@ def run_workflow_runner_once(
                           registered_keys=registered_keys, resolve_repo_dir=resolve_repo_dir,
                           run_lookup_fn=run_lookup_fn, is_landed_fn=is_landed_fn, log_dir=log_dir)
 
-    if not global_config.enabled:
+    # C4: the same plan-independent half _decide_plan_start itself checks first for every plan --
+    # never a second, separately-expressed "global off"/"limit reached" condition here.
+    cycle_blocked = _global_start_block(global_config=global_config, runner_config=runner_config, state=state,
+                                        daily_count_path=None, today=today)
+    if cycle_blocked is not None and cycle_blocked.code == START_BLOCK_GLOBAL_OFF:
         return WorkflowRunnerCycleOutcome(STATUS_DISABLED)
-    if state.limit_reached(today, runner_config.daily_limit):
+    if cycle_blocked is not None and cycle_blocked.code == START_BLOCK_LIMIT_REACHED:
         _write_run_log_entry(plan_id="", task_id="", result=LIMIT_REACHED_TEXT, log_dir=log_dir)
         return WorkflowRunnerCycleOutcome(STATUS_LIMIT_REACHED, LIMIT_REACHED_TEXT)
 
@@ -827,10 +1029,9 @@ def run_workflow_runner_once(
         if stop_event is not None and stop_event.is_set():
             break
         cur_global = _current_global(global_config_path, global_config)
-        if not cur_global.enabled:
-            break  # 仕様1: 全体の停止スイッチOFFは即座に全体を止める
-        if state.limit_reached(today, runner_config.daily_limit):
-            break  # 共有の1日の上限
+        if _global_start_block(global_config=cur_global, runner_config=runner_config, state=state,
+                               daily_count_path=None, today=today) is not None:
+            break  # 仕様1: 全体の停止スイッチOFF/共有の1日の上限は即座に全体を止める
         if not allowed:
             continue  # この計画は対象外。他の計画は妨げない
         _start_eligible_task(
