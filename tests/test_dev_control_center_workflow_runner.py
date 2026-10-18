@@ -8,6 +8,9 @@ subprocess, no git. Output files live under tempfile.TemporaryDirectory() only.
 from __future__ import annotations
 
 import tempfile
+import json
+import os
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -807,6 +810,66 @@ class DefaultRepoRunBlockedTests(unittest.TestCase):
     """wr._default_repo_run_blocked is the one place this module must distinguish "confirmed no
     runs for this repo" from "cannot tell" (C4) -- exercised directly here because every test in
     RunWorkflowRunnerOnceTests injects its own fake repo_run_blocked_fn instead."""
+
+    def legacy_case(self, *, status="stopped", old=True, result=True,
+                    bad_time=False, recent_log=False, corrupt_run=False, live=False):
+        from tools.ai_orchestrator import runstate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "runs"
+            directory = root / "run-1"
+            directory.mkdir(parents=True)
+            if result:
+                (directory / "result.json").write_text(json.dumps({
+                    "run_id": directory.name, "status": status}), encoding="utf-8")
+            if corrupt_run:
+                (directory / "run.json").write_text("invalid", encoding="utf-8")
+            if recent_log:
+                (directory / "events.log").write_text("heartbeat", encoding="utf-8")
+            timestamp = time.time() - (25 * 3600 if old else 60)
+            for path in [*directory.rglob("*"), directory]:
+                os.utime(path, (timestamp, timestamp))
+            if recent_log:
+                os.utime(directory / "events.log", None)
+            with mock.patch.object(runstate, "runs_root", return_value=root):
+                if bad_time:
+                    original_stat = Path.stat
+
+                    def stat(path, *args, **kwargs):
+                        if path == directory / "result.json":
+                            raise PermissionError("timestamp unavailable")
+                        return original_stat(path, *args, **kwargs)
+
+                    with mock.patch.object(Path, "stat", stat):
+                        return wr._default_repo_run_blocked(str(Path(tmp) / "repo-a"))
+                if live:
+                    with mock.patch.object(runstate, "inspect_run", return_value={
+                            "record": {"repo": str(Path(tmp) / "repo-a")},
+                            "liveness": runstate.LIVE_RUNNING}):
+                        return wr._default_repo_run_blocked(str(Path(tmp) / "repo-a"))
+                return wr._default_repo_run_blocked(str(Path(tmp) / "repo-a"))
+
+    def test_old_terminal_legacy_results_do_not_block(self):
+        for status in ("stopped", "candidate_ready"):
+            with self.subTest(status=status):
+                self.assertFalse(self.legacy_case(status=status))
+
+    def test_old_without_terminal_evidence_blocks(self):
+        self.assertTrue(self.legacy_case(result=False))
+        self.assertTrue(self.legacy_case(status="review_pending"))
+
+    def test_recent_legacy_result_or_log_blocks(self):
+        self.assertTrue(self.legacy_case(old=False))
+        self.assertTrue(self.legacy_case(recent_log=True))
+
+    def test_unreadable_timestamp_does_not_prove_completion(self):
+        self.assertTrue(self.legacy_case(bad_time=True))
+
+    def test_running_run_is_not_overridden_by_old_result(self):
+        self.assertTrue(self.legacy_case(live=True))
+
+    def test_corrupt_run_json_is_not_overridden_by_old_result(self):
+        self.assertTrue(self.legacy_case(corrupt_run=True))
 
     def test_runs_root_never_created_is_not_blocked(self):
         with tempfile.TemporaryDirectory() as tmp:

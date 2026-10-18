@@ -33,8 +33,11 @@ Security posture (same family as workflow_plan.py / reports_auto_start.py / repo
 from __future__ import annotations
 
 import copy
+import json
+import math
 import os
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -411,6 +414,36 @@ def _default_release(repo_name: str, token: object | None) -> None:
         _DEFAULT_RESERVATIONS.discard(repo_name)
 
 
+def _old_finished_legacy_run(directory: Path) -> bool:
+    """Only missing run.json + a validated legacy terminal result may age out.
+
+    Age alone never proves completion. Include every descendant's mtime (and the
+    directory's) so recent logs/heartbeats keep an old result from hiding activity.
+    Unreadable timestamps, links and unfamiliar results remain fail-closed.
+    """
+    try:
+        if (directory / "run.json").exists():
+            return False
+        result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
+        if (not isinstance(result, dict) or result.get("run_id") != directory.name
+                or result.get("status") not in ("stopped", "candidate_ready")):
+            return False
+        cutoff = time.time() - 24 * 60 * 60
+        pending = [directory]
+        while pending:
+            path = pending.pop()
+            if path.is_symlink() or path.is_junction():
+                return False
+            modified = path.stat().st_mtime
+            if not math.isfinite(modified) or modified <= 0 or modified > cutoff:
+                return False
+            if path.is_dir():
+                pending.extend(path.iterdir())  # enumeration errors must not be swallowed
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def _default_repo_run_blocked(repo: str) -> bool:
     """Orchestrator run check (1 repo / 1 run), mirroring reports_auto_start's own active_runs_fn
     but stricter (C4: 確認できないときも進まない). runstate.list_runs() cannot be reused here: it
@@ -437,7 +470,9 @@ def _default_repo_run_blocked(repo: str) -> bool:
             return True
         record = info["record"]
         if record is None:
-            return True  # C4: unreadable run.json -- cannot rule out this repo
+            if _old_finished_legacy_run(directory):
+                continue
+            return True  # C4: no trustworthy terminal record -- cannot rule out this repo
         if runstate._norm(record.get("repo")) != wanted:
             continue
         if info["liveness"] in blocking:
