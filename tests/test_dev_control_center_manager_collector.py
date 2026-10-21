@@ -32,6 +32,14 @@ class CollectorTests(unittest.TestCase):
                        'scripts.dev_control_center.workflow_plan.plans_root',
                        'scripts.dev_control_center.workflow_plan.save_plan',
                        'scripts.dev_control_center.workflow_plan.update_plan',
+                       'scripts.dev_control_center.workflow_plan.apply_and_save_proposal',
+                       'scripts.dev_control_center.workflow_runner._start_eligible_task',
+                       'scripts.dev_control_center.candidate.approve',
+                       'scripts.dev_control_center.candidate.push',
+                       'scripts.dev_control_center.candidate.run_dev',
+                       'scripts.dev_control_center.provenance.build',
+                       'scripts.dev_control_center.release_update.plan',
+                       'tools.ai_orchestrator.orchestrator.start_run',
                        'scripts.dev_control_center.workflow_runner._save_record',
                        'scripts.dev_control_center.workflow_runner._refresh_hot_task',
                        'scripts.dev_control_center.workflow_runner._hot_record',
@@ -219,13 +227,15 @@ class CollectorTests(unittest.TestCase):
         self.assertIn('TASK_STATE_CHANGED', changes)
         self.assertIn('RUN_STATE_CHANGED', changes)
 
-    def test_revalidate_recollects_and_never_rebinds_old_decision(self):
+    def test_unchanged_response_accepted_against_original_issue_once(self):
         collector = self.collector()
         first = collector.collect()
         response = json.dumps(md.suggest_decisions(first['snapshot'], observation_id=first['observation_id'])[0])
         result = collector.revalidate(response)
-        self.assertEqual(result['validation']['code'], 'STALE_SNAPSHOT')
+        self.assertTrue(result['validation']['accepted'])
+        self.assertEqual(result['validation']['decision']['snapshot_id'], first['snapshot_id'])
         self.assertGreater(result['collection']['observation_id'], first['observation_id'])
+        self.assertEqual(collector.revalidate(response)['validation']['code'], 'OBSERVATION_UNKNOWN')
 
     def test_failure_after_success_has_no_cached_fallback(self):
         reader = Mock(side_effect=[plan(task('T1')), plan(task('T1')), OSError(SECRET)])
@@ -240,20 +250,94 @@ class CollectorTests(unittest.TestCase):
     def test_same_collection_plan_revision_and_workflow_preview_passed(self):
         original = plan(task('T1'))
         collector = self.collector([original])
-        real = md.validate_ai_response
-        def validate(text, snapshot, **kwargs):
-            # Fake an AI reply tied to this very observation to exercise delegation.
-            value = md.suggest_decisions(snapshot, observation_id=kwargs['observation_id'])[0]
-            value.update(kind='PROPOSE_TASK_CHANGE', reason_code='WORKFLOW_CHANGE',
-                change=dict(plan_id='Plan-1', base_revision=0, ops=[dict(op='hold', task_id='T1')]))
-            return real(json.dumps(value), snapshot, **kwargs)
+        issued = collector.collect()
+        value = md.suggest_decisions(issued['snapshot'], observation_id=issued['observation_id'])[0]
+        value.update(kind='PROPOSE_TASK_CHANGE', reason_code='WORKFLOW_CHANGE',
+            change=dict(plan_id='Plan-1', base_revision=0, ops=[dict(op='hold', task_id='T1')]))
         before = copy.deepcopy(original)
-        with patch.object(md, 'validate_ai_response', side_effect=validate), \
-             patch.object(wf, 'preview_proposal', wraps=wf.preview_proposal) as preview:
-            result = collector.revalidate('fake response')
+        with patch.object(wf, 'preview_proposal', wraps=wf.preview_proposal) as preview:
+            result = collector.revalidate(json.dumps(value))
         self.assertTrue(result['validation']['accepted'])
         self.assertEqual(preview.call_args.kwargs['actor'], 'manager')
         self.assertEqual(original, before)
+
+    def response(self, issued):
+        return json.dumps(md.suggest_decisions(issued['snapshot'], observation_id=issued['observation_id'])[0])
+
+    def test_plan_content_revision_and_task_state_changes_rejected(self):
+        for change in ('status', 'revision', 'body'):
+            with self.subTest(change=change):
+                original = plan(task('T1'))
+                collector = self.collector([original])
+                issued = collector.collect()
+                if change == 'status':
+                    original['tasks'][0]['status'] = 'held'
+                elif change == 'revision':
+                    original['revision'] += 1
+                else:
+                    original['tasks'][0]['body'] += '\n## 範囲外\n' + SECRET
+                result = collector.revalidate(self.response(issued))
+                self.assertEqual(result['validation']['code'], 'STATE_CHANGED')
+                self.assertNotIn('SECRET', str(result))
+
+    def test_run_stage_and_association_metadata_changes_rejected(self):
+        for change in ('stage', 'liveness', 'association', 'candidate_sha'):
+            with self.subTest(change=change):
+                association = {'run_id': RID, 'candidate_sha': 'a' * 40}
+                observation = observed()
+                collector = self.collector([plan(task('T1', 'running'))],
+                    read_association=lambda *args: association,
+                    inspect_run=lambda rid: dict(observation, record=dict(observation['record'], run_id=rid)))
+                issued = collector.collect()
+                if change == 'stage':
+                    observation['record']['stage'] = 'reviewing'
+                elif change == 'liveness':
+                    observation['liveness'] = 'starting'
+                elif change == 'association':
+                    association['run_id'] = OTHER_RID
+                else:
+                    association['candidate_sha'] = 'b' * 40
+                self.assertEqual(collector.revalidate(self.response(issued))['validation']['code'], 'STATE_CHANGED')
+
+    def test_new_collect_invalidates_old_and_unknown_response_consumes_issue(self):
+        collector = self.collector()
+        first = collector.collect()
+        latest = collector.collect()
+        self.assertEqual(collector.revalidate(self.response(first))['validation']['code'], 'STALE_SNAPSHOT')
+        self.assertEqual(collector.revalidate(self.response(latest))['validation']['code'], 'OBSERVATION_UNKNOWN')
+        another = self.collector()
+        self.assertEqual(another.revalidate(self.response(first))['validation']['code'], 'OBSERVATION_UNKNOWN')
+
+    def test_expiry_backward_invalid_clock_and_slow_collection(self):
+        for times, expected in (([0, 10], 'OBSERVATION_EXPIRED'),
+                                ([10, 9], 'OBSERVATION_EXPIRED'),
+                                ([0, float('nan')], 'CLOCK_UNAVAILABLE'),
+                                ([0, 9], 'ACCEPTED')):
+            collector = self.collector(now=Mock(side_effect=times), max_age_seconds=10)
+            issued = collector.collect()
+            self.assertEqual(collector.revalidate(self.response(issued))['validation']['code'], expected)
+        collector = self.collector(now=lambda: float('nan'))
+        result = collector.collect()
+        self.assertEqual(result['status'], 'unavailable')
+        self.assertIsNone(result['manager_input'])
+
+    def test_membership_change_and_invalid_attempt_revoke_issue(self):
+        ids = ['Plan-1']
+        collector = self.collector(list_plans=lambda: ids)
+        issued = collector.collect()
+        ids.clear()
+        self.assertEqual(collector.revalidate(self.response(issued))['validation']['code'], 'STATE_CHANGED')
+        issued = self.collector()
+        observation = issued.collect()
+        self.assertEqual(issued.revalidate('{}')['validation']['code'], 'INVALID_SCHEMA')
+        self.assertEqual(issued.revalidate(self.response(observation))['validation']['code'], 'OBSERVATION_UNKNOWN')
+
+    def test_returned_payload_mutation_cannot_change_issued_snapshot(self):
+        collector = self.collector()
+        issued = collector.collect()
+        response = self.response(issued)
+        issued['snapshot']['plans'].clear()
+        self.assertTrue(collector.revalidate(response)['validation']['accepted'])
 
     def test_default_readers_use_only_temporary_files_and_existing_inspect(self):
         with tempfile.TemporaryDirectory() as temp:

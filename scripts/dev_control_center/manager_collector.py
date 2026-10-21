@@ -10,17 +10,20 @@ None in a listing means a damaged/unreadable entry, not a successful empty scan.
 
 One bounded double-read detects changes; it is not an atomic cross-file database
 transaction. A subsequent execution connection must recheck authoritative Runner
-conditions itself. Revalidation always issues a new generation: even unchanged
-old responses are stale and must be regenerated; IDs are never silently rebound.
+conditions itself. Revalidation consumes the latest issued observation once,
+checks its age and full-state fingerprint against a fresh collection, then uses
+the ORIGINAL generation for JSON validation. IDs are never silently rebound.
 """
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import threading
+import time
 import uuid
 
 from . import manager_decision as decision
@@ -108,7 +111,14 @@ def _safe_observation(rid, raw):
 class ManagerCollector:
     def __init__(self, *, registered_keys=None, plans_root=None, records_root=None,
                  runs_root=None, runner_state=None, list_plans=None, load_plan=None,
-                 read_association=None, inspect_run=None, next_observation=None):
+                 read_association=None, inspect_run=None, next_observation=None,
+                 now=None, max_age_seconds=300):
+        if (type(max_age_seconds) not in (int, float) or not math.isfinite(max_age_seconds)
+            or max_age_seconds <= 0):
+            raise ValueError("INVALID_MAX_AGE")
+        self._now = now or time.monotonic
+        self._max_age = max_age_seconds
+        self._pending = None
         self._keys = registered_keys
         self._runner_state = runner_state
         # Defaults are lazy: injected tests never resolve or read production roots.
@@ -150,7 +160,27 @@ class ManagerCollector:
     def collect(self):
         """New generation + fresh safe payload; no cached-success fallback."""
         with self._lock:
-            return self._collect()[0]
+            self._pending = None  # every ordinary collection revokes the prior issue
+            try:
+                issued_at = self._read_time()
+            except Exception:
+                issued_at = None
+            payload, _, _, fingerprint = self._collect()
+            if issued_at is None:
+                payload['status'] = 'unavailable'
+                payload['manager_input'] = None
+                payload['issues'].append(dict(code='CLOCK_UNAVAILABLE', plan_id=None, task_id=None))
+            elif payload['status'] == 'available':
+                self._pending = dict(snapshot=copy.deepcopy(payload['snapshot']),
+                    observation_id=payload['observation_id'], fingerprint=fingerprint,
+                    issued_at=issued_at)
+            return payload
+
+    def _read_time(self):
+        value = self._now()
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError('CLOCK_UNAVAILABLE')
+        return value
 
     def _collect(self):
         issues = []
@@ -184,6 +214,7 @@ class ManagerCollector:
 
         plans, full, associations, observations = [], [], {}, {}
         revisions = []
+        association_digests = {}
         run_owners = {}
         entries = None
         try:
@@ -212,6 +243,7 @@ class ManagerCollector:
                     tid = task['task_id']
                     try:
                         raw = self._association(pid, tid)
+                        association_digests[(pid, tid)] = _digest(raw)
                         # Empty run_id is Runner's legitimate pre-start failure record.
                         if raw is None or isinstance(raw, dict) and raw.get('run_id') == '':
                             if task['status'] in ('running', 'candidate_ready'):
@@ -261,7 +293,8 @@ class ManagerCollector:
                         if raw is not None and not (isinstance(raw, dict) and (raw.get('run_id') == '' or _run_id(raw.get('run_id')))):
                             raise ValueError('INVALID_ASSOCIATION')
                         now = dict(run_id=raw['run_id']) if isinstance(raw, dict) and _run_id(raw.get('run_id')) else None
-                        if now != associations.get((pid, tid)):
+                        if (now != associations.get((pid, tid)) or
+                            _digest(raw) != association_digests.get((pid, tid))):
                             associations[(pid, tid)] = None
                             issue('ASSOCIATION_CHANGED', pid, tid)
                     except Exception:
@@ -313,20 +346,41 @@ class ManagerCollector:
                        snapshot=snapshot, manager_input=context if status == 'available' else None,
                        revisions=revisions, runs=run_states,
                        issues=issues, changes=changes, **metadata)
-        return payload, full, keys
+        # Private only: full Workflow content (including body/history), membership,
+        # registry, association metadata and fixed Run observations. Never log/export.
+        fingerprint = _digest(dict(plans=full, keys=sorted(keys), snapshot=snapshot,
+            associations=[(pid, tid, digest) for (pid, tid), digest in sorted(association_digests.items())],
+            runs=run_states))
+        return payload, full, keys, fingerprint
 
     def revalidate(self, response_json):
-        """Recollect immediately, fail closed, never rebase a saved decision's ID.
+        """Consume one issued observation and recollect, even for an invalid attempt.
 
-        Consequently an earlier collected decision is STALE_SNAPSHOT even when
-        unchanged. This gate only reports acceptance; no workflow writes/execution.
+        A successful comparison authorizes validation against the original ID only;
+        it grants no execution permission. Any attempt consumes the issue, including
+        rejected/malformed responses. New collect(), restart or expiry revokes it.
         """
         with self._lock:
-            payload, plans, keys = self._collect()
+            issued, self._pending = self._pending, None
+            payload, plans, keys, fingerprint = self._collect()
+            code = None
             if payload['status'] != 'available':
-                result = dict(accepted=False, code='COLLECTION_UNAVAILABLE', decision=None)
+                code = 'COLLECTION_UNAVAILABLE'
+            elif issued is None:
+                code = 'OBSERVATION_UNKNOWN'
             else:
-                result = decision.validate_ai_response(response_json, payload['snapshot'],
-                    observation_id=payload['observation_id'], workflow_plans=plans,
+                try:
+                    age = self._read_time() - issued['issued_at']
+                    if age < 0 or age >= self._max_age:
+                        code = 'OBSERVATION_EXPIRED'
+                except Exception:
+                    code = 'CLOCK_UNAVAILABLE'
+                if code is None and fingerprint != issued['fingerprint']:
+                    code = 'STATE_CHANGED'
+            if code is not None:
+                result = dict(accepted=False, code=code, decision=None)
+            else:
+                result = decision.validate_ai_response(response_json, issued['snapshot'],
+                    observation_id=issued['observation_id'], workflow_plans=plans,
                     registered_keys=keys)
             return dict(collection=payload, validation=result)
