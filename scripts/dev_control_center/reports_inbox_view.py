@@ -83,18 +83,10 @@ class _ReportTable:
     """Keep the inbox's row/selection interface while giving results resizable columns."""
 
     def __init__(self, master):
-        from .app import DARK_FIELD, DARK_FG, DARK_SELECTION, DARK_SURFACE
-
         self.frame = ttk.Frame(master)
         self.frame.columnconfigure(0, weight=1)
         self.frame.rowconfigure(0, weight=1)
         style = ttk.Style(master)
-        style.configure("Reports.Treeview", background=DARK_FIELD, fieldbackground=DARK_FIELD,
-                        foreground=DARK_FG)
-        style.map("Reports.Treeview", background=[("selected", DARK_SELECTION)],
-                  foreground=[("selected", DARK_FG)])
-        style.configure("Reports.Treeview.Heading", background=DARK_SURFACE, foreground=DARK_FG)
-        style.map("Reports.Treeview.Heading", background=[("active", DARK_FIELD)])
         self.tree = ttk.Treeview(self.frame, columns=("result", "start"), show="tree headings",
                                  selectmode="none", style="Reports.Treeview")
         body_font = tkfont.Font(root=master, font=style.lookup("Reports.Treeview", "font") or "TkDefaultFont")
@@ -111,11 +103,52 @@ class _ReportTable:
         self.tree.column("result", width=result_width, minwidth=result_width, stretch=False)
         self.tree.column("start", width=140, minwidth=100, stretch=False)
         self.tree.grid(row=0, column=0, sticky="nsew")
-        horizontal = ttk.Scrollbar(self.frame, orient="horizontal", command=self.tree.xview)
+        horizontal = self.horizontal = ttk.Scrollbar(self.frame, orient="horizontal", command=self.tree.xview)
         horizontal.grid(row=1, column=0, sticky="ew")
-        vertical = ttk.Scrollbar(self.frame, orient="vertical", command=self.tree.yview)
+        vertical = self.vertical = ttk.Scrollbar(self.frame, orient="vertical", command=self.tree.yview)
         vertical.grid(row=0, column=1, sticky="ns")
         self.tree.configure(xscrollcommand=horizontal.set, yscrollcommand=vertical.set)
+        self._theme_key = None
+        self.frame.bind("<<ThemeChanged>>", self._apply_theme, add="+")
+        self._apply_theme()
+
+    def _apply_theme(self, _event=None):
+        from .app import (DARK_BG, DARK_SURFACE, DARK_FIELD, DARK_BORDER, DARK_FG,
+                          DARK_MUTED, DARK_DISABLED_BG, DARK_SELECTION, DARK_ACCENT)
+
+        style = ttk.Style(self.frame)
+        key = (style.theme_use(), style.lookup("TFrame", "background"))
+        if key == self._theme_key:
+            return
+        self._theme_key = key
+        dark = key[1] == DARK_BG
+        if dark:
+            style.configure("Reports.TFrame", background=DARK_BG)
+            style.configure("Reports.Treeview", background=DARK_SURFACE,
+                            fieldbackground=DARK_SURFACE, foreground=DARK_FG,
+                            bordercolor=DARK_BORDER, lightcolor=DARK_BORDER,
+                            darkcolor=DARK_BORDER)
+            style.map("Reports.Treeview", background=[("selected", DARK_SELECTION)],
+                      foreground=[("selected", DARK_FG)])
+            style.configure("Reports.Treeview.Heading", background=DARK_FIELD,
+                            foreground=DARK_FG, bordercolor=DARK_BORDER,
+                            lightcolor=DARK_BORDER, darkcolor=DARK_BORDER)
+            style.map("Reports.Treeview.Heading",
+                      background=[("pressed", DARK_SELECTION), ("active", DARK_FIELD)],
+                      foreground=[("disabled", DARK_MUTED), ("active", DARK_FG)])
+            for orientation in ("Horizontal", "Vertical"):
+                name = f"Reports.{orientation}.TScrollbar"
+                style.configure(name, background=DARK_FIELD, troughcolor=DARK_BG,
+                                arrowcolor=DARK_FG, bordercolor=DARK_BORDER,
+                                lightcolor=DARK_BORDER, darkcolor=DARK_BORDER)
+                style.map(name, background=[("disabled", DARK_DISABLED_BG),
+                                           ("pressed", DARK_SELECTION), ("active", DARK_ACCENT)],
+                          arrowcolor=[("disabled", DARK_MUTED), ("active", DARK_FG)])
+        # Native light styles are left untouched; ttk styles are local to each theme.
+        self.frame.configure(style="Reports.TFrame" if dark else "TFrame")
+        self.tree.configure(style="Reports.Treeview" if dark else "Treeview")
+        self.horizontal.configure(style="Reports.Horizontal.TScrollbar" if dark else "Horizontal.TScrollbar")
+        self.vertical.configure(style="Reports.Vertical.TScrollbar" if dark else "Vertical.TScrollbar")
 
     def grid(self, **kwargs):
         self.frame.grid(**kwargs)

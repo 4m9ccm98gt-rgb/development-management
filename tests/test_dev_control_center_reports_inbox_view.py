@@ -107,7 +107,7 @@ class ReportTableLayoutTests(unittest.TestCase):
         self.assertFalse(result["stretch"])
         self.assertEqual(scrollbar.call_args_list[0].kwargs["command"], tree.xview)
         self.assertEqual(scrollbar.call_args_list[1].kwargs["command"], tree.yview)
-        tree.configure.assert_called_with(xscrollcommand=scrollbars[0].set, yscrollcommand=scrollbars[1].set)
+        tree.configure.assert_any_call(xscrollcommand=scrollbars[0].set, yscrollcommand=scrollbars[1].set)
         callback = mock.Mock(return_value="break")
         table.bind("<Button-1>", callback)
         handler = tree.bind.call_args.args[1]
@@ -118,6 +118,40 @@ class ReportTableLayoutTests(unittest.TestCase):
         tree.identify_region.return_value = "cell"
         self.assertEqual(handler(SimpleNamespace(x=10, y=40)), "break")
         callback.assert_called_once()
+
+
+class ReportTableThemeTests(unittest.TestCase):
+    def test_dark_palette_and_theme_switch_leave_native_light_styles_untouched(self):
+        table = view._ReportTable.__new__(view._ReportTable)
+        table.frame, table.tree = mock.Mock(), mock.Mock()
+        table.horizontal, table.vertical = mock.Mock(), mock.Mock()
+        table._theme_key = None
+        style = mock.Mock()
+        style.theme_use.return_value = "clam"
+        style.lookup.return_value = dcc.DARK_BG
+        with mock.patch.object(view.ttk, "Style", return_value=style):
+            table._apply_theme()
+            table.horizontal.configure.assert_called_with(style="Reports.Horizontal.TScrollbar")
+            table.vertical.configure.assert_called_with(style="Reports.Vertical.TScrollbar")
+            scrollbar_colors = next(c.kwargs for c in style.configure.call_args_list
+                                    if c.args == ("Reports.Horizontal.TScrollbar",))
+            self.assertEqual(scrollbar_colors["troughcolor"], dcc.DARK_BG)
+            self.assertEqual(scrollbar_colors["background"], dcc.DARK_FIELD)
+            self.assertEqual(scrollbar_colors["arrowcolor"], dcc.DARK_FG)
+            style.configure.reset_mock()
+            table._apply_theme()
+            style.configure.assert_not_called()  # no event feedback loop
+            style.theme_use.return_value = "default"
+            style.lookup.return_value = "#ffffff"
+            table._apply_theme()
+            style.configure.assert_not_called()
+            table.tree.configure.assert_called_with(style="Treeview")
+            table.frame.configure.assert_called_with(style="TFrame")
+            table.horizontal.configure.assert_called_with(style="Horizontal.TScrollbar")
+            style.theme_use.return_value = "clam"
+            style.lookup.return_value = dcc.DARK_BG
+            table._apply_theme()
+            table.tree.configure.assert_called_with(style="Reports.Treeview")
 
 
 class _FakeReportListbox:
