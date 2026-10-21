@@ -7,6 +7,8 @@ from unittest.mock import patch
 from scripts.dev_control_center import manager_decision as md
 from scripts.dev_control_center import manager_overview as overview
 from scripts.dev_control_center import workflow_plan as wf
+from scripts.dev_control_center import workflow_runner as wr
+from scripts.dev_control_center import reports_auto as auto
 from tests.test_dev_control_center_manager_overview import plan, task, KEYS, RID
 
 
@@ -36,6 +38,59 @@ class DecisionTests(unittest.TestCase):
             'TERMINAL', 'APPROVED_READY'])
         for value in decisions:
             self.assertTrue(self.validate(value, source)['accepted'])
+
+    def assert_candidates_match_runner(self, original, expected):
+        source = overview.build_snapshot([original], registered_keys=KEYS)
+        before = copy.deepcopy((original, source))
+        selected_before = copy.deepcopy(wr._eligible_task(original))
+        decisions = md.suggest_decisions(source, observation_id=1)
+        self.assertEqual([d['task_id'] for d in decisions if d['kind'] == 'PROPOSE_START'], expected)
+        self.assertEqual(expected, [selected_before['task_id']] if selected_before else [])
+        for decision in decisions:
+            self.assertTrue(self.validate(decision, source)['accepted'])
+            if decision['task_id'] not in expected:
+                forged = dict(decision, kind='PROPOSE_START', reason_code='APPROVED_READY')
+                self.assertEqual(self.validate(forged, source)['code'], 'STATE_CONFLICT')
+        self.assertEqual(wr._eligible_task(original), selected_before)
+        self.assertEqual((original, source), before)
+        return decisions
+
+    def test_only_first_ready_approved_task_is_start_candidate(self):
+        decisions = self.assert_candidates_match_runner(plan(task('T1'), task('T2')), ['T1'])
+        self.assertEqual((decisions[1]['kind'], decisions[1]['reason_code']), ('WAIT', 'QUEUED'))
+        self.assert_candidates_match_runner(plan(task('T2'), task('T1')), ['T2'])
+
+    def test_pending_dependency_is_skipped_for_later_ready_task(self):
+        decisions = self.assert_candidates_match_runner(
+            plan(task('T1', deps=['D1']), task('T2'), task('D1', 'proposed')), ['T2'])
+        self.assertEqual((decisions[0]['kind'], decisions[0]['reason_code']), ('WAIT', 'DEPENDENCIES_PENDING'))
+
+    def test_plan_blockers_prevent_all_start_candidates(self):
+        for status in ('running', 'failed', 'needs_human', 'candidate_ready'):
+            for tasks in ((task('B1', status), task('T1'), task('T2')),
+                          (task('T1'), task('T2'), task('B1', status))):
+                with self.subTest(status=status, first=tasks[0]['task_id']):
+                    self.assert_candidates_match_runner(plan(*tasks), [])
+
+    def test_proposals_do_not_change_runner_permission_or_execute(self):
+        original = plan(task('T1'), task('T2'))
+        source = overview.build_snapshot([original], registered_keys=KEYS)
+        kwargs = dict(global_config=auto.AutoModeConfig(enabled=False),
+                      runner_config=wr.WorkflowRunnerConfig(), today='2026-10-21',
+                      resolve_repo_dir=lambda _: None, busy_fn=lambda _: True,
+                      repo_run_blocked_fn=lambda _: True)
+        before = wr.plan_start_block_reason(original, **kwargs)
+        with patch.object(wr, 'plan_start_block_reason', side_effect=AssertionError), \
+             patch.object(wr, 'run_workflow_runner_once', side_effect=AssertionError), \
+             patch.object(wr, '_start_eligible_task', side_effect=AssertionError), \
+             patch.object(wr, '_set_task_status', side_effect=AssertionError), \
+             patch('subprocess.Popen', side_effect=AssertionError):
+            decisions = md.suggest_decisions(source, observation_id=1)
+            self.assertEqual(decisions[0]['kind'], 'PROPOSE_START')
+            self.assertTrue(self.validate(decisions[0], source)['accepted'])
+        self.assertEqual(wr.plan_start_block_reason(original, **kwargs), before)
+        self.assertEqual(before.code, wr.START_BLOCK_GLOBAL_OFF)
+        self.assertTrue(all(t['status'] == 'approved' for t in original['tasks']))
 
     def test_confirmed_running_is_wait(self):
         source = overview.build_snapshot([plan(task('T1', 'running'))], registered_keys=KEYS,

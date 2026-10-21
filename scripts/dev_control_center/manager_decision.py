@@ -158,7 +158,13 @@ def _suggest(task, tasks):
         return 'WAIT', 'TASK_ACTIVE'
     if task['dependency_state'] != 'satisfied':
         return 'WAIT', 'DEPENDENCIES_PENDING'
-    if any(t['status'] in ('running', 'candidate_ready', 'failed', 'needs_human') for t in tasks):
+    # Delegate plan order, dependency completion and plan-level blocking to the
+    # Runner's pure selector. Do not call its permission/config/repo/start APIs.
+    from . import workflow_runner
+    candidate = workflow_runner._eligible_task({'tasks': [
+        dict(task_id=t['task_id'], status=t['status'],
+             depends_on=[d['task_id'] for d in t['dependencies']]) for t in tasks]})
+    if candidate is None or candidate['task_id'] != task['task_id']:
         return 'WAIT', 'QUEUED'
     return 'PROPOSE_START', 'APPROVED_READY'
 
