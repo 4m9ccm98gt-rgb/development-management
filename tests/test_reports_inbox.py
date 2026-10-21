@@ -415,6 +415,54 @@ class DecisionPersistenceTests(unittest.TestCase):
         leftovers = [p for p in path.parent.iterdir() if p != path]
         self.assertEqual(leftovers, [])
 
+class DecisionOrUnreadableMarkerTests(unittest.TestCase):
+    """DCC Task 17-fix: decision_or_unreadable_marker is what reports_auto.py / reports_auto_start.py
+    use for their own "has a human decision been recorded" check -- it reads the exact same file
+    as load_decision (C5), but a file that exists yet cannot be parsed must come back as the
+    UNREADABLE_DECISION sentinel (安全側), never None, unlike load_decision itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.scope = mock.patch.object(inbox, "decisions_root", return_value=Path(self.tmp.name))
+        self.scope.start()
+        self.addCleanup(self.scope.stop)
+
+    def test_no_decision_file_returns_none(self):
+        self.assertIsNone(inbox.decision_or_unreadable_marker("app", "never-decided"))
+
+    def test_valid_decision_returns_the_same_decision_load_decision_would(self):
+        inbox.save_decision("app", "r1", "skip")
+        marker = inbox.decision_or_unreadable_marker("app", "r1")
+        self.assertEqual(marker, inbox.load_decision("app", "r1"))
+        self.assertIsNotNone(marker)
+
+    def test_corrupt_decision_file_returns_the_unreadable_sentinel_not_none(self):
+        path = inbox.decision_path("app", "r1")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json{{{", encoding="utf-8")
+        # load_decision itself degrades the same corrupt file to None (未対応 in the inbox) --
+        # the marker must not: a report whose decision record cannot be read stays "decided".
+        self.assertIsNone(inbox.load_decision("app", "r1"))
+        self.assertIsNotNone(inbox.decision_or_unreadable_marker("app", "r1"))
+        self.assertIs(inbox.decision_or_unreadable_marker("app", "r1"), inbox.UNREADABLE_DECISION)
+
+    def test_decision_file_missing_a_required_field_returns_the_unreadable_sentinel(self):
+        path = inbox.decision_path("app", "r1")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"app_key": "app"}), encoding="utf-8")
+        self.assertIsNone(inbox.load_decision("app", "r1"))
+        self.assertIs(inbox.decision_or_unreadable_marker("app", "r1"), inbox.UNREADABLE_DECISION)
+
+
+class BuildRowsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.scope = mock.patch.object(inbox, "decisions_root", return_value=Path(self.tmp.name))
+        self.scope.start()
+        self.addCleanup(self.scope.stop)
+
     def test_build_rows_merges_decisions_and_unresolved_only_excludes_decided(self):
         reports = [
             inbox.Report("app", "名", "a.json", 1, "r1", "2026-01-01T00:00:00Z", "bug", "note", "t1", "b1",

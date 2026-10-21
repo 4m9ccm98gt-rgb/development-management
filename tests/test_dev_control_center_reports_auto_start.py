@@ -686,6 +686,140 @@ class RunAutoStartOnceTests(unittest.TestCase):
             self.assertEqual(calls, [])
 
 
+class DecisionReCheckTests(unittest.TestCase):
+    """DCC Task 17-fix (C3/C4/C5/C6): reports_auto_start's own decision check now goes through
+    inbox.decision_or_unreadable_marker (not inbox.load_decision), so an unreadable decision
+    record is excluded the same safe-side way reports_auto.py's own check is, and -- unlike before
+    this task -- the decision is re-checked immediately before the real Orchestrator start, not
+    just once when the eligible report was first chosen. Uses the real inbox decision functions
+    (not the _no_decision fake every other test in this file injects), with inbox.decisions_root
+    patched to a temp dir -- the same pattern tests/test_reports_inbox.py itself uses -- so the
+    real %LOCALAPPDATA% is never touched (C8)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.scope = mock.patch.object(inbox, "decisions_root", return_value=Path(self.tmp.name) / "decisions")
+        self.scope.start()
+        self.addCleanup(self.scope.stop)
+
+    def _fixed_deps(self, tmp: Path) -> dict:
+        return dict(
+            daily_count_path=tmp / "count.json", records_dir=tmp / "records", log_dir=tmp / "run_log",
+            auto_results_root=tmp / "triage_results", waiting_dir=tmp / "waiting",
+        )
+
+    def _scan_fn(self, report):
+        return lambda apps: [inbox.AppInbox(report.app_key, report.app_display_name, True, "", (report,))]
+
+    def _fake_create_and_start(self, calls, *, run_dir=None):
+        def fn(report, criteria_lines, **kwargs):
+            calls.append(report.identity)
+            return cas.StartResult(True, "", spec_path=Path("/fake/spec.json"), run_dir=run_dir)
+        return fn
+
+    def _fake_create_and_start_invoking_start_run(self, calls, started_real):
+        """Same fake as RunAutoStartOnceTests._fake_create_and_start_invoking_start_run: actually
+        calls kwargs["start_run"](...) so the deep guard is really exercised."""
+        from tools.ai_orchestrator.runstate import ActiveRunExists
+
+        def fn(report, criteria_lines, **kwargs):
+            calls.append(report.identity)
+            try:
+                run_dir = kwargs["start_run"](repo="x", task="t", main_agent="claude",
+                                               review_agent="codex", spec=None)
+            except ActiveRunExists:
+                return cas.StartResult(False, cas.REASON_ALREADY_RUNNING, spec_path=Path("/fake/spec.json"))
+            started_real.append(run_dir)
+            return cas.StartResult(True, "", spec_path=Path("/fake/spec.json"), run_dir=run_dir)
+        return fn
+
+    # ------------------------------------------------------------------ C3
+    def test_unreadable_decision_record_excludes_the_report_from_automatic_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            path = inbox.decision_path(report.app_key, report.report_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("not json{{{", encoding="utf-8")
+            calls: list = []
+
+            result = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                create_and_start_fn=self._fake_create_and_start(calls), **self._fixed_deps(tmp),
+            )
+            self.assertEqual(calls, [])
+            self.assertEqual(result.status, auto_start.STATUS_NOTHING_TO_DO)
+
+    # ------------------------------------------------------------------ C4
+    def test_decision_recorded_during_spec_creation_stops_the_actual_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            deps = self._fixed_deps(tmp)
+            calls: list = []
+            started_real: list = []
+
+            def create_and_start_fn(rep, criteria_lines, **kwargs):
+                # A human records 見送る while this cycle's own spec-file creation is in flight --
+                # the guard right before the real Orchestrator start must still catch it.
+                inbox.save_decision(rep.app_key, rep.report_id, "skip")
+                return self._fake_create_and_start_invoking_start_run(
+                    calls, started_real)(rep, criteria_lines, **kwargs)
+
+            outcome = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                resolve_repo_dir=lambda app_key: tmp / "repos" / app_key, active_runs_fn=lambda repo: [],
+                create_and_start_fn=create_and_start_fn,
+                start_run_fn=lambda **kw: Path("/fake/run-dir"), **deps,
+            )
+            self.assertEqual(len(calls), 1)  # create_and_start_fn itself was invoked
+            self.assertEqual(started_real, [])  # but the guard blocked the real start_run
+            self.assertEqual(outcome.status, auto_start.STATUS_WAITING)
+            self.assertIsNone(auto_start.load_auto_start_record(
+                report.app_key, report.report_id, root=deps["records_dir"]))
+            self.assertEqual(auto_start._read_daily_count(auto.today_str(), deps["daily_count_path"]), 0)
+
+            # The decision now on record keeps the report out of the automatic target set on a
+            # later cycle too -- not just this one aborted attempt (C1, via the same marker).
+            second = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                resolve_repo_dir=lambda app_key: tmp / "repos" / app_key, active_runs_fn=lambda repo: [],
+                create_and_start_fn=self._fake_create_and_start(calls),
+                **deps,
+            )
+            self.assertEqual(len(calls), 1)  # create_and_start_fn never invoked again
+            self.assertEqual(second.status, auto_start.STATUS_NOTHING_TO_DO)
+
+    # ------------------------------------------------------------------ C6
+    def test_automatic_start_never_writes_or_modifies_the_decision_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            calls: list = []
+
+            result = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                resolve_repo_dir=lambda app_key: tmp / "repos" / app_key, active_runs_fn=lambda repo: [],
+                create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-dir")),
+                **self._fixed_deps(tmp),
+            )
+            self.assertEqual(result.status, auto_start.STATUS_STARTED)
+            self.assertIsNone(inbox.load_decision(report.app_key, report.report_id))
+            self.assertFalse(inbox.decision_path(report.app_key, report.report_id).exists())
+
+
 class LoadAutoStartRecordsTests(unittest.TestCase):
     def test_load_auto_start_records_maps_by_identity_and_skips_missing(self):
         with tempfile.TemporaryDirectory() as tmp:

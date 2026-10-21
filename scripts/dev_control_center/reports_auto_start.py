@@ -466,7 +466,11 @@ def _default_run_stage(run_id: str) -> str | None:
 
 
 def _default_load_decision(app_key: str, report_id: str):
-    return inbox.load_decision(app_key, report_id)
+    """DCC Task 17-fix (C1/C3/C5): inbox.decision_or_unreadable_marker, not inbox.load_decision --
+    a decision record that exists but could not be read back must count as "decided" here (安全
+    側), not silently degrade to "no decision" the way load_decision (and so the inbox's own 状態
+    column) does."""
+    return inbox.decision_or_unreadable_marker(app_key, report_id)
 
 
 # --------------------------------------------------------------------------- 仕様2/4: 実行本体
@@ -491,8 +495,10 @@ def _eligible_report(global_config: "auto.AutoModeConfig", start_config: AutoSta
             continue
         try:
             decided = load_decision_fn(report.app_key, report.report_id) is not None
-        except Exception:  # noqa: BLE001 - a broken decision lookup must not block eligibility forever
-            decided = False
+        except Exception:  # noqa: BLE001 - DCC Task 17-fix, C3: a broken decision lookup must
+            # stay on the safe side -- treated as "decided", never silently skipped over as if
+            # no decision existed.
+            decided = True
         if decided:
             continue
         return report
@@ -575,7 +581,12 @@ def run_auto_start_once(
     again if the guard aborts or create_and_start_fn itself hits a genuine Orchestrator race
     (REASON_ALREADY_RUNNING either way) -- never after a real success or a real failure, and the
     daily count is only consumed once one of those two real outcomes is known (never for a race or
-    a guard abort, so contention never silently eats the day's quota)."""
+    a guard abort, so contention never silently eats the day's quota).
+
+    DCC Task 17-fix (C4): whether a human decision has since been recorded for the chosen report
+    is re-checked the same way -- once right after the eligible report is chosen, and again inside
+    the same last-moment guard -- so a decision recorded while create_and_start_fn's own spec-file
+    creation was in flight still stops the real Orchestrator start."""
     global_config = global_config if global_config is not None else auto.load_auto_mode_config(global_config_path)
     start_config = start_config if start_config is not None else load_auto_start_config(start_config_path)
     today = today if today is not None else auto.today_str()
@@ -638,7 +649,8 @@ def run_auto_start_once(
 
     def _guarded_start_run(**start_run_kwargs):
         """C5: the actual last check before the Orchestrator starts -- re-reads the stop event,
-        both permissions, and the daily limit one more time, since create_and_start_fn's own spec
+        both permissions, the daily limit, and (DCC Task 17-fix, C4) whether a human decision has
+        since been recorded for this report, one more time, since create_and_start_fn's own spec
         creation/parsing (called just before this) can take an unpredictable amount of time. An
         abort here raises the same ActiveRunExists the real Orchestrator itself would raise on a
         genuine 1-repo-1-run race, so create_and_start_fn's existing REASON_ALREADY_RUNNING branch
@@ -649,6 +661,14 @@ def run_auto_start_once(
         # message text, never read back by create_and_start's except-clause (it matches on
         # exception type only) -- "" / "guard" are fixed literals, not report- or AI-derived.
         if stop_event is not None and stop_event.is_set():
+            raise ActiveRunExists("", "guard")
+        try:
+            decided_now = load_decision_fn(report.app_key, report.report_id) is not None
+        except Exception:  # noqa: BLE001 - C3: an unreadable decision lookup stays on the safe
+            # side here too -- treated as "decided", so the start is aborted rather than let
+            # through on an inconclusive read.
+            decided_now = True
+        if decided_now:
             raise ActiveRunExists("", "guard")
         latest_global = _current_global_config(current_global, global_config_path)
         latest_start = _current_start_config(current_start, start_config_path)

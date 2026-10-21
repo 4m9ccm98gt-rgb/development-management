@@ -514,6 +514,35 @@ def load_decisions(identities: Iterable[tuple[str, str]]) -> dict[tuple[str, str
     return out
 
 
+class _UnreadableDecision:
+    """DCC Task 17-fix: a sentinel, never a real Decision, returned by
+    decision_or_unreadable_marker when a decision file exists but could not be parsed -- distinct
+    from None (no file at all) for a caller that only checks "is not None"."""
+
+    __slots__ = ()
+
+
+UNREADABLE_DECISION = _UnreadableDecision()
+
+
+def decision_or_unreadable_marker(app_key: str, report_id: str) -> "Decision | _UnreadableDecision | None":
+    """DCC Task 17-fix (C1/C3/C5): reads the exact same file load_decision does (decision_path) --
+    never a separate record -- but a file that exists yet cannot be parsed returns
+    UNREADABLE_DECISION instead of degrading to None the way load_decision (and so the inbox's own
+    状態 column, unchanged by this task) does. Automatic processing (reports_auto.py /
+    reports_auto_start.py) uses this, not load_decision, for its own "has a human decision been
+    recorded" check, so an unreadable/corrupt record keeps a report out of the automatic target set
+    on the safe side, while the inbox's display of that same report is untouched."""
+    decision = load_decision(app_key, report_id)
+    if decision is not None:
+        return decision
+    try:
+        exists = decision_path(app_key, report_id).exists()
+    except OSError:
+        return UNREADABLE_DECISION  # cannot tell either way -- stay on the safe side
+    return UNREADABLE_DECISION if exists else None
+
+
 def build_rows(inboxes: Iterable[AppInbox]) -> list[ReportRow]:
     reports = all_reports(inboxes)
     decisions = load_decisions(r.identity for r in reports)

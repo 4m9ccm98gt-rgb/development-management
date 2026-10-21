@@ -291,7 +291,7 @@ class PersistenceTests(unittest.TestCase):
             self.ci_fn.return_value = ci
             self.refresh()
             window._tick()
-            self.assertIn(expected, window.report_list.insert.call_args.args[1])
+            self.assertIn(expected, window.report_list.insert.call_args.args[2])
         auto.save_auto_mode_config(auto.AutoModeConfig(), window._auto_config_path)
         window._tick()
         self.assertEqual(window._approval_labels, {})

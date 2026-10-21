@@ -242,10 +242,19 @@ def _write_report_file(pending_dir: Path, *, report_id: str, app_id: str = "next
     return path
 
 
+def _no_decision(_app_key: str, _report_id: str):
+    return None
+
+
 class RunAutoTriageOnceTests(unittest.TestCase):
     def _fixed_deps(self, tmp: Path):
+        # load_decision_fn is always a fake here (DCC Task 17-fix, C8): none of these pre-existing
+        # tests are about human decisions, so every one of them must see "no decision recorded"
+        # without ever touching the real %LOCALAPPDATA%. The decision-exclusion behavior itself is
+        # covered by its own tests below.
         return dict(
             daily_count_path=tmp / "count.json", results_dir=tmp / "results", log_dir=tmp / "run_log",
+            load_decision_fn=_no_decision,
         )
 
     # ------------------------------------------------------------------ C1
@@ -601,6 +610,160 @@ class RunAutoTriageOnceTests(unittest.TestCase):
                 **self._fixed_deps(tmp),
             )
             self.assertEqual(outcome.status, auto.STATUS_NOTHING_TO_DO)
+
+
+class DecisionExclusionTests(unittest.TestCase):
+    """DCC Task 17-fix: a report the inbox already shows a human decision for (対応する/実機で
+    調べる/見送る alike), or whose decision record cannot be read, must never be picked for
+    automatic investigation. These tests use the real inbox.decision_or_unreadable_marker /
+    inbox.save_decision (not a fake), with inbox.decisions_root patched to a temp dir -- the same
+    pattern tests/test_reports_inbox.py itself uses -- so the eligibility check and the inbox's
+    own display are shown to read the exact same on-disk record (C5), while never touching the
+    real %LOCALAPPDATA% (C8)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.scope = mock.patch.object(inbox, "decisions_root", return_value=Path(self.tmp.name) / "decisions")
+        self.scope.start()
+        self.addCleanup(self.scope.stop)
+
+    def _fixed_deps(self, tmp: Path):
+        return dict(
+            daily_count_path=tmp / "count.json", results_dir=tmp / "results", log_dir=tmp / "run_log",
+        )
+
+    # ------------------------------------------------------------------ C1
+    def test_report_with_a_recorded_human_decision_is_never_investigated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            for decision_kind in ("handle", "skip", "investigate"):
+                with self.subTest(decision_kind):
+                    report = make_report(report_id=f"r-{decision_kind}")
+                    inbox.save_decision("next-day-setup", report.report_id, decision_kind)
+                    investigate = mock.Mock()
+                    scan_fn = lambda apps, _r=report: [
+                        inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (_r,))]
+                    outcome = auto.run_auto_triage_once(
+                        config=config, investigate_fn=investigate,
+                        reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                        **self._fixed_deps(tmp / decision_kind),
+                    )
+                    investigate.assert_not_called()
+                    self.assertEqual(outcome.status, auto.STATUS_NOTHING_TO_DO)
+
+    # ------------------------------------------------------------------ C2
+    def test_new_report_without_any_decision_is_still_investigated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report(report_id="r-undecided")
+            investigate = mock.Mock(return_value=triage.TriageOutcome(make_triage_result()))
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+            outcome = auto.run_auto_triage_once(
+                config=config, investigate_fn=investigate,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                **self._fixed_deps(tmp),
+            )
+            investigate.assert_called_once()
+            self.assertEqual(outcome.status, auto.STATUS_RAN)
+
+    # ------------------------------------------------------------------ C1 (mixed)
+    def test_only_the_undecided_report_among_several_is_investigated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            decided_report = make_report(report_id="r-decided")
+            undecided_report = make_report(report_id="r-undecided-2")
+            inbox.save_decision("next-day-setup", decided_report.report_id, "skip")
+            calls: list[str] = []
+
+            def investigate(report):
+                calls.append(report.report_id)
+                return triage.TriageOutcome(make_triage_result())
+
+            scan_fn = lambda apps: [inbox.AppInbox(
+                "next-day-setup", "夕食料飲システム", True, "", (decided_report, undecided_report))]
+            outcome = auto.run_auto_triage_once(
+                config=config, investigate_fn=investigate,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                **self._fixed_deps(tmp),
+            )
+            self.assertEqual(outcome.status, auto.STATUS_RAN)
+            self.assertEqual(calls, ["r-undecided-2"])
+
+    # ------------------------------------------------------------------ C3
+    def test_unreadable_decision_record_also_excludes_the_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report(report_id="r-corrupt")
+            path = inbox.decision_path("next-day-setup", report.report_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("not json{{{", encoding="utf-8")
+            investigate = mock.Mock()
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+
+            outcome = auto.run_auto_triage_once(
+                config=config, investigate_fn=investigate,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                **self._fixed_deps(tmp),
+            )
+            investigate.assert_not_called()
+            self.assertEqual(outcome.status, auto.STATUS_NOTHING_TO_DO)
+
+    # ------------------------------------------------------------------ C5
+    def test_auto_triage_exclusion_and_the_inbox_display_agree_on_the_same_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report(report_id="r-shown")
+            inbox.save_decision("next-day-setup", report.report_id, "handle")
+            investigate = mock.Mock()
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+
+            outcome = auto.run_auto_triage_once(
+                config=config, investigate_fn=investigate,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                **self._fixed_deps(tmp),
+            )
+            investigate.assert_not_called()
+            self.assertEqual(outcome.status, auto.STATUS_NOTHING_TO_DO)
+
+            # The same inbox the auto-triage check reads from shows this report's status as 対応
+            # する -- not 未対応 -- proving both sides saw the same saved decision.
+            rows = inbox.build_rows([inbox.AppInbox(
+                "next-day-setup", "夕食料飲システム", True, "", (report,))])
+            self.assertEqual(rows[0].status_label, "対応する")
+            # No new auto-triage result was ever recorded for it: the inbox's own 自動調査の結果
+            # column shows nothing for this report, unchanged from before this task (仕様3).
+            self.assertIsNone(auto.load_auto_result(
+                "next-day-setup", report.report_id, root=tmp / "results"))
+
+    # ------------------------------------------------------------------ C6
+    def test_automatic_triage_never_writes_or_modifies_the_decision_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            decided_report = make_report(report_id="r-untouched")
+            inbox.save_decision("next-day-setup", decided_report.report_id, "skip", reason="優先度低")
+            path = inbox.decision_path("next-day-setup", decided_report.report_id)
+            before = path.read_bytes()
+            undecided_report = make_report(report_id="r-fresh")
+            investigate = mock.Mock(return_value=triage.TriageOutcome(make_triage_result()))
+
+            scan_fn = lambda apps: [inbox.AppInbox(
+                "next-day-setup", "夕食料飲システム", True, "", (decided_report, undecided_report))]
+            auto.run_auto_triage_once(
+                config=config, investigate_fn=investigate,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                **self._fixed_deps(tmp),
+            )
+
+            self.assertEqual(path.read_bytes(), before)
+            # No new decision file was created for the report auto-triage did investigate either.
+            self.assertIsNone(inbox.load_decision("next-day-setup", undecided_report.report_id))
 
 
 class LoadAutoResultsTests(unittest.TestCase):

@@ -372,11 +372,31 @@ class AutoTriageRunOutcome:
     record: AutoTriageRecord | None = None
 
 
-def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path | None) -> "inbox.Report | None":
+def _default_load_decision_marker(app_key: str, report_id: str):
+    return inbox.decision_or_unreadable_marker(app_key, report_id)
+
+
+def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path | None,
+                      load_decision_fn: Callable[[str, str], object] | None = None) -> "inbox.Report | None":
+    """DCC Task 17-fix (C1/C2/C3): a report with any human decision recorded in the inbox
+    (対応する/実機で調べる/見送る alike) is never picked for automatic investigation, and the same
+    holds -- safe side -- when that decision record exists but could not be read back
+    (load_decision_fn then returns inbox.UNREADABLE_DECISION, never None). `load_decision_fn`
+    defaults to inbox.decision_or_unreadable_marker, the exact same on-disk record
+    (reports_inbox.decision_path) the inbox window's own 状態 column reads (C5); tests inject a
+    fake so this never touches the real %LOCALAPPDATA%."""
+    load_decision_fn = load_decision_fn or _default_load_decision_marker
     for report in reports:
         if not app_allowed(config, report.app_key):
             continue
         if already_investigated(report.app_key, report.report_id, root=results_dir):
+            continue
+        try:
+            decided = load_decision_fn(report.app_key, report.report_id) is not None
+        except Exception:  # noqa: BLE001 - an unreadable decision lookup must stay on the safe
+            # side (C3): treated as "decided", never silently skipped over as if undecided.
+            decided = True
+        if decided:
             continue
         return report
     return None
@@ -402,6 +422,7 @@ def run_auto_triage_once(
     reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None,
     scan_fn: Callable[[list], list] | None = None,
     investigate_fn: Callable[["inbox.Report"], "triage.TriageOutcome"] | None = None,
+    load_decision_fn: Callable[[str, str], object] | None = None,
     daily_count_path: Path | None = None,
     results_dir: Path | None = None,
     log_dir: Path | None = None,
@@ -421,7 +442,14 @@ def run_auto_triage_once(
     re-checked (via `_current_config`) immediately before investigate_fn is actually called --
     not just once at the top -- so a human switching automatic mode off (or DCC shutting down)
     while the inbox scan above was in flight still stops the one AI call this cycle would
-    otherwise have made."""
+    otherwise have made.
+
+    `load_decision_fn` (DCC Task 17-fix, C1/C2/C3/C5) is passed through to _eligible_report: a
+    report with any human decision already recorded in the inbox -- or whose decision record
+    exists but could not be read back -- is never selected here, so investigate_fn is never
+    called for it. Defaults to inbox.decision_or_unreadable_marker, the same on-disk record the
+    inbox window's own 状態 column reads; tests inject a fake so nothing here ever touches the
+    real %LOCALAPPDATA%."""
     config = config if config is not None else load_auto_mode_config(config_path)
     today = today if today is not None else today_str()
 
@@ -439,7 +467,7 @@ def run_auto_triage_once(
     inboxes = scan_fn(apps)
     reports = inbox.all_reports(inboxes)
 
-    report = _eligible_report(config, reports, results_dir=results_dir)
+    report = _eligible_report(config, reports, results_dir=results_dir, load_decision_fn=load_decision_fn)
     if report is None:
         return AutoTriageRunOutcome(STATUS_NOTHING_TO_DO, "対象の報告がありません。")
 
