@@ -90,6 +90,36 @@ class TruncateAndRowHelpersTests(unittest.TestCase):
         self.assertIn("未対応", line)
 
 
+class ReportTableLayoutTests(unittest.TestCase):
+    def test_result_width_measures_fixed_labels_and_scrollbars_are_connected(self):
+        tree = mock.Mock()
+        scrollbars = [mock.Mock(), mock.Mock()]
+        font = mock.Mock()
+        font.measure.side_effect = lambda text: len(text) * 24
+        with mock.patch.object(view.ttk, "Frame"), mock.patch.object(view.ttk, "Style"), \
+                mock.patch.object(view.ttk, "Treeview", return_value=tree), \
+                mock.patch.object(view.ttk, "Scrollbar", side_effect=scrollbars) as scrollbar, \
+                mock.patch.object(view.tkfont, "Font", return_value=font):
+            table = view._ReportTable(object())
+        result = next(call.kwargs for call in tree.column.call_args_list if call.args == ("result",))
+        self.assertGreaterEqual(result["width"], font.measure(auto.OUTCOME_PROCEED) + 32)
+        self.assertEqual(result["minwidth"], result["width"])
+        self.assertFalse(result["stretch"])
+        self.assertEqual(scrollbar.call_args_list[0].kwargs["command"], tree.xview)
+        self.assertEqual(scrollbar.call_args_list[1].kwargs["command"], tree.yview)
+        tree.configure.assert_called_with(xscrollcommand=scrollbars[0].set, yscrollcommand=scrollbars[1].set)
+        callback = mock.Mock(return_value="break")
+        table.bind("<Button-1>", callback)
+        handler = tree.bind.call_args.args[1]
+        for region in ("heading", "separator", "nothing"):
+            tree.identify_region.return_value = region
+            self.assertIsNone(handler(SimpleNamespace(x=10, y=10)))
+        callback.assert_not_called()
+        tree.identify_region.return_value = "cell"
+        self.assertEqual(handler(SimpleNamespace(x=10, y=40)), "break")
+        callback.assert_called_once()
+
+
 class _FakeReportListbox:
     def __init__(self, rows):
         self.rows = rows
@@ -273,8 +303,9 @@ class _FakeContentListbox:
     def delete(self, _start, _end):
         self.items = []
 
-    def insert(self, _index, value):
-        self.items.append(value)
+    def insert(self, _index, value, outcome="", start=""):
+        self.items.append(value + (f"  [自動調査: {outcome}]" if outcome else "")
+                          + (f"  [自動開始: {start}]" if start else ""))
 
     def get(self, _start, _end):
         return tuple(self.items)
@@ -415,6 +446,9 @@ class ReportsInboxWindowCase(unittest.TestCase):
             requeue_config_path=state_root / "requeue_config.json",
             auto_progress_labels_root=state_root / "auto_progress_labels",
         )
+        table_patch = mock.patch.object(view, "_ReportTable", _FakeContentListbox)
+        table_patch.start()
+        self.addCleanup(table_patch.stop)
         self.master = object()
         self.window = None
         self.addCleanup(self._destroy)

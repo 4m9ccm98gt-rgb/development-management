@@ -11,7 +11,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, font as tkfont
 from typing import Callable
 
 from . import orchestrator_requeue as requeue
@@ -77,6 +77,86 @@ def _set_enabled(widget, enabled: bool) -> None:
     if bool(widget.instate(["disabled"])) == (not enabled):
         return
     widget.state(["!disabled" if enabled else "disabled"])
+
+
+class _ReportTable:
+    """Keep the inbox's row/selection interface while giving results resizable columns."""
+
+    def __init__(self, master):
+        from .app import DARK_FIELD, DARK_FG, DARK_SELECTION, DARK_SURFACE
+
+        self.frame = ttk.Frame(master)
+        self.frame.columnconfigure(0, weight=1)
+        self.frame.rowconfigure(0, weight=1)
+        style = ttk.Style(master)
+        style.configure("Reports.Treeview", background=DARK_FIELD, fieldbackground=DARK_FIELD,
+                        foreground=DARK_FG)
+        style.map("Reports.Treeview", background=[("selected", DARK_SELECTION)],
+                  foreground=[("selected", DARK_FG)])
+        style.configure("Reports.Treeview.Heading", background=DARK_SURFACE, foreground=DARK_FG)
+        style.map("Reports.Treeview.Heading", background=[("active", DARK_FIELD)])
+        self.tree = ttk.Treeview(self.frame, columns=("result", "start"), show="tree headings",
+                                 selectmode="none", style="Reports.Treeview")
+        body_font = tkfont.Font(root=master, font=style.lookup("Reports.Treeview", "font") or "TkDefaultFont")
+        heading_font = tkfont.Font(root=master, font=style.lookup("Reports.Treeview.Heading", "font") or "TkHeadingFont")
+        labels = (auto.OUTCOME_PROCEED, auto.OUTCOME_NEEDS_HUMAN, auto.OUTCOME_NOT_APPLICABLE,
+                  auto.OUTCOME_FAILED, approve.ELIGIBLE, progress.STATE_IN_PROGRESS,
+                  progress.STATE_RELEASE_READY, progress.STATE_NEEDS_HUMAN)
+        result_width = max(heading_font.measure("自動調査の結果"),
+                           *(body_font.measure(label) for label in labels)) + 32
+        self.tree.heading("#0", text="報告（状態）", anchor="w")
+        self.tree.heading("result", text="自動調査の結果", anchor="w")
+        self.tree.heading("start", text="自動開始", anchor="w")
+        self.tree.column("#0", width=520, minwidth=180, stretch=False)
+        self.tree.column("result", width=result_width, minwidth=result_width, stretch=False)
+        self.tree.column("start", width=140, minwidth=100, stretch=False)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        horizontal = ttk.Scrollbar(self.frame, orient="horizontal", command=self.tree.xview)
+        horizontal.grid(row=1, column=0, sticky="ew")
+        vertical = ttk.Scrollbar(self.frame, orient="vertical", command=self.tree.yview)
+        vertical.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(xscrollcommand=horizontal.set, yscrollcommand=vertical.set)
+
+    def grid(self, **kwargs):
+        self.frame.grid(**kwargs)
+
+    def bind(self, sequence, callback):
+        def rows_only(event):
+            # Leave headings/separators to ttk so dragging a column boundary still works.
+            if self.tree.identify_region(event.x, event.y) in ("heading", "separator", "nothing"):
+                return None
+            return callback(event)
+        self.tree.bind(sequence, rows_only)
+
+    def delete(self, _start, _end):
+        children = self.tree.get_children()
+        if children:
+            self.tree.delete(*children)
+
+    def insert(self, _index, text, outcome="", start=""):
+        self.tree.insert("", "end", text=text, values=(outcome, start))
+
+    def size(self):
+        return len(self.tree.get_children())
+
+    def nearest(self, y):
+        item = self.tree.identify_row(y)
+        return self.tree.index(item) if item else -1
+
+    def bbox(self, index):
+        children = self.tree.get_children()
+        return self.tree.bbox(children[index]) if 0 <= index < len(children) else None
+
+    def selection_clear(self, _start, _end):
+        selected = self.tree.selection()
+        if selected:
+            self.tree.selection_remove(*selected)
+
+    def selection_set(self, index):
+        self.tree.selection_set(self.tree.get_children()[index])
+
+    def focus_set(self):
+        self.tree.focus_set()
 
 
 class ReportsInboxWindow:
@@ -265,8 +345,7 @@ class ReportsInboxWindow:
         left.rowconfigure(4, weight=1)
         left.columnconfigure(0, weight=1)
         ttk.Label(left, text="報告一覧（新しい順）").grid(row=0, column=0, sticky="w")
-        self.report_list = tk.Listbox(left, width=70, exportselection=False)
-        configure_dark_listbox(self.report_list)
+        self.report_list = _ReportTable(left)
         self.report_list.grid(row=1, column=0, sticky="nsew", pady=(4, 8))
         self.report_list.bind("<Button-1>", self._on_report_click)
         self.report_list.bind("<B1-Motion>", self._on_report_drag)
@@ -572,10 +651,10 @@ class ReportsInboxWindow:
         if self.unresolved_only_var.get():
             rows = inbox.unresolved_only(rows)
         self.visible_rows = rows
-        lines = [row_line(r, self._auto_outcome_label(r), self._auto_start_result_label(r)) for r in rows]
         self.report_list.delete(0, "end")
-        for line in lines:
-            self.report_list.insert("end", line)
+        for row in rows:
+            self.report_list.insert("end", row_line(row), self._auto_outcome_label(row),
+                                    self._auto_start_result_label(row))
         self._sync_listbox_selection()
 
     def _render_broken(self) -> None:
