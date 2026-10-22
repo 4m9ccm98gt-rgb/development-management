@@ -15,7 +15,7 @@ def render_art(key):
     s = 2
     canvas = Image.new('RGBA', (w * s, h * s), BG)
     draw = ImageDraw.Draw(canvas)
-    if kind in ('card', 'panel'):
+    if kind in ('card', 'panel', 'station'):
         margin, radius = (5 * s, 12 * s)
         mask = Image.new('L', canvas.size)
         ImageDraw.Draw(mask).rounded_rectangle((margin, margin, w * s - margin - 1, h * s - margin - 1), radius, fill=255)
@@ -25,9 +25,14 @@ def render_art(key):
         gradient = Image.new('RGBA', canvas.size)
         gd = ImageDraw.Draw(gradient)
         boost = 10 if state != 'normal' else 0
+        rgb = bytes.fromhex(accent[1:]) if kind == 'station' else None
         for y in range(h * s):
             t = y / max(1, h * s - 1)
-            gd.line((0, y, w * s, y), fill=(int(22 - 11 * t) + boost, int(37 - 15 * t) + boost, int(66 - 26 * t) + boost, 255))
+            base = (int(22 - 11*t)+boost, int(37 - 15*t)+boost, int(66 - 26*t)+boost)
+            if kind == 'station':
+                tint = .16 - .10*t
+                base = tuple(round(value*(1-tint)+channel*tint) for value, channel in zip(base, rgb))
+            gd.line((0, y, w*s, y), fill=(*base, 255))
         canvas.paste(gradient, (0, 0), mask)
         draw = ImageDraw.Draw(canvas)
         draw.rounded_rectangle((margin, margin, w * s - margin - 1, h * s - margin - 1), radius, outline=accent, width=(2 if state == 'selected' else 1) * s)

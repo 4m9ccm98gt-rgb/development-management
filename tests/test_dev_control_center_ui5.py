@@ -37,6 +37,17 @@ class RasterTests(unittest.TestCase):
         self.assertNotEqual(normal.tobytes(),hover.tobytes())
         self.assertNotEqual(normal.getpixel((25,25)),normal.getpixel((25,85)))
 
+    def test_station_panels_have_distinct_tinted_gradients(self):
+        from scripts.dev_control_center.orchestrator_loop import COLORS, STATIONS
+        samples=[]
+        for name in STATIONS:
+            image=art.render_art(('station',192,130,COLORS[name],'normal'))
+            self.assertEqual(image.size,(192,130))
+            self.assertNotEqual(image.getpixel((40,20)),image.getpixel((40,110)))
+            self.assertNotEqual(image.getpixel((0,0)),image.getpixel((40,20)))
+            samples.append(image.getpixel((40,20)))
+        self.assertEqual(len(set(samples)),4)
+
     def test_raster_size_guard(self):
         with self.assertRaises(ValueError):art.render_art(('ring',8000,8000,'#000000','normal'))
 
@@ -169,6 +180,47 @@ class BoardTests(loop_tests.BoardTests):
                 board.set_model(copy.deepcopy(model));headers.assert_not_called()
             self.assertEqual(board._widgets,before)
 
+    def test_station_zero_hides_whole_area_and_restores_without_moving_ring(self):
+        from scripts.dev_control_center import orchestrator_loop as loop
+        board=self.make_board()
+        items=dict(board._station_items)
+        for item in items.values():self.assertEqual(board.loop.rows[item][1]['state'],'hidden')
+        agent=Mock();board.attach_character(agent);agent.reset_mock()
+        stages=['implementing','testing','reviewing','repairing','testing']
+        model=lanes.build_lanes([], [run(stage,rid=f'20261022-000000-{i:06}') for i,stage in enumerate(stages)])
+        board.loop.itemconfigure=Mock();board.loop.coords=Mock()
+        with patch.object(board,'_draw_ring') as ring:
+            board.set_model(model)
+            for name in loop.STATIONS:
+                board.loop.itemconfigure.assert_any_call(items[name],state='normal')
+            self.assertEqual(len(board.cards['Testing']),2)
+            first=board.cards['Testing'][0]
+            board.set_model(copy.deepcopy(model))
+            self.assertIs(board.cards['Testing'][0],first)
+            for surface in board._station_surfaces.values():surface.set_visible.assert_called_once_with(True)
+            saved=board.cards['Reviewing'][0]
+            empty={name:[] for name in lanes.LANES}
+            board.set_model(empty)
+            for name in loop.STATIONS:
+                board.loop.itemconfigure.assert_any_call(items[name],state='hidden')
+                self.assertFalse(board._station_visible[name])
+            board.set_model(model)
+            self.assertEqual(board._station_items,items)
+            self.assertEqual(len(board.cards['Testing']),2)
+            self.assertTrue(saved.destroyed)
+            ring.assert_not_called();agent.move.assert_not_called();board.loop.coords.assert_not_called()
+
+    def test_station_removal_only_changes_that_station_visibility(self):
+        board=self.make_board()
+        model=lanes.build_lanes([], [run('testing'),run('reviewing',rid='20261022-000000-000002')])
+        board.set_model(model)
+        review=board.cards['Reviewing'][0]
+        board.loop.itemconfigure=Mock()
+        board.set_model(lanes.build_lanes([], [run('reviewing',rid='20261022-000000-000002')]))
+        board.loop.itemconfigure.assert_called_once_with(board._station_items['Testing'],state='hidden')
+        self.assertIs(board.cards['Reviewing'][0],review)
+        self.assertTrue(board._station_visible['Reviewing'])
+
     def test_resize_burst_one_draw_same_size_cached_and_close_cancels(self):
         board=self.make_board()
         board.loop.after=Mock(return_value='resize');board.loop.after_cancel=Mock()
@@ -239,3 +291,31 @@ class CanvasCardTests(unittest.TestCase):
         obj._background();obj.after.assert_called_once()
         with patch.object(art,'render_art') as render:
             obj._closed=True;obj._background();render.assert_not_called()
+
+
+class PanelVisibilityTests(unittest.TestCase):
+    def make_panel(self):
+        obj=object.__new__(cards.PanelSurface)
+        obj._closed=False;obj._visible=True;obj._job='previous'
+        obj._kind='station';obj._accent='#2ba8ff';obj._size=(192,130);obj._inset=8
+        obj._content=1;obj._painted=('station',192,130,'#2ba8ff','normal');obj._photo=object()
+        obj._art=Mock();obj.itemconfigure=Mock();obj.after=Mock(return_value='next');obj.after_cancel=Mock()
+        return obj
+
+    def test_hide_cancels_pending_paint_and_restore_reuses_cached_image(self):
+        obj=self.make_panel();photo=obj._photo
+        obj.set_visible(False)
+        obj.after_cancel.assert_called_once_with('previous')
+        obj.after.assert_not_called()
+        obj._paint();obj._art.request.assert_not_called()
+        obj.set_visible(True);obj._paint()
+        self.assertIs(obj._photo,photo);obj._art.request.assert_not_called()
+        obj.after.assert_called_once()
+        obj.set_visible(True);obj.after.assert_called_once()
+
+    def test_hidden_resize_updates_dimensions_without_scheduling_render(self):
+        obj=self.make_panel();obj._visible=False;obj._job=None
+        obj._resize(SimpleNamespace(width=220,height=150))
+        self.assertEqual(obj._size,(220,150))
+        obj.after.assert_not_called();obj._art.request.assert_not_called()
+        obj.itemconfigure.assert_called_once_with(1,width=204,height=134)

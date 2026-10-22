@@ -142,11 +142,14 @@ class CanvasCard(tk.Canvas):
 class PanelSurface(tk.Canvas):
     """Rounded static panel border; content widgets stay stable inside the inset."""
 
-    def __init__(self, master, *, art, accent):
+    def __init__(self, master, *, art, accent, kind='panel', inset=12, visible=True):
         from tkinter import ttk
         super().__init__(master, background=BG, highlightthickness=0, width=210, height=580)
         self._art = art
         self._accent = accent
+        self._kind = kind
+        self._inset = inset
+        self._visible = visible
         self._job = None
         self._closed = False
         self._photo = None
@@ -154,7 +157,7 @@ class PanelSurface(tk.Canvas):
         self._size = (210, 580)
         self._image = self.create_image(0, 0, anchor='nw')
         self.content = ttk.Frame(self, style='OrchestratorLoop.TFrame')
-        self._content = self.create_window(12, 12, window=self.content, anchor='nw')
+        self._content = self.create_window(inset, inset, window=self.content, anchor='nw')
         self.bind('<Configure>', self._resize)
 
     def _resize(self, event):
@@ -162,16 +165,24 @@ class PanelSurface(tk.Canvas):
         if size == self._size and self._painted is not None:
             return
         self._size = size
-        self.itemconfigure(self._content, width=max(10, size[0] - 24), height=max(10, size[1] - 24))
+        self.itemconfigure(self._content, width=max(10, size[0] - 2*self._inset), height=max(10, size[1] - 2*self._inset))
         if self._job is not None:
             self.after_cancel(self._job)
-        self._job = self.after(90, self._paint)
+        self._job = self.after(90, self._paint) if self._visible else None
+
+    def set_visible(self, visible):
+        if self._closed or self._visible == visible:
+            return
+        self._visible = visible
+        if self._job is not None:
+            self.after_cancel(self._job)
+        self._job = self.after(90, self._paint) if visible else None
 
     def _paint(self):
         self._job = None
-        if self._closed:
+        if self._closed or not self._visible:
             return
-        key = ('panel', *self._size, self._accent, 'normal')
+        key = (self._kind, *self._size, self._accent, 'normal')
         if key == self._painted:
             return
         raster = self._art.request(key)
