@@ -75,9 +75,9 @@ class LaneModelTests(GuardedTests):
         cards, _ = feed.poll()
         self.assertEqual(cards[0]['priority'], 'PX')
         clock[0] = 11
-        self.assertEqual(feed.poll()[0], [])
+        self.assertEqual(feed.poll()[0][0]['state'], '前回取得・現在状態は確認待ち')
         work.pop()()
-        self.assertEqual(feed.poll()[0], [])
+        self.assertEqual(feed.poll()[0][0]['priority'], 'PX')
         clock[0] = 30
         feed.poll()
         feed.stop.set()
@@ -102,6 +102,8 @@ class LaneModelTests(GuardedTests):
             def yview_moveto(self, fraction): self.fraction = fraction
         class Button(Widget):
             def destroy(self): pass
+            def pack_forget(self): pass
+            def state(self, states): self.options['state'] = states
             def winfo_y(self): return 500
             def winfo_height(self): return 80
         widgets = SimpleNamespace(Frame=Widget, Label=Widget, Scrollbar=Widget, Button=Button, Style=FakeStyle)

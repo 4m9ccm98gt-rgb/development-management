@@ -689,6 +689,7 @@ class _FakeFrame(_FakeTkWidget):
 
     def grid(self, **_kwargs):
         self._gridded = True
+        self.grid_options = dict(_kwargs)
 
     def grid_remove(self):
         self._gridded = False
@@ -809,6 +810,9 @@ class _FakeStyle:
 
     def map(self, *_args, **_kwargs):
         pass
+    def element_names(self): return ()
+    def element_create(self, *args): pass
+    def layout(self, *args): pass
 
 
 class _FakeStartFormToplevel(_FakeTkWidget):

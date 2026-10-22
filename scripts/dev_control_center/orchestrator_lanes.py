@@ -44,7 +44,8 @@ def workflow_cards(payload, memory=False):
             '状態・所属確認待ち' if t['unknown'] else STAGES.get(t['status'], dict(proposed='承認待ち', approved='開始条件確認待ち', held='保留', landed='完了', cancelled='取消').get(t['status'], '確認待ち')),
             hint=f'repo: {s["repo_key"]} ／ 担当設定: {t["main_ai"] or "未設定"} / {t["reviewer_ai"] or "未設定"}\n'
                  f'確認済みRun段階: {stage} ／ 理由: {t["reason"]} ／ 次の対応: {SHORT_ACTIONS[t["action_code"]]}',
-            detail=t['detail'] + ('\nWorkflow本文・Run履歴はこの安全な集約入力には含まれません。Run未関連の詳細仕様は既存Workflow画面で確認してください。' if not valid_id(rid) else '')))
+            detail=t['detail'] + ('\nWorkflow本文・Run履歴はこの安全な集約入力には含まれません。Run未関連の詳細仕様は既存Workflow画面で確認してください。' if not valid_id(rid) else ''),
+            association_confirmed=not t['unknown'] and valid_id(rid)))
         cards[-1]['observed_stage'] = t['stage']
     return cards, 'Workflow：' + ('一部取得不能・確認待ち' if model['status'] == 'partial' else '取得済み') + ('／本体メモリ優先' if memory else '／ディスクのみ・メモリ未確認')
 
@@ -70,7 +71,7 @@ def build_lanes(workflow, runs, *, repo_names=(), monitor_ok=True):
         conflict = item.get('observed_stage', 'unknown') != 'unknown' and (
             latest is None or latest.get('liveness') not in ('running', 'starting')
             or latest['record'].get('stage') != item['observed_stage'])
-        if item['run_id'] and (not monitor_ok or conflict):
+        if item['run_id'] and not item.get('stale') and (not monitor_ok or conflict):
             item.update(lane='Manager', state='Run取得不能・所属確認待ち', priority='PX',
                         hint='WorkflowとRunの最新観測を照合できません。稼働・所属は確認待ちです。',
                         detail='最新のWorkflow状態・Run対応を再取得してください。以前の提案は現在の実行判断に使用できません。')
@@ -119,6 +120,8 @@ class WorkflowFeed:
         self.stop = threading.Event()
         self.busy = False
         self.due = 0
+        self.last_cards = []
+        self.last_success = None
 
     def poll(self):
         if self.stop.is_set():
@@ -130,7 +133,14 @@ class WorkflowFeed:
         if payload is not ...:
             self.busy = False
             self.due = self.now()+10
-            return workflow_cards(payload, self.memory)
+            cards, notice = workflow_cards(payload, self.memory)
+            from datetime import datetime
+            if isinstance(payload, dict) and payload.get('status') in ('available', 'partial') and not notice.startswith('Workflow：取得不能'):
+                self.last_cards = cards
+                self.last_success = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                cards = self._uncertain_cards(failed=True)
+            return cards, notice + ' ／ 最終取得: ' + (self.last_success or '未取得')
         if not self.busy and self.now() >= self.due:
             self.busy = True
             collector, output, stopped = self.collector, self.queue, self.stop
@@ -147,8 +157,14 @@ class WorkflowFeed:
                 self.launch(read)
             except Exception:
                 self.queue.put(None)
-            return [], 'Workflow：更新中・古い状態は未確認'
+            return self._uncertain_cards(), 'Workflow：更新中・前回取得の表示（最新状態は未確認）／最終取得: ' + (self.last_success or '未取得')
         return None
+
+
+    def _uncertain_cards(self, failed=False):
+        return [dict(c, stale=True, collection_failed=failed, state='前回取得・現在状態は確認待ち', priority='PX', observed_stage='unknown',
+                     hint='再取得中または取得失敗。前回のカードを保持しています。最新の稼働・所属は未確認です。',
+                     detail='以前の提案を現在の判断として使用しないでください。再取得を確認してください。') for c in self.last_cards]
 
 
 class LaneBoard:
@@ -166,25 +182,18 @@ class LaneBoard:
         self.review_header = None
         self.on_select = on_select
         self._last = None
+        self._widgets = {}
+        self._data = {}
+        self._positions = {}
+        self._selected_key = None
         style = ttk.Style(parent)
-        elements = set(style.element_names())
-        prefix = 'OrchestratorLane.Vertical.Scrollbar'
-        for part in ('trough', 'thumb', 'uparrow', 'downarrow'):
-            if prefix+'.'+part not in elements:
-                style.element_create(prefix+'.'+part, 'from', 'clam', 'Vertical.Scrollbar.'+part)
-        style.layout('OrchestratorLane.Vertical.TScrollbar', [(prefix+'.trough', dict(sticky='nswe', children=[
-            (prefix+'.uparrow', dict(side='top', sticky='')), (prefix+'.downarrow', dict(side='bottom', sticky='')),
-            (prefix+'.thumb', dict(expand=1, sticky='nswe'))]))])
-        style.configure('OrchestratorLane.Vertical.TScrollbar', background=DARK_FIELD, troughcolor=DARK_BG,
-                        arrowcolor=DARK_FG, bordercolor=DARK_BORDER, lightcolor=DARK_BORDER, darkcolor=DARK_BORDER)
-        style.map('OrchestratorLane.Vertical.TScrollbar', background=[('active', DARK_SELECTION), ('!active', DARK_FIELD)],
-                  arrowcolor=[('!active', DARK_FG), ('active', DARK_FG)])
+        from .ui_theme import scrollbar_styles
+        scrollbar_styles(style)
         for col, name in enumerate(LANES):
             self.frame.columnconfigure(col, weight=1, uniform='lanes')
             heading = ttk.Frame(self.frame)
             heading.grid(row=1, column=col, sticky='ew', padx=3)
-            icon = ('♙ 銀髪Manager画像枠' if name == 'Manager' else '⚒ 実装担当画像枠' if name == 'Implementer' else
-                    'Reviewer／選択Run工程画像\nTestsはシステム工程' if name == 'Reviewer' else '♙ 人間の確認先')
+            icon = dict(Manager='計画・分析・実装指示待ち', Implementer='実装・修正・Tests（システム工程）', Reviewer='レビュー・検証', Human='必要時のみ承認・確認')[name]
             ttk.Label(heading, text=icon).pack(anchor='w')
             label = ttk.Label(heading, text=name+'：確認待ち')
             label.pack(anchor='w')
@@ -197,7 +206,7 @@ class LaneBoard:
             panel.columnconfigure(0, weight=1)
             canvas = tk.Canvas(panel, highlightthickness=0, width=220, background=DARK_BG)
             canvas.grid(row=0, column=0, sticky='nsew')
-            scrollbar = ttk.Scrollbar(panel, orient='vertical', command=canvas.yview, style='OrchestratorLane.Vertical.TScrollbar')
+            scrollbar = ttk.Scrollbar(panel, orient='vertical', command=canvas.yview, style='Vertical.TScrollbar')
             scrollbar.grid(row=0, column=1, sticky='ns')
             canvas.configure(yscrollcommand=scrollbar.set)
             body = ttk.Frame(canvas)
@@ -213,22 +222,61 @@ class LaneBoard:
             return
         self._last = model
         self.hint.configure(text='最新レーン表示。カードのホバー・フォーカス・クリックで詳細確認。担当設定は稼働証明ではありません。')
+        previous = self._data
+        current = {card['key']: card for name in LANES for card in model[name]}
+        for key in list(self._widgets):
+            if key not in current:
+                self._widgets.pop(key).destroy()
+                self._positions.pop(key, None)
+                if key == self._selected_key:
+                    self._selected_key = None
+        self._data = current
         for name in LANES:
             self.headers[name].configure(text=f'{name}：{len(model[name])}件')
-            for widget in self.cards[name]:
-                widget.destroy()
-            self.cards[name] = []
-            for card in model[name]:
-                title = card['title'] if len(card['title']) <= 30 else card['title'][:29]+'…'
-                button = ttk.Button(self.bodies[name], text=f'{title}\n{card["state"]}\n{card["priority"]} ／ {name}',
-                                    command=lambda c=card: self.on_select(c))
-                button.pack(fill='x', pady=4, padx=2)
-                show = lambda e, c=card: self.hint.configure(text=c['hint'])
-                button.bind('<Enter>', show)
-                button.bind('<FocusIn>', lambda e, b=button, cv=self.canvases[name], c=card: self._focus_card(b, cv, c))
-                button.bind('<Return>', lambda e, c=card: self.on_select(c))
-                button.bind('<MouseWheel>', lambda e, c=self.canvases[name]: c.yview_scroll(-int(e.delta/120), 'units'))
-                self.cards[name].append(button)
+            ordered = model[name]
+            for index, card in enumerate(ordered):
+                key = card['key']
+                moved = key in self._widgets and self._positions.get(key, (None,))[0] != name
+                was_focused = False
+                if moved:
+                    old = self._widgets.pop(key)
+                    was_focused = hasattr(old, 'focus_get') and old.focus_get() is old
+                    old.destroy()  # Tk parents cannot be moved between scroll canvases.
+                    self._positions.pop(key, None)
+                fresh = key not in self._widgets
+                if fresh:
+                    button = ttk.Button(self.bodies[name], style='DCC.LaneCard.TButton', command=lambda k=key: self._activate(k))
+                    if self._selected_key == key:
+                        button.state(['selected'])
+                    self._widgets[key] = button
+                    button.bind('<Enter>', lambda e, k=key: self.hint.configure(text=self._data[k]['hint']))
+                    button.bind('<FocusIn>', lambda e, k=key: self._focus_card(self._widgets[k], self.canvases[self._data[k]['lane']], self._data[k]))
+                    button.bind('<Return>', lambda e, k=key: self._activate(k))
+                    button.bind('<MouseWheel>', lambda e, k=key: self.canvases[self._data[k]['lane']].yview_scroll(-int(e.delta/120), 'units'))
+                button = self._widgets[key]
+                if fresh or previous.get(key) != card:
+                    title = card['title'] if len(card['title']) <= 30 else card['title'][:29]+'…'
+                    button.configure(text=f'{title}\n{card["state"]}\n{card["priority"]} ／ {name}')
+                if self._positions.get(key) != (name, index):
+                    button.pack_forget()
+                    kwargs = dict(fill='x', pady=4, padx=2)
+                    if index:
+                        kwargs['after'] = self._widgets[ordered[index-1]['key']]
+                    elif len(ordered) > 1 and ordered[1]['key'] in self._widgets and self._positions.get(ordered[1]['key'], (None,))[0] == name:
+                        kwargs['before'] = self._widgets[ordered[1]['key']]
+                    button.pack(**kwargs)
+                    if was_focused:
+                        button.focus_set()
+                    self._positions[key] = (name, index)
+            self.cards[name] = [self._widgets[c['key']] for c in ordered]
+
+    def _activate(self, key):
+        if key in self._data:
+            if self._selected_key in self._widgets:
+                self._widgets[self._selected_key].state(['!selected'])
+            self._selected_key = key
+            self._widgets[key].state(['selected'])
+            self.on_select(self._data[key])
 
     def _focus_card(self, button, canvas, card):
         self.hint.configure(text=card['hint'])

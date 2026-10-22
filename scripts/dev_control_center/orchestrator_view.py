@@ -58,6 +58,18 @@ def role_label(name: str) -> str:
     return ROLE_LABEL.get(name, name)
 
 
+def maximize_window(window, windows=None):
+    """Windows maximize with an explicit, testable fallback; no OS settings."""
+    is_windows = os.name == 'nt' if windows is None else windows
+    if is_windows:
+        try:
+            window.state('zoomed')
+            return True
+        except (tk.TclError, AttributeError):
+            window.geometry('1180x840')
+    return False
+
+
 def resolve_click_index(y: int, size: int, nearest, bbox) -> int | None:
     """The run list selects a row only when the click lands inside that row's own pixels.
 
@@ -186,6 +198,8 @@ def _style_dark_comboboxes(master: tk.Misc) -> None:
     from .app import configure_dark_comboboxes
 
     style = ttk.Style(master)
+    from .ui_theme import configure_dark_containers
+    configure_dark_containers(style)
     configure_dark_comboboxes(master, style)
     style.configure("TCombobox", padding=(6, 4))
 
@@ -235,10 +249,15 @@ class OrchestratorWindow:
         self._closed_event = threading.Event()
         self.snapshot: dict = {}
         self.selected_run: str | None = None
+        self._selection_explicit = False
+        self._pending_run_selection = None
+        self._selected_card_key = None
+        self._analysis_cache = None
         self.run_items: list[dict] = []
         self.window = tk.Toplevel(master)
         self.window.title("AI Orchestrator")
         self.window.geometry("1180x840")
+        maximize_window(self.window)
         self.window.minsize(1000, 740)
         self.window.configure(background=DARK_BG)
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -274,7 +293,7 @@ class OrchestratorWindow:
         outer.rowconfigure(1, weight=1)
         self._outer = outer
         header = ttk.Frame(outer)
-        header.grid(row=0, column=0, sticky='ew')
+        header.grid(row=0, column=0, columnspan=2, sticky='ew')
         ttk.Label(header, text='AI Orchestrator', font=('Segoe UI', 14, 'bold')).pack(side='left')
         reports = ttk.Button(header, text='🐱 報告箱（件数不明）', command=self._open_reports)
         reports.pack(side='left', padx=8)
@@ -284,10 +303,13 @@ class OrchestratorWindow:
         ttk.Button(header, text='詳細を閉じる', command=self._hide_details).pack(side='left', padx=4)
         self.board = LaneBoard(outer, self._select_card)
         self.board.frame.grid(row=1, column=0, sticky='nsew', pady=8)
+        guide = ttk.Frame(outer, padding=(8, 0))
+        guide.grid(row=1, column=1, sticky='se')
+        ttk.Label(guide, text='案内キャラクター\n選択Runの工程表示').pack(anchor='w')
         self.board_notice = ttk.Label(outer, text='Run／Workflow：確認待ち', wraplength=1100)
-        self.board_notice.grid(row=2, column=0, sticky='ew')
+        self.board_notice.grid(row=2, column=0, columnspan=2, sticky='ew')
         self.details = ttk.Notebook(outer, height=340)
-        self.details.grid(row=3, column=0, sticky='nsew')
+        self.details.grid(row=3, column=0, columnspan=2, sticky='nsew')
         self.details.grid_remove()
         self._detail_pages = {}
         analysis_page = ttk.Frame(self.details)
@@ -301,9 +323,9 @@ class OrchestratorWindow:
         self.details.add(left, text='Run履歴')
         ttk.Label(left, text="実行中 / 過去のrun", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         # Packed before the run list so a short window shrinks the list, not the character.
-        self.character = CharacterView(self.board.review_header, background=DARK_BG, scale=4)
+        self.character = CharacterView(guide, background=DARK_BG, scale=2)
         if self.character.available:
-            self.character.widget.pack(side="right")
+            self.character.widget.pack(side="bottom")
         self.run_list = tk.Listbox(left, width=58, exportselection=False)
         configure_dark_listbox(self.run_list)
         self.run_list.pack(fill="both", expand=True, pady=(6, 0))
@@ -341,7 +363,7 @@ class OrchestratorWindow:
 
         frow += 1
         ttk.Label(form, text="Task", width=12).grid(row=frow, column=0, sticky="nw", pady=(6, 0))
-        self.task_text = tk.Text(form, height=6, wrap="word")
+        self.task_text = tk.Text(form, height=4, wrap="word")
         configure_dark_text(self.task_text)
         self.task_text.grid(row=frow, column=1, columnspan=3, sticky="ew", pady=(6, 0))
 
@@ -374,17 +396,19 @@ class OrchestratorWindow:
         self.review_box.pack(side="left", padx=(6, 18))
         self.main_box.bind("<<ComboboxSelected>>", lambda _e: self._on_role_changed("main"))
         self.review_box.bind("<<ComboboxSelected>>", lambda _e: self._on_role_changed("review"))
-        self.start_button = ttk.Button(roles, text="開始", command=self.start_run)
+        actions = ttk.Frame(form)
+        actions.grid(row=frow+2, column=0, columnspan=4, sticky='ew')
+        self.start_button = ttk.Button(actions, text="開始", command=self.start_run)
         self.start_button.pack(side="left", padx=(6, 6))
         self.stop_button = ttk.Button(header, text="AI安全停止（選択Run）", command=self.stop_run)
         self.stop_button.state(['disabled'])
         self.stop_button.pack(side="left", padx=6)
-        self.usage_button = ttk.Button(roles, text="残量更新", command=self.refresh_usage)
+        self.usage_button = ttk.Button(actions, text="残量更新", command=self.refresh_usage)
         self.usage_button.pack(side="left", padx=6)
         ttk.Label(form, textvariable=self.notice_var, wraplength=800, foreground=DARK_MUTED).grid(
-            row=frow + 1, column=0, columnspan=4, sticky="w")
+            row=frow + 3, column=0, columnspan=4, sticky="w")
         ttk.Label(form, textvariable=self.warn_var, wraplength=800, foreground="#e3b341").grid(
-            row=frow + 2, column=0, columnspan=4, sticky="w")
+            row=frow + 4, column=0, columnspan=4, sticky="w")
 
         confirm = self.confirm_frame
         ttk.Label(confirm, text="開始前の確認", font=("Segoe UI", 11, "bold")).grid(
@@ -407,8 +431,9 @@ class OrchestratorWindow:
         self.confirm_back_button = ttk.Button(confirm_buttons, text="戻る", command=self._cancel_confirm)
         self.confirm_back_button.pack(side="left")
 
-        usage_frame = ttk.Frame(self.details)
-        self.details.add(usage_frame, text='利用枠')
+        usage_frame = ttk.Frame(form)
+        usage_frame.grid(row=frow+1, column=0, columnspan=4, sticky='ew', pady=6)
+        self.usage_frame = usage_frame
         usage_frame.columnconfigure(0, weight=1)
         usage_frame.columnconfigure(1, weight=1)
         self.usage_labels = {}
@@ -416,7 +441,7 @@ class OrchestratorWindow:
             box = ttk.LabelFrame(usage_frame, text=role_label(name), padding=8)
             box.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 6, 0))
             ttk.Label(box, textvariable=self.usage_role_vars[name], foreground="#58a6ff").pack(anchor="w")
-            label = ttk.Label(box, textvariable=self.usage_vars[name], font=("Consolas", 9), justify="left")
+            label = ttk.Label(box, textvariable=self.usage_vars[name], font=("Consolas", 9), justify="left", wraplength=450)
             label.pack(anchor="w")
             self.usage_labels[name] = label
 
@@ -439,8 +464,9 @@ class OrchestratorWindow:
             ttk.Label(status, textvariable=var, wraplength=720, justify="left").grid(row=r, column=1, sticky="w")
         self.apply_button = ttk.Button(status, text="DCCで実機確認へ（RUN_DEV）", command=self.apply_candidate)
         self.apply_button.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(12, 0))
-        self.copy_button = ttk.Button(status, text="ログをコピー", command=self.copy_run_log)
-        self.copy_button.grid(row=2, column=2, sticky="ne", padx=(12, 0), pady=(4, 0))
+        self.copy_button = ttk.Button(header, text="ログをコピー", command=self.copy_run_log)
+        self.copy_button.pack(side='left', padx=6)
+        self.copy_button.state(['disabled'])
         self.open_button = ttk.Button(status, text="runフォルダを開く", command=self.open_run_dir)
         self.open_button.grid(row=3, column=2, sticky="ne", padx=(12, 0), pady=(4, 0))
 
@@ -467,7 +493,8 @@ class OrchestratorWindow:
             self._on_reports_inbox()  # App owns single-window reuse.
 
     def _show_details(self, page='run') -> None:
-        self._outer.rowconfigure(3, weight=1)
+        self._outer.rowconfigure(3, weight=0 if page == 'form' else 1)
+        self.details.configure(height=580 if page == 'form' else 340)
         self.details.grid()
         self.details.select(self._detail_pages[page])
 
@@ -476,30 +503,52 @@ class OrchestratorWindow:
         self._outer.rowconfigure(3, weight=0)
 
     def _select_card(self, card) -> None:
-        text = card['hint'] + '\n' + card['detail']
+        self._selected_card_key = card['key']
+        self._selection_explicit = True
+        self._pending_run_selection = None
         item = next((i for i in self.run_items if i['record']['run_id'] == card['run_id']), None)
+        if card.get('collection_failed') or card.get('association_confirmed') is False:
+            item = None
+        self.selected_run = card['run_id'] if item is not None else None
+        self.monitor.select(self.selected_run)
+        self.run_list.selection_clear(0, 'end')
+        self._set_log('')
+        self._render_selected()
+        self._render_card_analysis(card)
+        self._show_details('analysis')
+
+    def _render_card_analysis(self, card):
+        text = card['hint'] + '\n' + card['detail'] if card is not None else '選択TASKは最新一覧で確認できません。操作対象は解除しました。'
+        item = next((i for i in self.run_items if card is not None and i['record']['run_id'] == card['run_id']), None)
         if item is not None:
-            self.selected_run = card['run_id']
-            self.monitor.select(self.selected_run)
-            self._set_log('')
-            self._render_selected()
             import json
             text += '\n\n詳細仕様（Run記録）:\n' + str(item['record'].get('task', '未記録'))
             text += '\n\nレビュー履歴（Run記録）:\n' + json.dumps(item['record'].get('review_history', []), ensure_ascii=False, indent=2)
-        self.selection_text.configure(state='normal')
-        self.selection_text.delete('1.0', 'end')
-        self.selection_text.insert('1.0', text)
-        self.selection_text.configure(state='disabled')
-        self._show_details('analysis')
+        if text != self._analysis_cache:
+            self._analysis_cache = text
+            self.selection_text.configure(state='normal')
+            self.selection_text.delete('1.0', 'end')
+            self.selection_text.insert('1.0', text)
+            self.selection_text.configure(state='disabled')
 
     def _refresh_board(self) -> None:
         model = build_lanes(self._workflow_cards, self.run_items,
                             repo_names={d.name for d in self.definitions}, monitor_ok=self._monitor_ok)
+        if self._selected_card_key is not None:
+            card = next((c for cards in model.values() for c in cards if c['key'] == self._selected_card_key), None)
+            if (card is None or card.get('collection_failed') or card.get('association_confirmed') is False
+                or self.selected_run is not None and self.selected_run != card['run_id']):
+                self.selected_run = None
+                self.monitor.select(None)
+                self._selection_explicit = True
+            self._render_card_analysis(card)
+            if card is None:
+                self._selected_card_key = None
         self.board.set_model(model)
         counts = ' ／ '.join(f'{name} {len(cards)}件' for name, cards in model.items())
         self.board_notice.configure(text=counts + '\n' + self._workflow_notice +
                                     (' ／ Run観測済み' if self._monitor_ok else ' ／ Run取得不能・確認待ち') +
-                                    ' ／ 安全停止対象: ' + (self.selected_run or '未選択') + ' ／ Manager AI推論は無効')
+                                    ' ／ 安全停止・ログコピー対象: ' + (self.selected_run or '未選択') + ' ／ Manager AI推論は無効')
 
     def _refresh_free_usage(self) -> None:
         """On open, refresh only what costs nothing: the Codex account query spends no tokens.
@@ -856,6 +905,9 @@ class OrchestratorWindow:
         index = self.run_list.curselection()
         if not index or index[0] >= len(self.run_items):
             return
+        self._selection_explicit = True
+        self._pending_run_selection = None
+        self._selected_card_key = None
         self.selected_run = self.run_items[index[0]]["record"]["run_id"]
         self.monitor.select(self.selected_run)
         self._render_selected()
@@ -867,10 +919,7 @@ class OrchestratorWindow:
         if workflow is not None:
             self._workflow_cards, self._workflow_notice = workflow
             self._refresh_board()
-            self.selection_text.configure(state='normal')
-            self.selection_text.delete('1.0', 'end')
-            self.selection_text.insert('1.0', '最新状態でカードを選び直してください。' + self._workflow_notice)
-            self.selection_text.configure(state='disabled')
+            self._render_selected()
         try:
             self.window.after_cancel(self._tick_id)  # never keep two tick chains alive
         except (tk.TclError, AttributeError):
@@ -879,8 +928,13 @@ class OrchestratorWindow:
             while True:
                 kind, value = self._events.get_nowait()
                 if kind == "ok":
-                    self.selected_run = value.name
+                    self._selected_card_key = None
+                    self._pending_run_selection = value.name
+                    self._selection_explicit = True
+                    self.selected_run = None
                     self.monitor.select(value.name)
+                    self._set_log('')
+                    self._render_selected()
                     self.notice_var.set(f"run {value.name} を独立workerで開始しました。この画面やDCCを閉じても継続します。")
                 elif kind == "error":
                     self.notice_var.set(value)
@@ -900,6 +954,12 @@ class OrchestratorWindow:
 
     def apply_snapshot(self, snapshot: dict) -> None:
         if "error" in snapshot:
+            self.selected_run = None
+            self._pending_run_selection = None
+            self._selection_explicit = True
+            self.monitor.select(None)
+            self.run_list.delete(0, 'end')
+            self._set_log('')
             self._monitor_ok = False
             self.run_items = []
             self._refresh_board()
@@ -909,6 +969,13 @@ class OrchestratorWindow:
         self.snapshot = snapshot
         self._monitor_ok = True
         self.run_items = list(snapshot.get("runs", []))
+        available_ids = {i['record']['run_id'] for i in self.run_items}
+        if self._pending_run_selection in available_ids:
+            self.selected_run, self._pending_run_selection = self._pending_run_selection, None
+        if self.selected_run is not None and self.selected_run not in available_ids:
+            self.selected_run = None
+            self._selection_explicit = True
+            self.monitor.select(None)
         self._render_runs()
         self._refresh_board()
         for name, data in (snapshot.get("usage") or {}).items():
@@ -918,10 +985,11 @@ class OrchestratorWindow:
                 self.usage_vars[name].set("\n".join(f"{label:<{width}}  {text}" for label, text in rows))
         self._update_warnings()
         self._render_selected()
-        if snapshot.get("log_reset"):
-            self._set_log("")
-        if snapshot.get("log"):
-            self._append_log(snapshot["log"])
+        if self.selected_run is not None and snapshot.get('selected') == self.selected_run:
+            if snapshot.get("log_reset"):
+                self._set_log("")
+            if snapshot.get("log"):
+                self._append_log(snapshot["log"])
 
     def _run_line(self, item: dict) -> str:
         record = item["record"]
@@ -946,7 +1014,7 @@ class OrchestratorWindow:
             self.run_list.delete(0, "end")
             for line in lines:
                 self.run_list.insert("end", line)
-        if self.selected_run is None and self.run_items:
+        if self.selected_run is None and self.run_items and not getattr(self, '_selection_explicit', False):
             repo = self.repo_var.get()
             active = [i for i in self.run_items if i["liveness"] in (rs.LIVE_RUNNING, rs.LIVE_STARTING, rs.LIVE_UNRESPONSIVE)]
             pick = next((i for i in active if Path(str(i["record"]["repo"])).name == repo), None) or (active[0] if active else None)

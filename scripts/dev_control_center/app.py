@@ -189,6 +189,8 @@ def configure_dark_theme(master: tk.Tk) -> None:
         )
 
     configure_dark_comboboxes(master, style)
+    from .ui_theme import configure_dark_containers
+    configure_dark_containers(style)
 
 
 def configure_dark_comboboxes(master: tk.Misc, style: ttk.Style) -> None:

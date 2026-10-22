@@ -153,9 +153,9 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(style.configurations['Manager.TNotebook']['background'], '#0f1419')
         for part in ('client', 'tab', 'padding', 'focus', 'label'):
             self.assertEqual(style.elements[f'Manager.Notebook.{part}'], ('from', 'clam', f'Notebook.{part}'))
-        self.assertEqual(style.maps['Manager.TNotebook.Tab']['background'],
+        self.assertEqual(style.maps['Manager.TNotebook.Tab']['background'][1:],
                          [('selected', '#1f6feb'), ('active', '#30363d'), ('!selected', '#20262d')])
-        self.assertTrue(all(color == '#e6edf3' for _, color in style.maps['Manager.TNotebook.Tab']['foreground']))
+        self.assertTrue(all(color == '#e6edf3' for _, color in style.maps['Manager.TNotebook.Tab']['foreground'][1:]))
         self.assertEqual(style.layouts['Manager.TNotebook'][0][0], 'Manager.Notebook.client')
         view.apply_notebook_theme(notebook, style)
         self.assertEqual(len(style.elements), 5)
