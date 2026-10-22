@@ -189,20 +189,24 @@ class ManagerDashboardWindow:
         self.notice.grid(row=2, column=0, sticky='w')
         self.inbox = None
         self.overview = None
+        self.organization_map = None
         self.notebook = None
         if inbox:
             from .manager_inbox import ManagerInboxView
             from .manager_visual_overview import OverviewView
+            from .manager_organization_map import OrganizationMapView
             tabs = ttk.Notebook(frame)
             self.notebook = tabs
             tabs.grid(row=3, column=0, sticky='nsew', pady=8)
             table = ttk.Frame(tabs)
             self.inbox = ManagerInboxView(tabs, window=self.window)
             self.overview = OverviewView(tabs)
-            tabs.add(self.overview.frame, text='Overview')
+            self.organization_map = OrganizationMapView(tabs)
+            tabs.add(self.organization_map.frame, text='Organization Map')
+            tabs.add(self.overview.frame, text='統計')
             tabs.add(table, text='TASK一覧')
             tabs.add(self.inbox.frame, text='判断受信箱')
-            tabs.select(self.overview.frame)
+            tabs.select(self.organization_map.frame)
         else:
             table = ttk.Frame(frame)
             table.grid(row=3, column=0, sticky='nsew', pady=8)
@@ -241,6 +245,8 @@ class ManagerDashboardWindow:
                 self.inbox.apply_theme(style)
             if self.overview is not None:
                 self.overview.apply_theme(style)
+            if self.organization_map is not None:
+                self.organization_map.apply_theme(style)
 
     def set_snapshot(self, snapshot):
         """Presentation only. Caller owns collection and invokes this on the Tk thread."""

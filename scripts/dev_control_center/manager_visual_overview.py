@@ -65,7 +65,7 @@ def build_overview(snapshot, inbox, *, observation_id, memory_available=False):
             single = dict(schema_version=1, availability='available', plans=[dict(p, tasks=[t])])
             verified = display_model(single)['counts']
             category = t['category'] if not verified['unavailable'] else 'unavailable'
-            if t['status'] == 'running' and not memory_available:
+            if (p['plan_id'], t['task_id']) in unknown_tasks or (t['status'] == 'running' and not memory_available):
                 category = 'unavailable'
             local[category] += 1
             if category == 'unavailable':

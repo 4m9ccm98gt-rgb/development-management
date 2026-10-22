@@ -191,6 +191,9 @@ class WidgetTests(GuardedTests):
         self.ttk_patch = patch('scripts.dev_control_center.manager_visual_overview.ttk', self.widgets())
         self.ttk_patch.start()
         self.addCleanup(self.ttk_patch.stop)
+        self.map_ttk_patch = patch('scripts.dev_control_center.manager_organization_map.ttk', self.widgets())
+        self.map_ttk_patch.start()
+        self.addCleanup(self.map_ttk_patch.stop)
     def widgets(self):
         return SimpleNamespace(**{name: Widget for name in
             ('Frame', 'Label', 'LabelFrame', 'Treeview', 'Scrollbar')}, Notebook=Notebook, Style=FakeStyle)
@@ -234,8 +237,8 @@ class WidgetTests(GuardedTests):
         with patch.object(dashboard, 'tk', SimpleNamespace(Toplevel=Widget)), \
              patch.object(dashboard, 'ttk', widgets), patch.object(inbox, 'ttk', widgets):
             window = dashboard.ManagerDashboardWindow(Widget(), snapshot(task('T1')), inbox=True)
-            self.assertEqual(list(window.notebook.rows), ['Overview', 'TASK一覧', '判断受信箱'])
-            self.assertIs(window.notebook.selected, window.overview.frame)
+            self.assertEqual(list(window.notebook.rows), ['Organization Map', '統計', 'TASK一覧', '判断受信箱'])
+            self.assertIs(window.notebook.selected, window.organization_map.frame)
             self.assertEqual(window.notebook.options['style'], 'Manager.TNotebook')
             for table in (window, window.inbox):
                 self.assertEqual(table.horizontal.options['style'], 'Manager.Horizontal.TScrollbar')

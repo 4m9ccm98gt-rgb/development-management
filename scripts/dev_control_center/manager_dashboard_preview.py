@@ -21,6 +21,7 @@ from .manager_collector import ManagerCollector
 from .manager_dashboard_view import ManagerDashboardWindow
 from .manager_inbox import build_inbox, empty_inbox
 from .manager_visual_overview import build_overview, empty_overview
+from .manager_organization_map import build_map, empty_map
 
 INTERVAL_MS = 10_000
 POLL_MS = 100
@@ -76,6 +77,7 @@ class PreviewController:
         self.view = view
         self._inbox = getattr(view, 'inbox', None)
         self._overview = getattr(view, 'overview', None)
+        self._map = getattr(view, 'organization_map', None)
         self.scheduler = scheduler if scheduler is not None else view.window
         self.collector = collector if collector is not None else ManagerCollector(runner_state=runner_state)
         self.memory_available = runner_state is not None
@@ -111,6 +113,8 @@ class PreviewController:
             self._inbox.set_model(empty_inbox('updating'))
         if self._overview is not None:
             self._overview.set_model(empty_overview('updating', self.memory_available))
+        if self._map is not None:
+            self._map.set_model(empty_map('updating', self.memory_available))
         # Worker captures only collector, queue and stop event, never Tk objects.
         collector, results, stop = self.collector, self._results, self._stop
         def read():
@@ -139,7 +143,7 @@ class PreviewController:
             self._busy = False
             snapshot, status = preview_data(payload, memory_available=self.memory_available)
             self.view.set_snapshot(snapshot)  # replaces stale rows on EVERY result, including failure
-            if self._inbox is not None or self._overview is not None:
+            if self._inbox is not None or self._overview is not None or self._map is not None:
                 data = payload if isinstance(payload, dict) else {}
                 inbox_model = build_inbox(snapshot,
                     observation_id=data.get('observation_id'), collection_status=data.get('status'),
@@ -148,6 +152,9 @@ class PreviewController:
                     self._inbox.set_model(inbox_model)
                 if self._overview is not None:
                     self._overview.set_model(build_overview(snapshot, inbox_model,
+                        observation_id=data.get('observation_id'), memory_available=self.memory_available))
+                if self._map is not None:
+                    self._map.set_model(build_map(snapshot, inbox_model,
                         observation_id=data.get('observation_id'), memory_available=self.memory_available))
             try:
                 stamp = self._now()

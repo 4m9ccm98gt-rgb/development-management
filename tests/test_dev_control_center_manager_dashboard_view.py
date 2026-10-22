@@ -58,6 +58,10 @@ class FakeStyle(Widget):
 
 
 class FakeCanvas(Widget):
+    def create_oval(self, *args, **kwargs): return self._create(args, kwargs)
+    def create_polygon(self, *args, **kwargs): return self._create(args, kwargs)
+    def create_line(self, *args, **kwargs): return self._create(args, kwargs)
+    def tag_bind(self, tag, event, callback): self.bindings[(tag, event)] = callback
     def create_text(self, *args, **kwargs): return self._create(args, kwargs)
     def create_rectangle(self, *args, **kwargs): return self._create(args, kwargs)
     def _create(self, args, kwargs):
