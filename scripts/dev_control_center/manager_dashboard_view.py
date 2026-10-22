@@ -142,6 +142,36 @@ def apply_table_theme(window, tree, horizontal, vertical, style):
     vertical.configure(style='Manager.Vertical.TScrollbar' if dark else 'Vertical.TScrollbar')
 
 
+def apply_notebook_theme(notebook, style):
+    """Color only Manager tabs, including on native themes; retain ttk bindings."""
+    from .app import DARK_BG, DARK_FIELD, DARK_FG, DARK_BORDER, DARK_SELECTION
+    if style.lookup('TFrame', 'background') != DARK_BG:
+        notebook.configure(style='TNotebook')
+        return
+    elements = set(style.element_names())
+    for part in ('client', 'tab', 'padding', 'focus', 'label'):
+        name = f'Manager.Notebook.{part}'
+        if name not in elements:
+            style.element_create(name, 'from', 'clam', f'Notebook.{part}')
+    style.layout('Manager.TNotebook', [('Manager.Notebook.client', dict(sticky='nswe'))])
+    style.layout('Manager.TNotebook.Tab', [('Manager.Notebook.tab', dict(sticky='nswe', children=[
+        ('Manager.Notebook.padding', dict(side='top', sticky='nswe', children=[
+            ('Manager.Notebook.focus', dict(side='top', sticky='nswe', children=[
+                ('Manager.Notebook.label', dict(side='top', sticky=''))]))]))]))])
+    style.configure('Manager.TNotebook', background=DARK_BG, bordercolor=DARK_BORDER,
+                    lightcolor=DARK_BORDER, darkcolor=DARK_BORDER)
+    style.configure('Manager.TNotebook.Tab', background=DARK_FIELD, foreground=DARK_FG,
+                    bordercolor=DARK_BORDER, lightcolor=DARK_BORDER, darkcolor=DARK_BORDER,
+                    focuscolor=DARK_FG, padding=(10, 5))
+    style.map('Manager.TNotebook.Tab',
+              background=[('selected', DARK_SELECTION), ('active', DARK_BORDER), ('!selected', DARK_FIELD)],
+              foreground=[('selected', DARK_FG), ('active', DARK_FG), ('!selected', DARK_FG)],
+              bordercolor=[('selected', DARK_BORDER), ('!selected', DARK_BORDER)],
+              lightcolor=[('selected', DARK_BORDER), ('!selected', DARK_BORDER)],
+              darkcolor=[('selected', DARK_BORDER), ('!selected', DARK_BORDER)])
+    notebook.configure(style='Manager.TNotebook')
+
+
 class ManagerDashboardWindow:
     def __init__(self, master, snapshot, *, inbox=False):
         self.window = tk.Toplevel(master)
@@ -158,9 +188,11 @@ class ManagerDashboardWindow:
         self.notice = ttk.Label(frame)
         self.notice.grid(row=2, column=0, sticky='w')
         self.inbox = None
+        self.notebook = None
         if inbox:
             from .manager_inbox import ManagerInboxView
             tabs = ttk.Notebook(frame)
+            self.notebook = tabs
             tabs.grid(row=3, column=0, sticky='nsew', pady=8)
             table = ttk.Frame(tabs)
             self.inbox = ManagerInboxView(tabs, window=self.window)
@@ -196,6 +228,8 @@ class ManagerDashboardWindow:
         if key != getattr(self, '_theme_key', None):
             self._theme_key = key
             apply_table_theme(self.window, self.tree, self.horizontal, self.vertical, style)
+            if self.notebook is not None:
+                apply_notebook_theme(self.notebook, style)
             if self.inbox is not None:
                 self.inbox.apply_theme(style)
 

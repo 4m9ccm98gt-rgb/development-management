@@ -126,6 +126,29 @@ class ModelTests(unittest.TestCase):
 
 
 class WindowTests(unittest.TestCase):
+    def test_notebook_dark_elements_states_and_light_restore(self):
+        style, notebook = FakeStyle(), Widget()
+        with patch.object(style, 'theme_use', wraps=style.theme_use) as theme_use:
+            view.apply_notebook_theme(notebook, style)
+            theme_use.assert_not_called()  # never change global theme
+        self.assertEqual(notebook.options['style'], 'Manager.TNotebook')
+        self.assertEqual(style.configurations['Manager.TNotebook']['background'], '#0f1419')
+        for part in ('client', 'tab', 'padding', 'focus', 'label'):
+            self.assertEqual(style.elements[f'Manager.Notebook.{part}'], ('from', 'clam', f'Notebook.{part}'))
+        self.assertEqual(style.maps['Manager.TNotebook.Tab']['background'],
+                         [('selected', '#1f6feb'), ('active', '#30363d'), ('!selected', '#20262d')])
+        self.assertTrue(all(color == '#e6edf3' for _, color in style.maps['Manager.TNotebook.Tab']['foreground']))
+        self.assertEqual(style.layouts['Manager.TNotebook'][0][0], 'Manager.Notebook.client')
+        view.apply_notebook_theme(notebook, style)
+        self.assertEqual(len(style.elements), 5)
+        style.bg = '#ffffff'
+        view.apply_notebook_theme(notebook, style)
+        self.assertEqual(notebook.options['style'], 'TNotebook')
+        style.bg = '#0f1419'
+        view.apply_notebook_theme(notebook, style)
+        self.assertEqual(notebook.options['style'], 'Manager.TNotebook')
+        self.assertEqual(len(style.elements), 5)
+
     def test_construct_select_update_and_clear_with_fakes(self):
         fake_ttk = SimpleNamespace(**{name: Widget for name in
             ('Frame', 'Label', 'LabelFrame', 'Treeview', 'Scrollbar')}, Style=FakeStyle)

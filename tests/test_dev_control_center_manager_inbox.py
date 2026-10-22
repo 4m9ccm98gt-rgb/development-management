@@ -170,6 +170,8 @@ class WidgetTests(GuardedTests):
         with patch.object(dashboard, 'tk', SimpleNamespace(Toplevel=Widget)), \
              patch.object(dashboard, 'ttk', widgets), patch.object(inbox, 'ttk', widgets):
             window = dashboard.ManagerDashboardWindow(Widget(), snapshot(task('T1')), inbox=True)
+            self.assertEqual(set(window.notebook.rows), {'TASK一覧', '判断受信箱'})
+            self.assertEqual(window.notebook.options['style'], 'Manager.TNotebook')
             for table in (window, window.inbox):
                 self.assertEqual(table.horizontal.options['style'], 'Manager.Horizontal.TScrollbar')
                 self.assertEqual(table.vertical.options['style'], 'Manager.Vertical.TScrollbar')
@@ -189,13 +191,15 @@ class WidgetTests(GuardedTests):
                 self.assertEqual(len(window.inbox.tree.rows), count)
             style.bg = '#ffffff'
             window._apply_theme()
+            self.assertEqual(window.notebook.options['style'], 'TNotebook')
             for table in (window, window.inbox):
                 self.assertEqual(table.horizontal.options['style'], 'Horizontal.TScrollbar')
                 self.assertEqual(table.vertical.options['style'], 'Vertical.TScrollbar')
             style.bg = '#0f1419'
             window._apply_theme()
             self.assertEqual(window.inbox.vertical.options['style'], 'Manager.Vertical.TScrollbar')
-            self.assertEqual(len(style.elements), 8)
+            self.assertEqual(window.notebook.options['style'], 'Manager.TNotebook')
+            self.assertEqual(len(style.elements), 13)
 
 
 class ControllerTests(GuardedTests):
