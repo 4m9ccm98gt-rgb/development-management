@@ -12,7 +12,7 @@ from scripts.dev_control_center import manager_dashboard_preview as preview
 from scripts.dev_control_center import manager_overview as overview
 from scripts.dev_control_center import workflow_runner as runner
 from tests.test_dev_control_center_manager_overview import plan, task, KEYS, RID
-from tests.test_dev_control_center_manager_dashboard_view import Widget, FakeStyle
+from tests.test_dev_control_center_manager_dashboard_view import Widget, FakeStyle, FakeCanvas
 from tests.test_dev_control_center_manager_dashboard_preview import Scheduler, View
 
 
@@ -179,9 +179,18 @@ class ModelTests(GuardedTests):
 class Notebook(Widget):
     def add(self, child, **kwargs):
         self.rows[kwargs['text']] = child
+    def select(self, child): self.selected = child
 
 
 class WidgetTests(GuardedTests):
+    def setUp(self):
+        super().setUp()
+        self.canvas_patch = patch('scripts.dev_control_center.manager_visual_overview.tk.Canvas', FakeCanvas)
+        self.canvas_patch.start()
+        self.addCleanup(self.canvas_patch.stop)
+        self.ttk_patch = patch('scripts.dev_control_center.manager_visual_overview.ttk', self.widgets())
+        self.ttk_patch.start()
+        self.addCleanup(self.ttk_patch.stop)
     def widgets(self):
         return SimpleNamespace(**{name: Widget for name in
             ('Frame', 'Label', 'LabelFrame', 'Treeview', 'Scrollbar')}, Notebook=Notebook, Style=FakeStyle)
@@ -225,7 +234,8 @@ class WidgetTests(GuardedTests):
         with patch.object(dashboard, 'tk', SimpleNamespace(Toplevel=Widget)), \
              patch.object(dashboard, 'ttk', widgets), patch.object(inbox, 'ttk', widgets):
             window = dashboard.ManagerDashboardWindow(Widget(), snapshot(task('T1')), inbox=True)
-            self.assertEqual(set(window.notebook.rows), {'TASK一覧', '判断受信箱'})
+            self.assertEqual(list(window.notebook.rows), ['Overview', 'TASK一覧', '判断受信箱'])
+            self.assertIs(window.notebook.selected, window.overview.frame)
             self.assertEqual(window.notebook.options['style'], 'Manager.TNotebook')
             for table in (window, window.inbox):
                 self.assertEqual(table.horizontal.options['style'], 'Manager.Horizontal.TScrollbar')

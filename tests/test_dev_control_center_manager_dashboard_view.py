@@ -57,6 +57,20 @@ class FakeStyle(Widget):
         self.layouts[name] = value
 
 
+class FakeCanvas(Widget):
+    def create_text(self, *args, **kwargs): return self._create(args, kwargs)
+    def create_rectangle(self, *args, **kwargs): return self._create(args, kwargs)
+    def _create(self, args, kwargs):
+        key = max(self.rows, default=0) + 1
+        self.rows[key] = (args, kwargs)
+        return key
+    def delete(self, iid): self.rows.clear() if iid == 'all' else self.rows.pop(iid, None)
+    def bbox(self, iid):
+        args, _ = self.rows[iid]
+        return (args[0], args[1], args[0]+100, args[1]+18)
+    def coords(self, *args): pass
+
+
 def snapshot():
     return overview.build_snapshot([plan(task('T1', 'landed'), task('T2', 'needs_human'),
         task('T3', 'failed'), task('T4', 'running'), task('T5', 'proposed'),

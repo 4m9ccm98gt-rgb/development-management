@@ -188,16 +188,21 @@ class ManagerDashboardWindow:
         self.notice = ttk.Label(frame)
         self.notice.grid(row=2, column=0, sticky='w')
         self.inbox = None
+        self.overview = None
         self.notebook = None
         if inbox:
             from .manager_inbox import ManagerInboxView
+            from .manager_visual_overview import OverviewView
             tabs = ttk.Notebook(frame)
             self.notebook = tabs
             tabs.grid(row=3, column=0, sticky='nsew', pady=8)
             table = ttk.Frame(tabs)
             self.inbox = ManagerInboxView(tabs, window=self.window)
+            self.overview = OverviewView(tabs)
+            tabs.add(self.overview.frame, text='Overview')
             tabs.add(table, text='TASK一覧')
             tabs.add(self.inbox.frame, text='判断受信箱')
+            tabs.select(self.overview.frame)
         else:
             table = ttk.Frame(frame)
             table.grid(row=3, column=0, sticky='nsew', pady=8)
@@ -213,8 +218,10 @@ class ManagerDashboardWindow:
         self.horizontal.grid(row=1, column=0, sticky='ew')
         self.vertical.grid(row=0, column=1, sticky='ns')
         self.tree.configure(xscrollcommand=self.horizontal.set, yscrollcommand=self.vertical.set)
-        details = ttk.LabelFrame(frame, text='選択TASKの詳細', padding=8)
-        details.grid(row=4, column=0, sticky='ew')
+        # Keep TASK-only details inside its tab so Overview retains vertical
+        # space at 1150x650 even after selecting a TASK in the other tab.
+        details = ttk.LabelFrame(table if inbox else frame, text='選択TASKの詳細', padding=8)
+        details.grid(row=2 if inbox else 4, column=0, columnspan=2 if inbox else 1, sticky='ew')
         self.detail = ttk.Label(details, text='TASKを選択してください', justify='left', wraplength=1080)
         self.detail.pack(fill='x')
         self.tree.bind('<<TreeviewSelect>>', self._on_select)
@@ -232,6 +239,8 @@ class ManagerDashboardWindow:
                 apply_notebook_theme(self.notebook, style)
             if self.inbox is not None:
                 self.inbox.apply_theme(style)
+            if self.overview is not None:
+                self.overview.apply_theme(style)
 
     def set_snapshot(self, snapshot):
         """Presentation only. Caller owns collection and invokes this on the Tk thread."""
