@@ -268,6 +268,7 @@ class App(ttk.Frame):
         self.orchestrator_window = None
         self.reports_window = None
         self.workflow_plan_window = None
+        self.automation_status_window = None
         self._closed = False
         configure_dark_theme(master)
         super().__init__(master, padding=14)
@@ -445,6 +446,9 @@ class App(ttk.Frame):
         workflow_plan_window = getattr(self, "workflow_plan_window", None)
         if workflow_plan_window is not None and workflow_plan_window.exists():
             workflow_plan_window.close()
+        automation_status_window = getattr(self, "automation_status_window", None)
+        if automation_status_window is not None and automation_status_window.exists():
+            automation_status_window.close()
         if TIMING.enabled:
             TIMING.event("ui-lag-summary", **self._heartbeat.stats())
         self.selection.close()
@@ -545,6 +549,9 @@ class App(ttk.Frame):
         self.reports_button.pack(side="left")
         self.workflow_plan_button = ttk.Button(top_buttons, text="開発計画", command=self.open_workflow_plan)
         self.workflow_plan_button.pack(side="left", padx=(6, 0))
+        self.automation_status_button = ttk.Button(
+            top_buttons, text="自動処理の状況", command=self.open_automation_status)
+        self.automation_status_button.pack(side="left", padx=(6, 0))
         ttk.Label(right, textvariable=self.meta_var, wraplength=580).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
         # Local and GitHub state side by side: the candidate flow needs the vertical space at 1080x720.
@@ -696,6 +703,29 @@ class App(ttk.Frame):
             return
         self.workflow_plan_window = WorkflowPlanWindow(
             self.master, runner_state=self._workflow_runner_state)
+
+    def open_automation_status(self) -> None:
+        """Open (or focus) the "自動処理の状況" window (DCC Task WF-6c). Reads the shared activity
+        record and each automatic-processing module's own settings only -- never starts, changes,
+        or approves anything; see automation_status.py / automation_status_view.py."""
+        from .automation_status_view import AutomationStatusWindow
+
+        window = self.automation_status_window
+        if window is not None and window.exists():
+            window.focus()
+            return
+        self.automation_status_window = AutomationStatusWindow(
+            self.master, snapshot_fn=self._automation_status_snapshot)
+
+    def _automation_status_snapshot(self):
+        """DCC Task WF-6c (Reviewer finding 1): 計画の自動実行 is judged per-plan, per-task-repo --
+        not by a blanket "something, somewhere is busy" flag -- so this passes the exact same
+        per-repo App._repo_name_busy closure _start_workflow_runner_loop itself already wires into
+        workflow_runner.run_workflow_runner_once's own busy_fn, read-only and never a new
+        capability."""
+        from . import automation_status
+
+        return automation_status.build_snapshot(workflow_runner_busy_fn=self._repo_name_busy)
 
     def _current_orchestrator_roles(self) -> tuple[str, str]:
         """DCC Task 14.5: "現在の DCC の設定" for 作成して開始's confirmation dialog -- the

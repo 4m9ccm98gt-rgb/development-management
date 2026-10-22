@@ -406,7 +406,8 @@ def _default_load_decision_marker(app_key: str, report_id: str):
 
 def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path | None,
                       load_decision_fn: Callable[[str, str], object] | None = None,
-                      activity_log_path: Path | None = None) -> "inbox.Report | None":
+                      activity_log_path: Path | None = None,
+                      log_exclusions: bool = True) -> "inbox.Report | None":
     """DCC Task 17-fix (C1/C2/C3): a report with any human decision recorded in the inbox
     (対応する/実機で調べる/見送る alike) is never picked for automatic investigation, and the same
     holds -- safe side -- when that decision record exists but could not be read back
@@ -417,7 +418,14 @@ def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path
 
     DCC Task WF-6a: each report skipped here because a human decision already exists (or could
     not be read back) is logged as its own 対象外 record carrying that report's own id, so a mix
-    of decided and undecided reports does not collapse into a single id-less exclusion."""
+    of decided and undecided reports does not collapse into a single id-less exclusion.
+
+    `log_exclusions` (DCC Task WF-6c): the automatic-processing status screen calls this same
+    selection logic purely to preview which report would be picked next (peek_next_report_id
+    below) -- that preview must never itself write to the shared activity record (it is not an
+    actual investigation attempt and may run on every 10-second screen refresh, far more often
+    than run_auto_triage_once's own cycle). False suppresses only the 対象外 logging below;
+    every other rule (eligibility, already_investigated, decision lookup) is unchanged."""
     load_decision_fn = load_decision_fn or _default_load_decision_marker
     for report in reports:
         if not app_allowed(config, report.app_key):
@@ -430,11 +438,54 @@ def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path
             # side (C3): treated as "decided", never silently skipped over as if undecided.
             decided = True
         if decided:
-            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_REPORT,
-                          target_id=_hash(report.report_id), path=activity_log_path)
+            if log_exclusions:
+                _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_REPORT,
+                              target_id=_hash(report.report_id), path=activity_log_path)
             continue
         return report
     return None
+
+
+def peek_next_report_id(
+    *,
+    config: AutoModeConfig | None = None,
+    config_path: Path | None = None,
+    today: str | None = None,
+    reports_config_fn: Callable[[], "inbox.ReportsConfig"] | None = None,
+    scan_fn: Callable[[list], list] | None = None,
+    load_decision_fn: Callable[[str, str], object] | None = None,
+    daily_count_path: Path | None = None,
+    results_dir: Path | None = None,
+) -> str:
+    """DCC Task WF-6c: a read-only preview of the report _eligible_report would pick next, for
+    the automatic-processing status screen only. Never calls investigate_fn and never logs to the
+    shared activity record (see _eligible_report's own log_exclusions parameter) -- unlike
+    run_auto_triage_once, this never counts as an investigation attempt. Returns "" when
+    automatic mode is off, the day's limit is already reached, no eligible report exists, or
+    anything about the read fails (a broken preview must never crash the status screen).
+
+    The returned value is always either "" or report_id's own sha256 digest -- the same
+    identifier shape write_run_log_entry already writes as 報告の識別子 and activity_log's own
+    TARGET_REPORT target_id pattern uses -- so the raw report_id (untrusted, report-derived free
+    text) never reaches the caller."""
+    try:
+        config = config if config is not None else load_auto_mode_config(config_path)
+        today = today if today is not None else today_str()
+        if not config.enabled:
+            return ""
+        if daily_limit_reached(config, today, path=daily_count_path):
+            return ""
+        reports_config_fn = reports_config_fn or inbox.load_reports_config
+        scan_fn = scan_fn or inbox.scan_all
+        reports_cfg = reports_config_fn()
+        apps = [(a.app_key, a.display_name, a.shared_root) for a in reports_cfg.apps]
+        inboxes = scan_fn(apps)
+        reports = inbox.all_reports(inboxes)
+        report = _eligible_report(config, reports, results_dir=results_dir,
+                                   load_decision_fn=load_decision_fn, log_exclusions=False)
+        return _hash(report.report_id) if report is not None else ""
+    except Exception:  # noqa: BLE001 - a broken preview must never crash the status screen
+        return ""
 
 
 def _current_config(config: AutoModeConfig, config_path: Path | None) -> AutoModeConfig:
