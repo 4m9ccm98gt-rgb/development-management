@@ -11,6 +11,7 @@ from tkinter import ttk
 from .orchestrator_lanes import LaneBoard, LANES
 from .orchestrator_art import ArtWorker, Image
 from .orchestrator_cards import CanvasCard, PanelSurface
+from .character_layout import character_display_scale
 if Image is not None:
     from PIL import ImageTk
 
@@ -247,7 +248,7 @@ class LoopBoard(LaneBoard):
     def _position_character(self):
         if self._character is not None:
             w, h = self._size
-            self._character.set_scale(1 if w >= 620 else 2)
+            self._character.set_display_scale(character_display_scale(w, h))
             self._character.move(w/2, h*.53)
 
     def _resize(self, event):

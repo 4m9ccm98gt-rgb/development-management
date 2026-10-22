@@ -165,9 +165,10 @@ class SpriteTests(unittest.TestCase):
         obj.mood='idle'
         with patch('PIL.ImageTk.PhotoImage') as photo:
             obj._draw();obj.index=1;obj._draw()
-            photo.assert_called_once()
-            photo.return_value.paste.assert_called_once()
-            canvas.itemconfigure.assert_called_once()
+            self.assertEqual(photo.call_count,2)
+            photo.return_value.paste.assert_not_called()
+            obj.index=0;obj._draw()
+            self.assertEqual(photo.call_count,2)
         obj.destroy();obj._worker.close.assert_called_once()
 
 class BoardTests(loop_tests.BoardTests):

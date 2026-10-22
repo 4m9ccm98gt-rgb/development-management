@@ -1,8 +1,9 @@
 """Animated idle character for the Orchestrator window.
 
 The character is a loop of pre-rendered frames (one sprite sheet per mood under
-`assets/character/`). Tk only copies one frame per tick, so nothing heavy runs on the UI
-thread and the animation never touches a run. Missing or unreadable assets simply hide the
+`assets/character/`). The shared Canvas uses worker-prepared frames and a bounded Tk
+image cache; the legacy standalone Canvas copies one frame per tick. Neither touches a run.
+Missing or unreadable assets simply hide the
 character; they must never break the window.
 
 Sprite sheet layout: `COLUMNS` frames per row, `FRAME_COUNT` frames of `FRAME_W` x `FRAME_H`,
@@ -14,6 +15,8 @@ from __future__ import annotations
 from pathlib import Path
 import tkinter as tk
 import base64
+import math
+import time
 import struct
 import zlib
 
@@ -99,6 +102,7 @@ class CharacterView:
         self.available = all((self.asset_dir / f"{mood}.png").is_file() for mood in MOODS)
         self._worker = None
         self._frame_key = None
+        self._tk_frames = {}
         if self.available and not self._owns_widget:
             from .sprite_renderer import SpriteWorker, Image
             if Image is not None:
@@ -160,6 +164,18 @@ class CharacterView:
             self.widget.configure(width=(FRAME_W+scale-1)//scale, height=(FRAME_H+scale-1)//scale)
         self._draw()
 
+    def set_display_scale(self, factor):
+        """Arbitrary magnification for the shared-Canvas worker renderer only."""
+        if (type(factor) not in (int, float) or not math.isfinite(factor)
+                or not .25 <= factor <= 2 or self._destroyed
+                or getattr(self, '_worker', None) is None):
+            return
+        divisor = 1 / round(float(factor), 4)
+        if self.scale == divisor:
+            return
+        self.scale = divisor
+        self._worker.request(self.mood, divisor)
+
     def _draw(self) -> None:
         if getattr(self, '_worker', None) is not None:
             frames = self._worker.request(self.mood, self.scale)
@@ -168,11 +184,14 @@ class CharacterView:
             from PIL import ImageTk
             key = (self.mood, self.scale)
             if self._frame_key != key:
-                self._frame = ImageTk.PhotoImage(frames[self.index], master=self.widget)
-                self.widget.itemconfigure(self._image_id, image=self._frame)
+                self._tk_frames = {}  # one mood/size, at most 72 Tk images
                 self._frame_key = key
-            else:
-                self._frame.paste(frames[self.index])
+            if self.index not in self._tk_frames:
+                self._tk_frames[self.index] = ImageTk.PhotoImage(frames[self.index], master=self.widget)
+            image = self._tk_frames[self.index]
+            if self._frame is not image:
+                self._frame = image
+                self.widget.itemconfigure(self._image_id, image=image)
             return
         if self._sheet is None:
             return
@@ -187,9 +206,11 @@ class CharacterView:
         try:
             if not self.widget.winfo_exists():
                 return
+            started = time.perf_counter()
             self.index = (self.index + 1) % FRAME_COUNT
             self._draw()
-            self._after_id = self.widget.after(1000 // FPS, self._tick)
+            elapsed = (time.perf_counter()-started)*1000 if self._worker is not None else 0
+            self._after_id = self.widget.after(max(1, round(1000/FPS-elapsed)), self._tick)
         except tk.TclError:
             self._after_id = None
 
@@ -207,6 +228,7 @@ class CharacterView:
             self._worker.close()
         self._sheet = None
         self._frame = None
+        self._tk_frames.clear()
         try:
             if self._owns_widget:
                 self.widget.destroy()

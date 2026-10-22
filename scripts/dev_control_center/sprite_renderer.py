@@ -2,6 +2,7 @@
 from collections import OrderedDict
 import threading
 import re
+import math
 from .orchestrator_art import Image, ImageDraw
 
 def exterior_alpha(mask):
@@ -27,9 +28,18 @@ def exterior_alpha(mask):
                     pending.append((ny, ni))
     return Image.frombytes('L', (w, h), bytes(alpha))
 
+def frame_dimensions(scale):
+    """Legacy reciprocal scale accepts finite fractional divisors as well."""
+    if type(scale) not in (int, float) or not math.isfinite(scale) or not .5 <= scale <= 4:
+        raise ValueError('INVALID_CHARACTER_SCALE')
+    from .character import FRAME_W, FRAME_H
+    return math.ceil(FRAME_W/scale-1e-9), math.ceil(FRAME_H/scale-1e-9)
+
+
 def prepare_frames(path, scale, stop=lambda: False):
     """Remove only navy connected to the frame exterior, preserving dark details."""
     from .character import FRAME_W, FRAME_H, COLUMNS, FRAME_COUNT
+    size = frame_dimensions(scale)
     frames = []
     with Image.open(path) as sheet:
         sheet.load()
@@ -48,7 +58,7 @@ def prepare_frames(path, scale, stop=lambda: False):
                 mask = source.point(lut, 'L')
                 rgba.putalpha(exterior_alpha(mask))
             if scale != 1:
-                rgba = rgba.resize(((FRAME_W + scale - 1) // scale, (FRAME_H + scale - 1) // scale), Image.Resampling.LANCZOS)
+                rgba = rgba.resize(size, Image.Resampling.LANCZOS)
             frames.append(rgba)
     return frames
 
@@ -58,7 +68,7 @@ class SpriteWorker:
     def __init__(self, asset_dir):
         self.asset_dir = asset_dir
         self._cache = OrderedDict()
-        self._failed = set()
+        self._failed = OrderedDict()
         self._pending = None
         self._desired = None
         self._working = None
@@ -67,6 +77,7 @@ class SpriteWorker:
         threading.Thread(target=self._work, name='dcc-ui-sprite', daemon=True).start()
 
     def request(self, mood, scale):
+        frame_dimensions(scale)
         key = (mood, scale)
         with self._condition:
             if self._closed or key in self._failed:
@@ -98,7 +109,9 @@ class SpriteWorker:
                     return
                 self._working = None
                 if frames is None and self._desired == key:
-                    self._failed.add(key)
+                    self._failed[key] = None
+                    while len(self._failed) > 8:
+                        self._failed.popitem(last=False)
                 if frames is not None:
                     self._cache[key] = frames
                     while len(self._cache) > 2:

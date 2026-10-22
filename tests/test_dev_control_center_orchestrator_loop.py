@@ -116,7 +116,7 @@ class BoardTests(unittest.TestCase):
             board._finish_resize()
         self.assertEqual(board._station_items, station_ids)
         self.assertEqual(board._size, (500, 630))
-        agent.set_scale.assert_called_with(2)
+        agent.set_display_scale.assert_called_with(loop.character_display_scale(500,630))
         self.assertIn('<MouseWheel>', board.loop.bindings)
         self.assertEqual(set(board.headers), set(loop.GROUPS))
 
