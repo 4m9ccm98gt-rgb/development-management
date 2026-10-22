@@ -19,6 +19,84 @@ KINDS_TO_GROUP = {'NO_ACTION': 'done', 'PROPOSE_START': 'start_candidate',
 INBOX_REASONS = frozenset(('COLLECTION_UNAVAILABLE', 'COLLECTION_PARTIAL', 'SNAPSHOT_INVALID'))
 STATUS_TEXT = {'available': '取得済み', 'partial': '一部取得不能・確認待ち',
                'unavailable': '取得不能・確認待ち', 'updating': '更新中・判断未確認'}
+CAUSES = dict(UNKNOWN='状態を確定できない', APPROVAL='人間の承認が必要', FAILED='失敗内容の確認が必要',
+              HUMAN='人間の判断が必要', CANDIDATE='候補への対応が必要', DEPENDENCY='先行TASKが未完了',
+              ACTIVE='処理中（Run観測済み）', HELD='保留状態', START='Runner基準の開始候補',
+              QUEUED='Runnerの選択待ち', TERMINAL='現在の対応不要')
+OWNERS = dict(UNKNOWN='確認待ち', HUMAN='人間', HUMAN_CHECK='人間／確認待ち', DEPENDENCY='依存TASK',
+              AI_CODEX='Codex（実行担当設定）', AI_CLAUDE='Claude（実行担当設定）',
+              START_CHECK='開始判断の確認先（未特定）', NONE='なし')
+ACTIONS = dict(UNKNOWN='不明', CHECK='確認候補', WAIT='待機', NONE='対応不要')
+# Confirmation priority, never business importance or execution permission.
+# Preserve source plan/TASK order; PX is explicitly unranked, never below P4.
+PRIORITIES = frozenset(('P1', 'P2', 'P3', 'P4', 'PX'))
+
+
+def analyze_task(task, reason, *, memory_available):
+    """Pure analysis of already validated Workflow data and MGR-3 reasons.
+
+    No failure text is available. QUEUED explains only Runner selection, not
+    permission/config/quota/repo conflicts. AI names are assignment, not liveness.
+    """
+    result = dict(priority='PX', cause='UNKNOWN', owner='UNKNOWN', action='UNKNOWN', dependencies=[])
+    if not isinstance(task, dict):
+        return result
+    deps = task.get('dependencies')
+    if isinstance(deps, list):
+        result['dependencies'] = [dict(task_id=d['task_id'], status=d['status']) for d in deps
+            if isinstance(d, dict) and _id(d.get('task_id'), 16) != '確認待ち'
+            and isinstance(d.get('status'), str) and d['status'] in decision.wf.STATUSES]
+    if task.get('availability') != 'available':
+        return result
+    rules = {
+        'TERMINAL': ('P4', 'TERMINAL', 'NONE', 'NONE'),
+        'TASK_FAILED': ('P1', 'FAILED', 'HUMAN', 'CHECK'),
+        'HUMAN_REQUIRED': ('P1' if task.get('status') == 'needs_human' else 'P2',
+                           'HUMAN' if task.get('status') == 'needs_human' else 'CANDIDATE', 'HUMAN', 'CHECK'),
+        'APPROVAL_REQUIRED': ('P2', 'APPROVAL', 'HUMAN', 'CHECK'),
+        'DEPENDENCIES_PENDING': ('P3', 'DEPENDENCY', 'DEPENDENCY', 'WAIT'),
+        'HELD': ('P3', 'HELD', 'HUMAN_CHECK', 'WAIT'),
+        'APPROVED_READY': ('P2', 'START', 'START_CHECK', 'CHECK'),
+        'QUEUED': ('P3', 'QUEUED', 'UNKNOWN', 'WAIT'),
+    }
+    if reason == 'TASK_ACTIVE':
+        run = task.get('run')
+        if (not memory_available or not isinstance(run, dict) or run.get('availability') != 'available'
+            or run.get('liveness') not in ('running', 'starting') or run.get('stage') not in decision.overview.ACTIVE_STAGES):
+            return result
+        ai = task.get('main_ai')
+        owner = {'codex': 'AI_CODEX', 'claude': 'AI_CLAUDE'}.get(ai) if isinstance(ai, str) else None
+        rules['TASK_ACTIVE'] = ('P4', 'ACTIVE', owner or 'UNKNOWN', 'WAIT')
+    values = rules.get(reason) if isinstance(reason, str) else None
+    if values:
+        result.update(zip(('priority', 'cause', 'owner', 'action'), values))
+    return result
+
+
+def analysis_values(row):
+    """Allowlist the extended display schema again at the UI boundary."""
+    row = row if isinstance(row, dict) else {}
+    def label(key, words):
+        value = row.get(key)
+        return words.get(value, words['UNKNOWN']) if isinstance(value, str) else words['UNKNOWN']
+    priority = row.get('priority')
+    priority = priority if isinstance(priority, str) and priority in PRIORITIES else 'PX'
+    return priority, label('cause', CAUSES), label('owner', OWNERS), label('action', ACTIONS)
+
+
+def dependency_text(row):
+    deps = row.get('dependencies') if isinstance(row, dict) else None
+    if not isinstance(deps, list):
+        return '確認待ち'
+    parts = []
+    for dep in deps:
+        if not isinstance(dep, dict):
+            parts.append('確認待ち')
+            continue
+        status = dep.get('status')
+        status = status if isinstance(status, str) and status in decision.wf.STATUSES else '確認待ち'
+        parts.append(f'{_id(dep.get("task_id"), 16)}: {status}')
+    return '、'.join(parts) or 'なし'
 
 
 def _id(value, limit):
@@ -26,7 +104,7 @@ def _id(value, limit):
 
 
 def empty_inbox(status='unavailable'):
-    return dict(schema_version=1, status=status if isinstance(status, str) and status in STATUS_TEXT else 'unavailable',
+    return dict(schema_version=2, status=status if isinstance(status, str) and status in STATUS_TEXT else 'unavailable',
                 source='rules', scope='disk', rows=[], unavailable_plans=0)
 
 
@@ -69,6 +147,7 @@ def build_inbox(snapshot, *, observation_id, collection_status, memory_available
                     global_issue = True
                 else:
                     affected.add((pid, tid if _id(tid, 16) != '確認待ち' else None))
+    tasks = {(p['plan_id'], t['task_id']): t for p in snapshot['plans'] for t in p['tasks']}
     for item in decisions:
         pid, tid = item['plan_id'], item['task_id']
         uncertain = global_issue or (pid, tid) in affected or (pid, None) in affected
@@ -79,7 +158,8 @@ def build_inbox(snapshot, *, observation_id, collection_status, memory_available
         if uncertain:
             group, kind, reason = 'unknown', 'REQUEST_HUMAN', 'COLLECTION_PARTIAL'
         model['rows'].append(dict(plan_id=pid, task_id=tid, kind=kind, reason_code=reason,
-            category=group, source='rules', snapshot_id=item['snapshot_id'], observation_id=observation_id))
+            category=group, source='rules', snapshot_id=item['snapshot_id'], observation_id=observation_id,
+            **analyze_task(tasks[(pid, tid)], reason, memory_available=memory_available)))
     return model
 
 
@@ -119,11 +199,13 @@ class ManagerInboxView:
         table.grid(row=2, column=0, sticky='nsew')
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
-        columns = ('category', 'plan', 'task', 'kind', 'reason')
-        self.tree = ttk.Treeview(table, columns=columns, show='headings', selectmode='browse')
-        for key, label in zip(columns, ('分類', '計画 ID', 'TASK ID', '判断種別', '固定理由コード')):
+        columns = ('category', 'plan', 'task', 'kind', 'reason', 'priority', 'cause', 'owner', 'action')
+        self.tree = ttk.Treeview(table, columns=columns,
+            displaycolumns=('priority', 'plan', 'task', 'cause', 'owner', 'action'), show='headings', selectmode='browse')
+        for key, label in zip(columns, ('分類', '計画 ID', 'TASK ID', '判断種別', '固定理由コード',
+                                       '確認優先度', '停滞・待機理由', '対応先', '対応可否')):
             self.tree.heading(key, text=label)
-            self.tree.column(key, width=200 if key in ('category', 'kind', 'reason') else 120, minwidth=90)
+            self.tree.column(key, width=170 if key in ('cause', 'owner') else 95, minwidth=65)
         self.tree.grid(row=0, column=0, sticky='nsew')
         self.horizontal = ttk.Scrollbar(table, orient='horizontal', command=self.tree.xview)
         self.vertical = ttk.Scrollbar(table, orient='vertical', command=self.tree.yview)
@@ -153,11 +235,14 @@ class ManagerInboxView:
         scope = '本体メモリ優先' if isinstance(model, dict) and model.get('scope') == 'memory' else 'ディスクのみ・本体メモリ未確認'
         self._rows = {}
         for index, row in enumerate(rows):
-            values = row_values(row)
+            values = row_values(row) + analysis_values(row)
             key = (values[1], values[2])
             detail = ('固定ルールによる提案（承認・実行は行いません）\n'
                       f'計画 ID: {values[1]}　TASK ID: {values[2]}\n'
-                      f'分類: {values[0]}　判断種別: {values[3]}\n理由コード: {values[4]}\n観測範囲: {scope}')
+                      f'分類: {values[0]}　判断種別: {values[3]}\n理由コード: {values[4]}\n'
+                      f'確認優先度: {values[5]}（業務重要度ではありません。PXは未確定）\n'
+                      f'原因: {values[6]}\n対応先: {values[7]}\n対応可否: {values[8]}（実行許可ではありません）\n'
+                      f'依存TASK: {dependency_text(row)}\n観測範囲: {scope}')
             iid = f'inbox-{index}'
             self._rows[iid] = (key, detail)
             self.tree.insert('', 'end', iid=iid, values=values)

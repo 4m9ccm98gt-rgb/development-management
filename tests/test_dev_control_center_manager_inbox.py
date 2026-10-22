@@ -44,6 +44,54 @@ class GuardedTests(unittest.TestCase):
 
 
 class ModelTests(GuardedTests):
+    def test_causes_owners_priorities_and_stable_order(self):
+        statuses = ('landed', 'cancelled', 'failed', 'needs_human', 'candidate_ready',
+                    'proposed', 'held', 'running', 'approved')
+        data = snapshot(*(task(f'T{i}', status) for i, status in enumerate(statuses)))
+        before = copy.deepcopy(data)
+        rows = model(data)['rows']
+        self.assertEqual([r['task_id'] for r in rows], [f'T{i}' for i in range(len(statuses))])
+        self.assertEqual([r['priority'] for r in rows], ['P4', 'P4', 'P1', 'P1', 'P2', 'P2', 'P3', 'PX', 'P3'])
+        self.assertEqual([r['cause'] for r in rows], ['TERMINAL', 'TERMINAL', 'FAILED', 'HUMAN',
+            'CANDIDATE', 'APPROVAL', 'HELD', 'UNKNOWN', 'QUEUED'])
+        self.assertEqual([r['owner'] for r in rows], ['NONE', 'NONE', 'HUMAN', 'HUMAN', 'HUMAN',
+            'HUMAN', 'HUMAN_CHECK', 'UNKNOWN', 'UNKNOWN'])
+        self.assertEqual(data, before)
+
+    def test_multiple_dependencies_and_single_runner_candidate(self):
+        data = snapshot(task('T1', deps=['T3', 'T4']), task('T2'), task('T3', 'held'), task('T4', 'landed'))
+        rows = model(data)['rows']
+        self.assertEqual((rows[0]['cause'], rows[0]['owner'], rows[0]['priority']), ('DEPENDENCY', 'DEPENDENCY', 'P3'))
+        self.assertEqual(rows[0]['dependencies'], [dict(task_id='T3', status='held'), dict(task_id='T4', status='landed')])
+        self.assertEqual((rows[1]['cause'], rows[1]['owner']), ('START', 'START_CHECK'))
+        self.assertEqual([r['task_id'] for r in rows if r['kind'] == 'PROPOSE_START'], ['T2'])
+
+    def test_ai_setting_requires_confirmed_run_and_is_not_permission(self):
+        for ai, owner in (('codex', 'AI_CODEX'), ('claude', 'AI_CLAUDE'), (None, 'UNKNOWN')):
+            p = plan(dict(task('T1', 'running'), main_ai=ai))
+            if ai is None:
+                p['tasks'][0].pop('main_ai')
+            data = overview.build_snapshot([p], registered_keys=KEYS,
+                associations={('Plan-1', 'T1'): dict(run_id=RID)},
+                observations={RID: dict(record=dict(run_id=RID, stage='testing'), liveness='running')})
+            row = model(data, memory_available=True)['rows'][0]
+            self.assertEqual((row['priority'], row['cause'], row['owner'], row['action']), ('P4', 'ACTIVE', owner, 'WAIT'))
+            self.assertEqual(model(data)['rows'][0]['priority'], 'PX')
+            data['plans'][0]['tasks'][0]['run']['liveness'] = 'unknown'
+            self.assertEqual(model(data, memory_available=True)['status'], 'unavailable')
+            self.assertEqual(inbox.analyze_task(data['plans'][0]['tasks'][0], 'TASK_ACTIVE', memory_available=True)['priority'], 'PX')
+        data = snapshot(dict(task('T1'), main_ai='codex'))
+        self.assertEqual(model(data)['rows'][0]['owner'], 'START_CHECK')
+
+    def test_partial_and_unknown_analysis_are_unranked_no_free_text(self):
+        result = inbox.build_inbox(snapshot(task('T1', 'failed')), observation_id=1, collection_status='partial')
+        self.assertEqual((result['rows'][0]['priority'], result['rows'][0]['cause']), ('PX', 'UNKNOWN'))
+        raw = dict(priority='SECRET', cause=['SECRET'], owner='C:/private', action='SECRET',
+                   dependencies=[dict(task_id='../SECRET', status='SECRET')])
+        self.assertEqual(inbox.analysis_values(raw), ('PX', '状態を確定できない', '確認待ち', '不明'))
+        self.assertNotIn('SECRET', inbox.dependency_text(raw))
+        self.assertEqual(inbox.analyze_task(None, 'SECRET', memory_available=True)['priority'], 'PX')
+
     def test_classification_preserves_existing_decisions_and_input(self):
         data = snapshot(task('T1', 'landed'), task('T2', 'cancelled'), task('T3', 'failed'),
                         task('T4', 'needs_human'), task('T5', 'proposed'), task('T6', 'held'),
@@ -57,7 +105,8 @@ class ModelTests(GuardedTests):
             for field in ('kind', 'reason_code', 'plan_id', 'task_id', 'snapshot_id'):
                 self.assertEqual(row[field], suggested[field])
             self.assertEqual(set(row), {'plan_id', 'task_id', 'kind', 'reason_code', 'category',
-                                        'source', 'snapshot_id', 'observation_id'})
+                                        'source', 'snapshot_id', 'observation_id', 'priority',
+                                        'cause', 'owner', 'action', 'dependencies'})
         self.assertEqual(data, before)
 
     def test_single_candidate_matches_runner_order_and_dependencies(self):
@@ -144,12 +193,18 @@ class WidgetTests(GuardedTests):
             view.tree.selection_set('inbox-1')
             view._select()
             self.assertIn('TASK ID: T2', view.detail.options['text'])
+            self.assertIn('確認優先度: P3', view.detail.options['text'])
+            self.assertIn('原因: 保留状態', view.detail.options['text'])
+            self.assertIn('対応先: 人間／確認待ち', view.detail.options['text'])
             self.assertIn('本体メモリ未確認', view.detail.options['text'])
             view.set_model(model(snapshot(task('T1'), task('T2', 'landed'))))
             self.assertIn('TERMINAL', view.detail.options['text'])
+            self.assertIn('確認優先度: P4', view.detail.options['text'])
+            self.assertNotIn('保留状態', view.detail.options['text'])
             view.set_model(inbox.empty_inbox('updating'))
             self.assertEqual(view.tree.rows, {})
             self.assertNotIn('TERMINAL', view.detail.options['text'])
+            self.assertNotIn('確認優先度:', view.detail.options['text'])
             reopened = inbox.ManagerInboxView(Widget(), window=Widget())
             self.assertEqual(reopened.tree.rows, {})
             reopened.set_model(model(snapshot(task('T3'))))
