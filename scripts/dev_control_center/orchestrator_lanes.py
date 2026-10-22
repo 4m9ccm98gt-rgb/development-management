@@ -45,7 +45,8 @@ def workflow_cards(payload, memory=False):
             hint=f'repo: {s["repo_key"]} ／ 担当設定: {t["main_ai"] or "未設定"} / {t["reviewer_ai"] or "未設定"}\n'
                  f'確認済みRun段階: {stage} ／ 理由: {t["reason"]} ／ 次の対応: {SHORT_ACTIONS[t["action_code"]]}',
             detail=t['detail'] + ('\nWorkflow本文・Run履歴はこの安全な集約入力には含まれません。Run未関連の詳細仕様は既存Workflow画面で確認してください。' if not valid_id(rid) else ''),
-            association_confirmed=not t['unknown'] and valid_id(rid)))
+            association_confirmed=not t['unknown'] and valid_id(rid), workflow_status=t['status'],
+            cause=t['cause'], task_unknown=t['unknown']))
         cards[-1]['observed_stage'] = t['stage']
     return cards, 'Workflow：' + ('一部取得不能・確認待ち' if model['status'] == 'partial' else '取得済み') + ('／本体メモリ優先' if memory else '／ディスクのみ・メモリ未確認')
 
@@ -107,7 +108,8 @@ def build_lanes(workflow, runs, *, repo_names=(), monitor_ok=True):
         result[lane].append(dict(key='RUN:'+rid, run_id=rid, lane=lane, title='Run '+rid,
             priority=priority, state=state,
             hint=f'repo: {repo} ／ 担当設定: {main} / {reviewer}\n{state}／Workflow TASKとの紐付け未確認',
-            detail='Runの詳細・テスト・レビュー結果・ログは既存の詳細パネルで確認できます。'))
+            detail='Runの詳細・テスト・レビュー結果・ログは既存の詳細パネルで確認できます。',
+            observed_stage=stage if confirmed else 'unknown', task_unknown=not confirmed))
     return result
 
 
@@ -168,6 +170,8 @@ class WorkflowFeed:
 
 
 class LaneBoard:
+    groups = LANES
+    group_labels = {}
     def __init__(self, parent, on_select):
         from .app import DARK_BG, DARK_FIELD, DARK_FG, DARK_BORDER, DARK_SELECTION
         self.frame = ttk.Frame(parent)
@@ -223,7 +227,7 @@ class LaneBoard:
         self._last = model
         self.hint.configure(text='最新レーン表示。カードのホバー・フォーカス・クリックで詳細確認。担当設定は稼働証明ではありません。')
         previous = self._data
-        current = {card['key']: card for name in LANES for card in model[name]}
+        current = {card['key']: card for name in self.groups for card in model[name]}
         for key in list(self._widgets):
             if key not in current:
                 self._widgets.pop(key).destroy()
@@ -231,8 +235,8 @@ class LaneBoard:
                 if key == self._selected_key:
                     self._selected_key = None
         self._data = current
-        for name in LANES:
-            self.headers[name].configure(text=f'{name}：{len(model[name])}件')
+        for name in self.groups:
+            self.headers[name].configure(text=f'{self.group_labels.get(name, name)}：{len(model[name])}件')
             ordered = model[name]
             for index, card in enumerate(ordered):
                 key = card['key']
@@ -245,7 +249,7 @@ class LaneBoard:
                     self._positions.pop(key, None)
                 fresh = key not in self._widgets
                 if fresh:
-                    button = ttk.Button(self.bodies[name], style='DCC.LaneCard.TButton', command=lambda k=key: self._activate(k))
+                    button = ttk.Button(self.bodies[name], style=self._card_style(name), command=lambda k=key: self._activate(k))
                     if self._selected_key == key:
                         button.state(['selected'])
                     self._widgets[key] = button
@@ -256,7 +260,7 @@ class LaneBoard:
                 button = self._widgets[key]
                 if fresh or previous.get(key) != card:
                     title = card['title'] if len(card['title']) <= 30 else card['title'][:29]+'…'
-                    button.configure(text=f'{title}\n{card["state"]}\n{card["priority"]} ／ {name}')
+                    button.configure(text=self._card_text(card, name, title))
                 if self._positions.get(key) != (name, index):
                     button.pack_forget()
                     kwargs = dict(fill='x', pady=4, padx=2)
@@ -269,6 +273,12 @@ class LaneBoard:
                         button.focus_set()
                     self._positions[key] = (name, index)
             self.cards[name] = [self._widgets[c['key']] for c in ordered]
+
+    def _card_text(self, card, name, title):
+        return f'{title}\n{card["state"]}\n{card["priority"]} ／ {self.group_labels.get(name, name)}'
+
+    def _card_style(self, name):
+        return 'DCC.LaneCard.TButton'
 
     def _activate(self, key):
         if key in self._data:

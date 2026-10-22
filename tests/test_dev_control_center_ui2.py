@@ -177,14 +177,14 @@ class SelectionAndUsageTests(FakeOrchestratorWindowCase):
             self.window.copy_run_log()
             self.assertEqual(report.call_count, 1)
 
-    def test_copy_header_and_single_guide_scale_two(self):
+    def test_copy_header_and_single_loop_character(self):
         self.assertIs(self.window.copy_button.master, self.window.stop_button.master)
         self.assertIsNot(self.window.copy_button.master, self.window.apply_button.master)
         self.assertTrue(self.window.copy_button.instate(['disabled']))
         with patch.object(view, 'CharacterView', wraps=_FakeCharacterView) as factory:
             second = self.make_window(initial_repo='app')
         factory.assert_called_once()
-        self.assertEqual(factory.call_args.kwargs['scale'], 2)
+        self.assertEqual(factory.call_args.kwargs['scale'], 1)
         second.close()
 
     def test_unlinked_task_clears_stop_copy_and_poll_never_reselects_run(self):

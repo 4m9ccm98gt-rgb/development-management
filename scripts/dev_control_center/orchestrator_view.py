@@ -28,7 +28,8 @@ from tools.ai_orchestrator.common import OrchestratorError
 from tools.ai_orchestrator.providers import DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_CLASSES
 
 from .character import CharacterView, mood_for
-from .orchestrator_lanes import LaneBoard, WorkflowFeed, build_lanes
+from .orchestrator_lanes import WorkflowFeed, build_lanes
+from .orchestrator_loop import LoopBoard as LaneBoard, BG as LOOP_BG, configure_loop_styles
 
 POLL_SECONDS = 2.0
 UI_TICK_MS = 400
@@ -287,14 +288,15 @@ class OrchestratorWindow:
         self.usage_vars = {name: tk.StringVar(value="取得不能（未取得）") for name in ("claude", "codex")}
         self.usage_role_vars = {name: tk.StringVar(value="") for name in ("claude", "codex")}
 
-        outer = ttk.Frame(self.window, padding=12)
+        configure_loop_styles(ttk.Style(self.window))
+        outer = ttk.Frame(self.window, padding=12, style='OrchestratorLoop.TFrame')
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
         outer.rowconfigure(1, weight=1)
         self._outer = outer
-        header = ttk.Frame(outer)
+        header = ttk.Frame(outer, style='OrchestratorLoop.Toolbar.TFrame')
         header.grid(row=0, column=0, columnspan=2, sticky='ew')
-        ttk.Label(header, text='AI Orchestrator', font=('Segoe UI', 14, 'bold')).pack(side='left')
+        ttk.Label(header, text='AI Orchestrator', style='OrchestratorLoop.Title.TLabel').pack(side='left')
         reports = ttk.Button(header, text='🐱 報告箱（件数不明）', command=self._open_reports)
         reports.pack(side='left', padx=8)
         if on_reports_inbox is None:
@@ -302,10 +304,7 @@ class OrchestratorWindow:
         ttk.Button(header, text='新規Task・開始設定', command=lambda: self._show_details('form')).pack(side='left', padx=4)
         ttk.Button(header, text='詳細を閉じる', command=self._hide_details).pack(side='left', padx=4)
         self.board = LaneBoard(outer, self._select_card)
-        self.board.frame.grid(row=1, column=0, sticky='nsew', pady=8)
-        guide = ttk.Frame(outer, padding=(8, 0))
-        guide.grid(row=1, column=1, sticky='se')
-        ttk.Label(guide, text='案内キャラクター\n選択Runの工程表示').pack(anchor='w')
+        self.board.frame.grid(row=1, column=0, columnspan=2, sticky='nsew', pady=8)
         self.board_notice = ttk.Label(outer, text='Run／Workflow：確認待ち', wraplength=1100)
         self.board_notice.grid(row=2, column=0, columnspan=2, sticky='ew')
         self.details = ttk.Notebook(outer, height=340)
@@ -322,10 +321,10 @@ class OrchestratorWindow:
         left = ttk.Frame(self.details)
         self.details.add(left, text='Run履歴')
         ttk.Label(left, text="実行中 / 過去のrun", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        # Packed before the run list so a short window shrinks the list, not the character.
-        self.character = CharacterView(guide, background=DARK_BG, scale=2)
-        if self.character.available:
-            self.character.widget.pack(side="bottom")
+        # One shared Canvas image keeps the six existing moods independent of data refresh.
+        self.character = CharacterView(self.board.character_host, background=LOOP_BG, scale=1,
+                                       canvas=self.board.character_host)
+        self.board.attach_character(self.character)
         self.run_list = tk.Listbox(left, width=58, exportselection=False)
         configure_dark_listbox(self.run_list)
         self.run_list.pack(fill="both", expand=True, pady=(6, 0))
