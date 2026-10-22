@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Callable
 
+from . import activity_log
 from . import reports_inbox as inbox
 from tools.ai_orchestrator import taskspec
 
@@ -127,6 +128,28 @@ _SCREEN_MESSAGES = {
 _REASON_TO_FAILURE_KIND = {message: kind for kind, message in _SCREEN_MESSAGES.items()}
 
 
+def classify_ai_failure(*, launched: bool, error_kind: str | None) -> str:
+    """DCC Task WF-6a 仕様3: the activity log's fixed-word AI-failure classification -- never the
+    AI's own output text, only whether the call was ever actually launched and, when it was,
+    `error_kind` (one of tools.ai_orchestrator.providers.ERR_*, itself the result of known-phrase
+    matching against the AI's own output -- see providers.classify_error/_QUOTA_RE/_AUTH_RE).
+    `launched=False` is the OrchestratorError case below (the AI command itself could not be
+    resolved) -- always 起動できない regardless of `error_kind`. Any other/uncategorized kind
+    (token limit, max turns, protocol, empty response, ...) returns "" -- no reason recorded --
+    rather than guessing one of the five fixed words for a case that does not match any of
+    them."""
+    if not launched:
+        return activity_log.REASON_CANNOT_LAUNCH
+    from tools.ai_orchestrator import providers
+
+    return {
+        providers.ERR_AUTH: activity_log.REASON_LOGIN_EXPIRED,
+        providers.ERR_QUOTA: activity_log.REASON_QUOTA_LIMIT,
+        providers.ERR_PROCESS: activity_log.REASON_CRASHED,
+        providers.ERR_TIMEOUT: activity_log.REASON_TIMEOUT,
+    }.get(error_kind, "")
+
+
 def failure_kind_for_reason(reason: str) -> str:
     """Reverse-lookup from TriageOutcome.reason back to its FAILURE_KIND_* code (DCC Task 17):
     investigate()'s own contract guarantees reason is always exactly one of the fixed
@@ -178,12 +201,19 @@ class TriageOutcome:
     the human even on success, since a text-only classification carries less evidence.
     code_unavailable_reason (DCC Task 14.3) is one of the CODE_UNAVAILABLE_REASON_* kinds below
     when code_available is False, or "" when it is True or the kind could not be classified;
-    never a path or exception string -- see code_unavailable_note."""
+    never a path or exception string -- see code_unavailable_note.
+
+    ai_failure_reason (DCC Task WF-6a) is "" on success or when the failure does not match one of
+    classify_ai_failure's five fixed words, else one of activity_log.REASON_LOGIN_EXPIRED /
+    REASON_QUOTA_LIMIT / REASON_CANNOT_LAUNCH / REASON_CRASHED / REASON_TIMEOUT -- purely
+    additive, for the activity log only; it never changes `reason` (the on-screen message) or any
+    other field."""
 
     result: TriageResult | None
     reason: str = ""
     code_available: bool = False
     code_unavailable_reason: str = ""
+    ai_failure_reason: str = ""
 
 
 # DCC Task 14.3: why code_available is False, classified from DCC's own repo registry only (see
@@ -680,7 +710,8 @@ def investigate(
             # failure below, the AI call itself never ran, so there is nothing to log (DCC Task
             # 14.4, 仕様3: logging covers failures *after* the call was made).
             return TriageOutcome(None, _SCREEN_MESSAGES[FAILURE_KIND_AI_UNAVAILABLE], code_available,
-                                  code_unavailable_reason)
+                                  code_unavailable_reason,
+                                  ai_failure_reason=classify_ai_failure(launched=False, error_kind=None))
         except Exception:  # noqa: BLE001 - any other failure here is genuinely unexpected
             reason = _SCREEN_MESSAGES[FAILURE_KIND_OTHER]
             _safe_write_failure_log(write_failure_log, FAILURE_KIND_OTHER, returncode=None,
@@ -716,7 +747,9 @@ def investigate(
             executable_kind=getattr(result, "executable_kind", ""), timeout_seconds=timeout,
             result_subtype=getattr(result, "result_subtype", ""), num_turns=getattr(result, "num_turns", None),
         )
-        return TriageOutcome(None, reason, code_available, code_unavailable_reason)
+        ai_failure_reason = classify_ai_failure(launched=True, error_kind=result.error_kind)
+        return TriageOutcome(None, reason, code_available, code_unavailable_reason,
+                              ai_failure_reason=ai_failure_reason)
 
     if result.tokens and result.tokens > max_tokens:
         _log_token_limit_breakdown(result, max_tokens)

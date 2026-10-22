@@ -38,6 +38,7 @@ import tempfile
 import threading
 from typing import Callable, Iterable
 
+from . import activity_log
 from . import reports_auto as auto
 from . import reports_create_and_start as cas
 from . import reports_inbox as inbox
@@ -376,6 +377,18 @@ def _display_safe(value: str) -> str:
     return inbox.sanitize_path_for_display(value)
 
 
+def _log_activity(*, action: str, target_type: str = activity_log.TARGET_NONE, target_id: str = "",
+                   result: str = activity_log.RESULT_NONE, reason: str = activity_log.REASON_NONE,
+                   path: Path | None = None) -> None:
+    """Best-effort (DCC Task WF-6a, C3): a logging failure must never affect the outcome
+    run_auto_start_once has already computed."""
+    try:
+        activity_log.append(role=activity_log.ROLE_AUTO_START, action=action, target_type=target_type,
+                             target_id=target_id, result=result, reason=reason, path=path)
+    except activity_log.ActivityLogError:
+        pass
+
+
 def write_run_log_entry(*, app_key: str, report_id: str, outcome: str, run_id: str = "",
                          log_dir: Path | None = None) -> None:
     """仕様5: one record per automatic-start attempt -- fixed words and numbers only (date/time,
@@ -484,7 +497,11 @@ class AutoStartRunOutcome:
 
 def _eligible_report(global_config: "auto.AutoModeConfig", start_config: AutoStartConfig, reports: list, *,
                       records_dir: Path | None, auto_results_root: Path | None,
-                      load_decision_fn: Callable[[str, str], object]) -> "inbox.Report | None":
+                      load_decision_fn: Callable[[str, str], object],
+                      activity_log_path: Path | None = None) -> "inbox.Report | None":
+    """DCC Task WF-6a: each report skipped here because a human decision already exists (or
+    could not be read back) is logged as its own 対象外 record carrying that report's own id --
+    the same treatment reports_auto._eligible_report gives the equivalent check there."""
     for report in reports:
         if not app_start_allowed(global_config, start_config, report.app_key):
             continue
@@ -500,6 +517,8 @@ def _eligible_report(global_config: "auto.AutoModeConfig", start_config: AutoSta
             # no decision existed.
             decided = True
         if decided:
+            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_REPORT,
+                          target_id=_hash(report.report_id), path=activity_log_path)
             continue
         return report
     return None
@@ -561,6 +580,7 @@ def run_auto_start_once(
     records_dir: Path | None = None,
     waiting_dir: Path | None = None,
     log_dir: Path | None = None,
+    activity_log_path: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> AutoStartRunOutcome:
     """Run at most one automatic start (C1-C6). Never starts the Orchestrator for a report whose
@@ -586,7 +606,11 @@ def run_auto_start_once(
     DCC Task 17-fix (C4): whether a human decision has since been recorded for the chosen report
     is re-checked the same way -- once right after the eligible report is chosen, and again inside
     the same last-moment guard -- so a decision recorded while create_and_start_fn's own spec-file
-    creation was in flight still stops the real Orchestrator start."""
+    creation was in flight still stops the real Orchestrator start.
+
+    `activity_log_path` (DCC Task WF-6a) is where 開始/対象外/上限 are each appended to the shared
+    activity record as they happen; defaults to activity_log's own real path, but a logging
+    failure there (see _log_activity) never changes anything returned here."""
     global_config = global_config if global_config is not None else auto.load_auto_mode_config(global_config_path)
     start_config = start_config if start_config is not None else load_auto_start_config(start_config_path)
     today = today if today is not None else auto.today_str()
@@ -610,13 +634,17 @@ def run_auto_start_once(
     refresh_pending_results(reports, records_dir=records_dir, run_lookup_fn=run_lookup_fn)
 
     if not global_config.enabled:
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
         return AutoStartRunOutcome(STATUS_DISABLED)
     if daily_limit_reached(start_config, today, path=daily_count_path):
+        _log_activity(action=activity_log.ACTION_LIMIT, path=activity_log_path)
         return AutoStartRunOutcome(STATUS_LIMIT_REACHED, LIMIT_REACHED_TEXT)
 
     report = _eligible_report(global_config, start_config, reports, records_dir=records_dir,
-                               auto_results_root=auto_results_root, load_decision_fn=load_decision_fn)
+                               auto_results_root=auto_results_root, load_decision_fn=load_decision_fn,
+                               activity_log_path=activity_log_path)
     if report is None:
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
         return AutoStartRunOutcome(STATUS_NOTHING_TO_DO)
 
     if stop_event is not None and stop_event.is_set():
@@ -624,8 +652,12 @@ def run_auto_start_once(
     current_global = _current_global_config(global_config, global_config_path)
     current_start = _current_start_config(start_config, start_config_path)
     if not app_start_allowed(current_global, current_start, report.app_key):
+        _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_REPORT,
+                      target_id=_hash(report.report_id), path=activity_log_path)
         return AutoStartRunOutcome(STATUS_DISABLED)
     if daily_limit_reached(current_start, today, path=daily_count_path):
+        _log_activity(action=activity_log.ACTION_LIMIT, target_type=activity_log.TARGET_REPORT,
+                      target_id=_hash(report.report_id), path=activity_log_path)
         return AutoStartRunOutcome(STATUS_LIMIT_REACHED, LIMIT_REACHED_TEXT)
 
     try:
@@ -646,6 +678,8 @@ def run_auto_start_once(
     clear_waiting(report.app_key, report.report_id, root=waiting_dir)
     reserved_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _save_record(AutoStartRecord(report.app_key, report.report_id, reserved_at), root=records_dir)
+    _log_activity(action=activity_log.ACTION_START, target_type=activity_log.TARGET_REPORT,
+                  target_id=_hash(report.report_id), path=activity_log_path)
 
     def _guarded_start_run(**start_run_kwargs):
         """C5: the actual last check before the Orchestrator starts -- re-reads the stop event,

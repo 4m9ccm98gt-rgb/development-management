@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import reports_auto as auto
 from scripts.dev_control_center import reports_auto_start as auto_start
 from scripts.dev_control_center import reports_create_and_start as cas
@@ -93,6 +94,7 @@ class RunAutoStartOnceTests(unittest.TestCase):
         return dict(
             daily_count_path=tmp / "count.json", records_dir=tmp / "records", log_dir=tmp / "run_log",
             auto_results_root=tmp / "triage_results", waiting_dir=tmp / "waiting",
+            activity_log_path=tmp / "activity.jsonl",
         )
 
     def _fake_create_and_start(self, calls, *, ok=True, reason="", run_dir=None):
@@ -707,6 +709,7 @@ class DecisionReCheckTests(unittest.TestCase):
         return dict(
             daily_count_path=tmp / "count.json", records_dir=tmp / "records", log_dir=tmp / "run_log",
             auto_results_root=tmp / "triage_results", waiting_dir=tmp / "waiting",
+            activity_log_path=tmp / "activity.jsonl",
         )
 
     def _scan_fn(self, report):
@@ -753,6 +756,44 @@ class DecisionReCheckTests(unittest.TestCase):
             )
             self.assertEqual(calls, [])
             self.assertEqual(result.status, auto_start.STATUS_NOTHING_TO_DO)
+
+    # ------------------------------------------------------------------ Reviewer finding 3
+    def test_mixed_decided_and_undecided_reports_each_get_their_own_activity_record(self):
+        """Same as reports_auto's own equivalent test: a report excluded here because a human
+        already decided it must be logged as its own 対象外 record carrying that report's own id,
+        not just a single id-less exclusion, while the undecided report still starts normally."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            decided_report = make_report(report_id="r-decided-mix")
+            undecided_report = make_report(report_id="r-undecided-mix")
+            save_triage_result(tmp, decided_report, auto.OUTCOME_PROCEED)
+            save_triage_result(tmp, undecided_report, auto.OUTCOME_PROCEED)
+            inbox.save_decision(decided_report.app_key, decided_report.report_id, "skip")
+            deps = self._fixed_deps(tmp)
+            calls: list = []
+
+            scan_fn = lambda apps: [inbox.AppInbox(
+                "next-day-setup", "夕食料飲システム", True, "", (decided_report, undecided_report))]
+            outcome = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-dir")), **deps,
+            )
+            self.assertEqual(outcome.status, auto_start.STATUS_STARTED)
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_REPORT)
+            self.assertEqual(excluded[0].target_id, auto_start._hash(decided_report.report_id))
+
+            started = [e for e in entries if e.action == activity_log.ACTION_START]
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0].target_id, auto_start._hash(undecided_report.report_id))
+            raw = deps["activity_log_path"].read_text(encoding="utf-8")
+            self.assertNotIn(decided_report.report_id, raw)
+            self.assertNotIn(undecided_report.report_id, raw)
 
     # ------------------------------------------------------------------ C4
     def test_decision_recorded_during_spec_creation_stops_the_actual_start(self):
@@ -818,6 +859,153 @@ class DecisionReCheckTests(unittest.TestCase):
             self.assertEqual(result.status, auto_start.STATUS_STARTED)
             self.assertIsNone(inbox.load_decision(report.app_key, report.report_id))
             self.assertFalse(inbox.decision_path(report.app_key, report.report_id).exists())
+
+
+class ActivityLogIntegrationTests(unittest.TestCase):
+    """DCC Task WF-6a: 開始・対象外・上限 are each appended to the shared activity record, and a
+    logging failure never changes the outcome already computed (C3/C4)."""
+
+    def _fixed_deps(self, tmp: Path) -> dict:
+        return dict(
+            daily_count_path=tmp / "count.json", records_dir=tmp / "records", log_dir=tmp / "run_log",
+            auto_results_root=tmp / "triage_results", waiting_dir=tmp / "waiting",
+            activity_log_path=tmp / "activity.jsonl",
+        )
+
+    def _scan_fn(self, report):
+        return lambda apps: [inbox.AppInbox(report.app_key, report.app_display_name, True, "", (report,))]
+
+    def test_disabled_and_nothing_to_do_are_logged_as_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            deps = self._fixed_deps(tmp)
+
+            auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=False),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                create_and_start_fn=self._fake_create_and_start([]), load_decision_fn=_no_decision, **deps,
+            )
+            auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": False}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                create_and_start_fn=self._fake_create_and_start([]), load_decision_fn=_no_decision, **deps,
+            )
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            self.assertEqual(len(entries), 2)
+            for entry in entries:
+                self.assertEqual(entry.role, activity_log.ROLE_AUTO_START)
+                self.assertEqual(entry.action, activity_log.ACTION_EXCLUDED)
+
+    def test_daily_limit_reached_is_logged_as_limit_not_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            deps = self._fixed_deps(tmp)
+            start_config = auto_start.AutoStartConfig(apps={"next-day-setup": True}, daily_limit=0)
+
+            auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True), start_config=start_config,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                create_and_start_fn=self._fake_create_and_start([]), load_decision_fn=_no_decision, **deps,
+            )
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].role, activity_log.ROLE_AUTO_START)
+            self.assertEqual(entries[0].action, activity_log.ACTION_LIMIT)
+
+    def test_a_real_start_attempt_is_logged_as_start(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            deps = self._fixed_deps(tmp)
+            calls = []
+
+            outcome = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                resolve_repo_dir=lambda app_key: tmp / "repos" / app_key, active_runs_fn=lambda repo: [],
+                create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-dir")),
+                load_decision_fn=_no_decision, **deps,
+            )
+            self.assertEqual(outcome.status, auto_start.STATUS_STARTED)
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            start_entries = [e for e in entries if e.action == activity_log.ACTION_START]
+            self.assertEqual(len(start_entries), 1)
+            self.assertEqual(start_entries[0].role, activity_log.ROLE_AUTO_START)
+            self.assertEqual(start_entries[0].target_type, activity_log.TARGET_REPORT)
+            self.assertEqual(start_entries[0].target_id, auto_start._hash(report.report_id))
+            raw = deps["activity_log_path"].read_text(encoding="utf-8")
+            self.assertNotIn(report.body, raw)
+            self.assertNotIn(report.report_id, raw)
+
+    def test_activity_log_write_failure_never_changes_the_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            deps = self._fixed_deps(tmp)
+            calls = []
+
+            def broken_append(**kwargs):
+                raise activity_log.ActivityLogError("boom")
+
+            with mock.patch.object(activity_log, "append", side_effect=broken_append):
+                outcome = auto_start.run_auto_start_once(
+                    global_config=auto.AutoModeConfig(enabled=True),
+                    start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                    reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                    resolve_repo_dir=lambda app_key: tmp / "repos" / app_key, active_runs_fn=lambda repo: [],
+                    create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-dir")),
+                    load_decision_fn=_no_decision, **deps,
+                )
+
+            self.assertEqual(outcome.status, auto_start.STATUS_STARTED)
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(deps["activity_log_path"].exists())
+
+    def test_deeply_nested_corrupt_activity_log_never_changes_the_outcome(self):
+        """Reviewer finding (repair 2): unlike the mock above, this points activity_log_path at a
+        real on-disk file so deeply nested it makes activity_log's own json.loads raise
+        RecursionError -- the exact path the reviewer traced through _log_activity's
+        `except activity_log.ActivityLogError` not catching a raw RecursionError. Confirms the
+        activity_log.py fix (converting it to ActivityLogError) actually keeps auto-start's own
+        result unchanged, not just that _log_activity's except clause is reachable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            report = make_report()
+            save_triage_result(tmp, report, auto.OUTCOME_PROCEED)
+            deps = self._fixed_deps(tmp)
+            deps["activity_log_path"].write_text("[" * 100000 + "]" * 100000 + "\n", encoding="utf-8")
+            calls = []
+
+            outcome = auto_start.run_auto_start_once(
+                global_config=auto.AutoModeConfig(enabled=True),
+                start_config=auto_start.AutoStartConfig(apps={"next-day-setup": True}),
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=self._scan_fn(report),
+                resolve_repo_dir=lambda app_key: tmp / "repos" / app_key, active_runs_fn=lambda repo: [],
+                create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-dir")),
+                load_decision_fn=_no_decision, **deps,
+            )
+
+            self.assertEqual(outcome.status, auto_start.STATUS_STARTED)
+            self.assertEqual(len(calls), 1)
+
+    def _fake_create_and_start(self, calls, *, ok=True, reason="", run_dir=None):
+        def fn(report, criteria_lines, **kwargs):
+            calls.append((report.identity, criteria_lines, kwargs))
+            return cas.StartResult(ok, reason, spec_path=Path("/fake/spec.json"),
+                                    run_dir=run_dir if ok else None)
+        return fn
 
 
 class LoadAutoStartRecordsTests(unittest.TestCase):

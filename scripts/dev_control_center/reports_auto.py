@@ -34,6 +34,7 @@ import threading
 import time
 from typing import Callable, Iterable
 
+from . import activity_log
 from . import reports_inbox as inbox
 from . import reports_triage as triage
 
@@ -282,6 +283,33 @@ def classify_outcome(outcome: "triage.TriageOutcome") -> str:
     return OUTCOME_NOT_APPLICABLE  # spec_misunderstanding (質問) / insufficient_info (その他)
 
 
+def needs_human_reason(result: "triage.TriageResult") -> str:
+    """DCC Task WF-6a 仕様3: the activity log's fixed-word reason for an OUTCOME_NEEDS_HUMAN
+    record -- read-only on the exact same fixed fields classify_outcome already used to reach
+    that decision, called only after classify_outcome has already decided OUTCOME_NEEDS_HUMAN.
+    This never changes that decision; it only labels it for the log. Returns "" when
+    classify_outcome's own two NEEDS_HUMAN paths do not apply (should not happen given the
+    caller's own contract, but degrades to "no reason" rather than guessing)."""
+    if result.classification == "feature_request":
+        return activity_log.REASON_SPEC_CHANGE_REQUEST
+    if result.classification == "bug":
+        return activity_log.REASON_AUTO_CONDITION_NOT_MET
+    return ""
+
+
+def _log_activity(*, action: str, target_type: str = activity_log.TARGET_NONE, target_id: str = "",
+                   result: str = activity_log.RESULT_NONE, reason: str = activity_log.REASON_NONE,
+                   path: Path | None = None) -> None:
+    """Best-effort (DCC Task WF-6a, C3): a logging failure must never affect the outcome
+    run_auto_triage_once has already computed -- callers call this only after that outcome is
+    decided, and its result is never checked."""
+    try:
+        activity_log.append(role=activity_log.ROLE_AUTO_TRIAGE, action=action, target_type=target_type,
+                             target_id=target_id, result=result, reason=reason, path=path)
+    except activity_log.ActivityLogError:
+        pass
+
+
 # --------------------------------------------------------------------------- 仕様5: 実行ごとの記録
 
 _LOG_SEQUENCE_LOCK = threading.Lock()
@@ -377,14 +405,19 @@ def _default_load_decision_marker(app_key: str, report_id: str):
 
 
 def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path | None,
-                      load_decision_fn: Callable[[str, str], object] | None = None) -> "inbox.Report | None":
+                      load_decision_fn: Callable[[str, str], object] | None = None,
+                      activity_log_path: Path | None = None) -> "inbox.Report | None":
     """DCC Task 17-fix (C1/C2/C3): a report with any human decision recorded in the inbox
     (対応する/実機で調べる/見送る alike) is never picked for automatic investigation, and the same
     holds -- safe side -- when that decision record exists but could not be read back
     (load_decision_fn then returns inbox.UNREADABLE_DECISION, never None). `load_decision_fn`
     defaults to inbox.decision_or_unreadable_marker, the exact same on-disk record
     (reports_inbox.decision_path) the inbox window's own 状態 column reads (C5); tests inject a
-    fake so this never touches the real %LOCALAPPDATA%."""
+    fake so this never touches the real %LOCALAPPDATA%.
+
+    DCC Task WF-6a: each report skipped here because a human decision already exists (or could
+    not be read back) is logged as its own 対象外 record carrying that report's own id, so a mix
+    of decided and undecided reports does not collapse into a single id-less exclusion."""
     load_decision_fn = load_decision_fn or _default_load_decision_marker
     for report in reports:
         if not app_allowed(config, report.app_key):
@@ -397,6 +430,8 @@ def _eligible_report(config: AutoModeConfig, reports: list, *, results_dir: Path
             # side (C3): treated as "decided", never silently skipped over as if undecided.
             decided = True
         if decided:
+            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_REPORT,
+                          target_id=_hash(report.report_id), path=activity_log_path)
             continue
         return report
     return None
@@ -426,6 +461,7 @@ def run_auto_triage_once(
     daily_count_path: Path | None = None,
     results_dir: Path | None = None,
     log_dir: Path | None = None,
+    activity_log_path: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> AutoTriageRunOutcome:
     """Run at most one automatic investigation (C1/C2/C4). Never raises for an ordinary failure
@@ -449,13 +485,19 @@ def run_auto_triage_once(
     exists but could not be read back -- is never selected here, so investigate_fn is never
     called for it. Defaults to inbox.decision_or_unreadable_marker, the same on-disk record the
     inbox window's own 状態 column reads; tests inject a fake so nothing here ever touches the
-    real %LOCALAPPDATA%."""
+    real %LOCALAPPDATA%.
+
+    `activity_log_path` (DCC Task WF-6a) is where 開始/完了/失敗/対象外 are each appended to the
+    shared activity record as they happen; defaults to activity_log's own real path, but a
+    logging failure there (see _log_activity) never changes anything returned here (C3)."""
     config = config if config is not None else load_auto_mode_config(config_path)
     today = today if today is not None else today_str()
 
     if not config.enabled:
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
         return AutoTriageRunOutcome(STATUS_DISABLED, "自動モードはOFFです。")
     if daily_limit_reached(config, today, path=daily_count_path):
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
         return AutoTriageRunOutcome(STATUS_LIMIT_REACHED, LIMIT_REACHED_TEXT)
 
     reports_config_fn = reports_config_fn or inbox.load_reports_config
@@ -467,17 +509,23 @@ def run_auto_triage_once(
     inboxes = scan_fn(apps)
     reports = inbox.all_reports(inboxes)
 
-    report = _eligible_report(config, reports, results_dir=results_dir, load_decision_fn=load_decision_fn)
+    report = _eligible_report(config, reports, results_dir=results_dir, load_decision_fn=load_decision_fn,
+                               activity_log_path=activity_log_path)
     if report is None:
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
         return AutoTriageRunOutcome(STATUS_NOTHING_TO_DO, "対象の報告がありません。")
 
     if stop_event is not None and stop_event.is_set():
         return AutoTriageRunOutcome(STATUS_STOPPED, "DCCが終了します。")
     current_config = _current_config(config, config_path)
     if not app_allowed(current_config, report.app_key):
+        _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_REPORT,
+                      target_id=_hash(report.report_id), path=activity_log_path)
         return AutoTriageRunOutcome(STATUS_DISABLED, "自動モードはOFFです。")
 
     _increment_daily_count(today, daily_count_path)
+    _log_activity(action=activity_log.ACTION_START, target_type=activity_log.TARGET_REPORT,
+                  target_id=_hash(report.report_id), path=activity_log_path)
     started = time.monotonic()
     try:
         triage_outcome = investigate_fn(report)
@@ -490,12 +538,17 @@ def run_auto_triage_once(
         failure_reason = ""
     elapsed = time.monotonic() - started
 
+    ai_failure_reason = ""
+    human_reason = ""
     if triage_outcome is None:
         outcome_label = OUTCOME_FAILED
     else:
         outcome_label = classify_outcome(triage_outcome)
         if outcome_label == OUTCOME_FAILED:
             failure_reason = triage.failure_kind_for_reason(triage_outcome.reason)
+            ai_failure_reason = triage_outcome.ai_failure_reason
+        elif outcome_label == OUTCOME_NEEDS_HUMAN and triage_outcome.result is not None:
+            human_reason = needs_human_reason(triage_outcome.result)
 
     investigated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     record = AutoTriageRecord(report.app_key, report.report_id, outcome_label, investigated_at, elapsed,
@@ -503,4 +556,13 @@ def run_auto_triage_once(
     _save_result(record, root=results_dir)
     write_run_log_entry(app_key=report.app_key, report_id=report.report_id, outcome=outcome_label,
                          elapsed_seconds=elapsed, failure_reason=failure_reason, log_dir=log_dir)
+    report_target_id = _hash(report.report_id)
+    if outcome_label == OUTCOME_FAILED:
+        _log_activity(action=activity_log.ACTION_FAIL, target_type=activity_log.TARGET_REPORT,
+                      target_id=report_target_id, result=activity_log.RESULT_FAILED,
+                      reason=ai_failure_reason, path=activity_log_path)
+    else:
+        _log_activity(action=activity_log.ACTION_COMPLETE, target_type=activity_log.TARGET_REPORT,
+                      target_id=report_target_id, result=outcome_label, reason=human_reason,
+                      path=activity_log_path)
     return AutoTriageRunOutcome(STATUS_RAN, "", record)

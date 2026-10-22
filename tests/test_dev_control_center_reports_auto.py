@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import reports_auto as auto
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_triage as triage
@@ -254,7 +255,7 @@ class RunAutoTriageOnceTests(unittest.TestCase):
         # covered by its own tests below.
         return dict(
             daily_count_path=tmp / "count.json", results_dir=tmp / "results", log_dir=tmp / "run_log",
-            load_decision_fn=_no_decision,
+            activity_log_path=tmp / "activity.jsonl", load_decision_fn=_no_decision,
         )
 
     # ------------------------------------------------------------------ C1
@@ -612,6 +613,205 @@ class RunAutoTriageOnceTests(unittest.TestCase):
             self.assertEqual(outcome.status, auto.STATUS_NOTHING_TO_DO)
 
 
+class NeedsHumanReasonTests(unittest.TestCase):
+    """C6: the fixed-word reason behind a NEEDS_HUMAN record -- read-only labeling, never a
+    second classifier that could disagree with classify_outcome's own decision."""
+
+    def test_feature_request_is_spec_change_request(self):
+        result = make_triage_result(classification="feature_request", confidence="high")
+        self.assertEqual(auto.needs_human_reason(result), activity_log.REASON_SPEC_CHANGE_REQUEST)
+
+    def test_bug_not_meeting_the_proceed_bar_is_condition_not_met(self):
+        result = make_triage_result(classification="bug", confidence="low", suspected_locations=("x",))
+        self.assertEqual(auto.needs_human_reason(result), activity_log.REASON_AUTO_CONDITION_NOT_MET)
+
+    def test_reason_never_changes_classify_outcomes_own_decision(self):
+        for classification, confidence, locations in (
+            ("feature_request", "high", ()),
+            ("bug", "low", ("x",)),
+        ):
+            result = make_triage_result(classification=classification, confidence=confidence,
+                                         suspected_locations=locations)
+            outcome = triage.TriageOutcome(result)
+            decision_before = auto.classify_outcome(outcome)
+            auto.needs_human_reason(result)  # must be read-only
+            decision_after = auto.classify_outcome(outcome)
+            self.assertEqual(decision_before, auto.OUTCOME_NEEDS_HUMAN)
+            self.assertEqual(decision_before, decision_after)
+
+
+class ActivityLogIntegrationTests(unittest.TestCase):
+    """DCC Task WF-6a: 開始・完了・失敗・対象外 are each appended to the shared activity record as
+    run_auto_triage_once reaches them, and a logging failure never changes the outcome already
+    computed (C3/C4/C5/C6)."""
+
+    def _fixed_deps(self, tmp: Path):
+        return dict(
+            daily_count_path=tmp / "count.json", results_dir=tmp / "results", log_dir=tmp / "run_log",
+            activity_log_path=tmp / "activity.jsonl", load_decision_fn=_no_decision,
+        )
+
+    def test_disabled_and_nothing_to_do_and_limit_reached_are_logged_as_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            deps = self._fixed_deps(tmp)
+
+            disabled_config = auto.AutoModeConfig(enabled=False)
+            auto.run_auto_triage_once(config=disabled_config, investigate_fn=mock.Mock(),
+                                       reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                       scan_fn=lambda apps: [], **deps)
+
+            enabled_empty = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            auto.run_auto_triage_once(config=enabled_empty, investigate_fn=mock.Mock(),
+                                       reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                       scan_fn=lambda apps: [], **deps)
+
+            maxed_out = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True}, daily_limit=0)
+            auto.run_auto_triage_once(config=maxed_out, investigate_fn=mock.Mock(),
+                                       reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                       scan_fn=lambda apps: [], **deps)
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            self.assertEqual(len(entries), 3)
+            for entry in entries:
+                self.assertEqual(entry.role, activity_log.ROLE_AUTO_TRIAGE)
+                self.assertEqual(entry.action, activity_log.ACTION_EXCLUDED)
+
+    def test_start_and_complete_are_logged_for_a_successful_investigation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            deps = self._fixed_deps(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report()
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+            investigate = mock.Mock(return_value=triage.TriageOutcome(make_triage_result()))
+
+            auto.run_auto_triage_once(config=config, investigate_fn=investigate,
+                                       reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                       scan_fn=scan_fn, **deps)
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            self.assertEqual(len(entries), 2)
+            complete, start = entries[0], entries[1]
+            self.assertEqual(start.action, activity_log.ACTION_START)
+            self.assertEqual(start.target_type, activity_log.TARGET_REPORT)
+            self.assertEqual(start.target_id, auto._hash(report.report_id))
+            self.assertEqual(complete.action, activity_log.ACTION_COMPLETE)
+            self.assertEqual(complete.result, activity_log.RESULT_PROCEED)
+            # Never the report body or any AI free text.
+            raw = deps["activity_log_path"].read_text(encoding="utf-8")
+            self.assertNotIn(report.body, raw)
+            self.assertNotIn(report.report_id, raw)
+
+    def test_failure_is_logged_with_one_of_the_five_fixed_ai_failure_words(self):
+        """C5: the activity log's own failure reason is one of the five fixed classification
+        words, derived only from the provider's already-classified error_kind -- never the AI's
+        own output text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            from tools.ai_orchestrator import providers
+
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+
+            cases = (
+                (providers.ERR_AUTH, activity_log.REASON_LOGIN_EXPIRED),
+                (providers.ERR_QUOTA, activity_log.REASON_QUOTA_LIMIT),
+                (providers.ERR_PROCESS, activity_log.REASON_CRASHED),
+                (providers.ERR_TIMEOUT, activity_log.REASON_TIMEOUT),
+            )
+            for error_kind, expected_reason in cases:
+                with self.subTest(error_kind):
+                    sub_tmp = tmp / error_kind
+                    deps = self._fixed_deps(sub_tmp)
+                    report = make_report(report_id=f"r-{error_kind}")
+                    scan_fn = lambda apps, _r=report: [
+                        inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (_r,))]
+                    fake_result = mock.Mock(ok=False, error_kind=error_kind, text="", tokens=0,
+                                             returncode=1, stderr_chars=0, executable_kind="",
+                                             result_subtype="", num_turns=None)
+                    investigate = lambda _report, _fr=fake_result: triage.investigate(
+                        _report, call_ai=lambda *a, **k: _fr,
+                        resolve_repo_dir=lambda app_key: None,
+                        resolve_repo_dir_reason=lambda app_key: "",
+                        write_failure_log=lambda *a, **k: None,
+                    )
+                    auto.run_auto_triage_once(config=config, investigate_fn=investigate,
+                                               reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                               scan_fn=scan_fn, **deps)
+                    entries = activity_log.read_recent(path=deps["activity_log_path"])
+                    fail_entries = [e for e in entries if e.action == activity_log.ACTION_FAIL]
+                    self.assertEqual(len(fail_entries), 1)
+                    self.assertEqual(fail_entries[0].reason, expected_reason)
+                    raw = deps["activity_log_path"].read_text(encoding="utf-8")
+                    self.assertNotIn("secret ai text", raw)
+
+    def test_needs_human_reason_is_logged_without_changing_the_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            deps = self._fixed_deps(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report()
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+            result = make_triage_result(classification="feature_request", confidence="high")
+            investigate = mock.Mock(return_value=triage.TriageOutcome(result))
+
+            outcome = auto.run_auto_triage_once(config=config, investigate_fn=investigate,
+                                                 reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                                 scan_fn=scan_fn, **deps)
+
+            self.assertEqual(outcome.record.outcome, auto.OUTCOME_NEEDS_HUMAN)
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            complete = next(e for e in entries if e.action == activity_log.ACTION_COMPLETE)
+            self.assertEqual(complete.result, activity_log.RESULT_NEEDS_HUMAN)
+            self.assertEqual(complete.reason, activity_log.REASON_SPEC_CHANGE_REQUEST)
+
+    def test_activity_log_write_failure_never_changes_the_outcome(self):
+        """C3: run_auto_triage_once's own return value and saved record must be identical whether
+        or not the activity log can be written at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report()
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+            investigate = mock.Mock(return_value=triage.TriageOutcome(make_triage_result()))
+            deps = self._fixed_deps(tmp)
+
+            def broken_append(**kwargs):
+                raise activity_log.ActivityLogError("boom")
+
+            with mock.patch.object(activity_log, "append", side_effect=broken_append):
+                outcome = auto.run_auto_triage_once(config=config, investigate_fn=investigate,
+                                                     reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                                     scan_fn=scan_fn, **deps)
+
+            self.assertEqual(outcome.status, auto.STATUS_RAN)
+            self.assertEqual(outcome.record.outcome, auto.OUTCOME_PROCEED)
+            self.assertFalse(deps["activity_log_path"].exists())
+
+    def test_deeply_nested_corrupt_activity_log_never_changes_the_outcome(self):
+        """Reviewer finding (repair 2): unlike the mock above, this points activity_log_path at a
+        real on-disk file so deeply nested it makes activity_log's own json.loads raise
+        RecursionError -- the exact path the reviewer traced through _log_activity's
+        `except activity_log.ActivityLogError` not catching a raw RecursionError. Confirms the
+        activity_log.py fix (converting it to ActivityLogError) actually keeps auto-triage's own
+        result unchanged, not just that _log_activity's except clause is reachable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            report = make_report()
+            scan_fn = lambda apps: [inbox.AppInbox("next-day-setup", "夕食料飲システム", True, "", (report,))]
+            investigate = mock.Mock(return_value=triage.TriageOutcome(make_triage_result()))
+            deps = self._fixed_deps(tmp)
+            deps["activity_log_path"].write_text("[" * 100000 + "]" * 100000 + "\n", encoding="utf-8")
+
+            outcome = auto.run_auto_triage_once(config=config, investigate_fn=investigate,
+                                                 reports_config_fn=lambda: inbox.ReportsConfig([], []),
+                                                 scan_fn=scan_fn, **deps)
+
+            self.assertEqual(outcome.status, auto.STATUS_RAN)
+            self.assertEqual(outcome.record.outcome, auto.OUTCOME_PROCEED)
+
+
 class DecisionExclusionTests(unittest.TestCase):
     """DCC Task 17-fix: a report the inbox already shows a human decision for (対応する/実機で
     調べる/見送る alike), or whose decision record cannot be read, must never be picked for
@@ -631,6 +831,7 @@ class DecisionExclusionTests(unittest.TestCase):
     def _fixed_deps(self, tmp: Path):
         return dict(
             daily_count_path=tmp / "count.json", results_dir=tmp / "results", log_dir=tmp / "run_log",
+            activity_log_path=tmp / "activity.jsonl",
         )
 
     # ------------------------------------------------------------------ C1
@@ -692,6 +893,43 @@ class DecisionExclusionTests(unittest.TestCase):
             )
             self.assertEqual(outcome.status, auto.STATUS_RAN)
             self.assertEqual(calls, ["r-undecided-2"])
+
+    # ------------------------------------------------------------------ Reviewer finding 3
+    def test_mixed_decided_and_undecided_reports_each_get_their_own_activity_record(self):
+        """A report excluded because a human already decided it must be logged as its own 対象外
+        record carrying that report's own id -- not just a single id-less exclusion, and not
+        swallowed by the undecided report's own start/complete records."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            config = auto.AutoModeConfig(enabled=True, apps={"next-day-setup": True})
+            decided_report = make_report(report_id="r-decided-mix")
+            undecided_report = make_report(report_id="r-undecided-mix")
+            inbox.save_decision("next-day-setup", decided_report.report_id, "skip")
+            investigate = mock.Mock(return_value=triage.TriageOutcome(make_triage_result()))
+            deps = self._fixed_deps(tmp)
+
+            scan_fn = lambda apps: [inbox.AppInbox(
+                "next-day-setup", "夕食料飲システム", True, "", (decided_report, undecided_report))]
+            outcome = auto.run_auto_triage_once(
+                config=config, investigate_fn=investigate,
+                reports_config_fn=lambda: inbox.ReportsConfig([], []), scan_fn=scan_fn,
+                **deps,
+            )
+            self.assertEqual(outcome.status, auto.STATUS_RAN)
+
+            entries = activity_log.read_recent(path=deps["activity_log_path"])
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_REPORT)
+            self.assertEqual(excluded[0].target_id, auto._hash(decided_report.report_id))
+
+            started = [e for e in entries if e.action == activity_log.ACTION_START]
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0].target_id, auto._hash(undecided_report.report_id))
+            # Never the plain report id or report body in the activity record.
+            raw = deps["activity_log_path"].read_text(encoding="utf-8")
+            self.assertNotIn(decided_report.report_id, raw)
+            self.assertNotIn(undecided_report.report_id, raw)
 
     # ------------------------------------------------------------------ C3
     def test_unreadable_decision_record_also_excludes_the_report(self):

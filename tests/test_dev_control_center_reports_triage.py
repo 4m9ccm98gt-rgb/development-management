@@ -17,13 +17,14 @@ from types import SimpleNamespace
 
 from unittest import mock
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import reports_inbox as inbox
 from scripts.dev_control_center import reports_triage as triage
 from tools.ai_orchestrator import orchestrator as orch
 from tools.ai_orchestrator.common import OrchestratorError, StopRequested
 from tools.ai_orchestrator.providers import (
-    ERR_AUTH, ERR_EMPTY_RESPONSE, ERR_MAX_TURNS, ERR_PROCESS, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TOKEN_LIMIT,
-    ClaudeProvider,
+    ERR_AUTH, ERR_EMPTY_RESPONSE, ERR_MAX_TURNS, ERR_PROCESS, ERR_PROTOCOL, ERR_QUOTA, ERR_TIMEOUT,
+    ERR_TOKEN_LIMIT, ClaudeProvider,
 )
 from tools.ai_orchestrator.common import CommandResult
 
@@ -422,6 +423,34 @@ class DefaultCallAiTests(unittest.TestCase):
         self.assertEqual(review_command[review_command.index("--max-turns") + 1], str(providers.CLAUDE_REVIEW_MAX_TURNS))
         self.assertEqual(budgeted_command[budgeted_command.index("--max-turns") + 1], "40")
         self.assertEqual(main_command[main_command.index("--max-turns") + 1], str(providers.CLAUDE_MAIN_MAX_TURNS))
+
+
+class ClassifyAiFailureTests(unittest.TestCase):
+    """DCC Task WF-6a, C5: classify_ai_failure's own fixed-word mapping, in isolation from
+    investigate()'s full pipeline."""
+
+    def test_not_launched_is_always_cannot_launch(self):
+        self.assertEqual(triage.classify_ai_failure(launched=False, error_kind=None),
+                          activity_log.REASON_CANNOT_LAUNCH)
+        # Even a recognised error_kind is irrelevant once the call never launched.
+        self.assertEqual(triage.classify_ai_failure(launched=False, error_kind=ERR_AUTH),
+                          activity_log.REASON_CANNOT_LAUNCH)
+
+    def test_each_recognised_error_kind_maps_to_its_own_fixed_word(self):
+        cases = {
+            ERR_AUTH: activity_log.REASON_LOGIN_EXPIRED,
+            ERR_QUOTA: activity_log.REASON_QUOTA_LIMIT,
+            ERR_PROCESS: activity_log.REASON_CRASHED,
+            ERR_TIMEOUT: activity_log.REASON_TIMEOUT,
+        }
+        for error_kind, expected in cases.items():
+            with self.subTest(error_kind):
+                self.assertEqual(triage.classify_ai_failure(launched=True, error_kind=error_kind), expected)
+
+    def test_unrecognized_error_kind_returns_empty_reason(self):
+        for error_kind in (ERR_PROTOCOL, ERR_EMPTY_RESPONSE, ERR_MAX_TURNS, ERR_TOKEN_LIMIT, None, "bogus"):
+            with self.subTest(error_kind):
+                self.assertEqual(triage.classify_ai_failure(launched=True, error_kind=error_kind), "")
 
 
 class InvestigateTests(unittest.TestCase):
@@ -824,6 +853,20 @@ class InvestigateTests(unittest.TestCase):
         self.assertIn("AI", outcome.reason)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0][0], triage.FAILURE_KIND_AI_UNAVAILABLE)
+        # DCC Task WF-6a, C5: ERR_AUTH is distinguished from ERR_QUOTA for the activity log even
+        # though both still read as the same "AI unavailable" screen message above.
+        self.assertEqual(outcome.ai_failure_reason, activity_log.REASON_LOGIN_EXPIRED)
+
+    def test_quota_failure_is_ai_unavailable_but_logged_as_quota_limit(self):
+        def call_ai(worktree, prompt, timeout, stop_event):
+            return agent_result(ok=False, error_kind=ERR_QUOTA)
+
+        outcome = triage.investigate(
+            make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+            write_failure_log=lambda kind, **kwargs: None,
+        )
+        self.assertIsNone(outcome.result)
+        self.assertEqual(outcome.ai_failure_reason, activity_log.REASON_QUOTA_LIMIT)
 
     def test_over_token_budget_is_treated_as_failure(self):
         def call_ai(worktree, prompt, timeout, stop_event):
@@ -969,6 +1012,41 @@ class InvestigateTests(unittest.TestCase):
         self.assertIsNone(outcome.result)
         self.assertIn("AI", outcome.reason)
         self.assertEqual(calls, [])
+        # DCC Task WF-6a, C5: the call never launched at all -- 起動できない, distinct from the
+        # ERR_AUTH/ERR_QUOTA cases above where the AI process did run.
+        self.assertEqual(outcome.ai_failure_reason, activity_log.REASON_CANNOT_LAUNCH)
+
+    def test_timeout_and_process_crashed_are_logged_with_their_own_fixed_words(self):
+        """DCC Task WF-6a, C5: 時間切れ and 異常終了 are distinguished from each other and from
+        the AI-unavailable/cannot-launch cases above -- never the AI's own output text."""
+        for error_kind, expected_reason in ((ERR_TIMEOUT, activity_log.REASON_TIMEOUT),
+                                             (ERR_PROCESS, activity_log.REASON_CRASHED)):
+            with self.subTest(error_kind):
+                marker = "MARKER-AI-TEXT-MUST-NOT-APPEAR-" + error_kind
+
+                def call_ai(worktree, prompt, timeout, stop_event, _kind=error_kind, _marker=marker):
+                    return agent_result(ok=False, error_kind=_kind, text=_marker)
+
+                outcome = triage.investigate(
+                    make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+                    write_failure_log=lambda kind, **kwargs: None,
+                )
+                self.assertEqual(outcome.ai_failure_reason, expected_reason)
+                self.assertNotIn(marker, outcome.ai_failure_reason)
+
+    def test_uncategorized_failure_kinds_record_no_ai_failure_reason(self):
+        """A failure that does not match one of the five fixed words (e.g. a protocol error or a
+        max-turns cutoff) must not be force-fit into one of them -- it records "" instead."""
+        for error_kind in (ERR_PROTOCOL, ERR_EMPTY_RESPONSE, ERR_MAX_TURNS, ERR_TOKEN_LIMIT):
+            with self.subTest(error_kind):
+                def call_ai(worktree, prompt, timeout, stop_event, _kind=error_kind):
+                    return agent_result(ok=False, error_kind=_kind)
+
+                outcome = triage.investigate(
+                    make_report(), resolve_repo_dir=lambda app_key: None, call_ai=call_ai,
+                    write_failure_log=lambda kind, **kwargs: None,
+                )
+                self.assertEqual(outcome.ai_failure_reason, "")
 
     def test_a_failing_logger_does_not_change_the_outcome_or_raise(self):
         """DCC Task 14.1, 仕様B-6: a logging failure must never worsen an already-failed
