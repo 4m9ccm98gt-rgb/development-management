@@ -3,8 +3,9 @@
 infer(allow_ai=True) is the only call site. Inject a fake collector/provider for
 unit tests. Provider factories are trusted Python configuration, never AI data.
 The default provider inherits CodexProvider.run_review and parse, with a private
-empty temporary cwd, ignored user configuration and tools disabled. This is not
-an OS container: CLI authentication is still handled by Codex. Unsupported CLI
+empty temporary cwd and defensive CLI settings. Without a trusted isolation
+check it fails closed BEFORE starting inference. This is not an OS container:
+CLI authentication is still handled by Codex. Unsupported CLI
 flags fail closed; no permission relaxation or alternate provider is attempted.
 
 Transport output is limited during line delivery and checked again after return;
@@ -14,6 +15,7 @@ callback. No raw response/log is returned or persisted by this adapter.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import tempfile
 import threading
@@ -22,7 +24,7 @@ import time
 from . import manager_decision as decision
 from .manager_collector import ManagerCollector
 from tools.ai_orchestrator.common import ProcessHooks, StopRequested, OrchestratorError, run_streaming
-from tools.ai_orchestrator.providers import CodexProvider, AgentResult
+from tools.ai_orchestrator.providers import CodexProvider, AgentResult, classify_error
 
 MAX_RESPONSE_CHARS = 16_000
 MAX_STREAM_CHARS = 256_000
@@ -30,7 +32,9 @@ MAX_INPUT_CHARS = 200_000
 _INFERENCE_LOCK = threading.Lock()
 ERRORS = {'quota': 'PROVIDER_QUOTA', 'auth': 'PROVIDER_AUTH', 'timeout': 'PROVIDER_TIMEOUT',
           'process': 'PROVIDER_PROCESS', 'transient': 'PROVIDER_TRANSIENT',
-          'protocol': 'PROVIDER_PROTOCOL', 'empty_response': 'PROVIDER_PROTOCOL',
+          'protocol': 'PROVIDER_PROTOCOL', 'empty_response': 'PROVIDER_EMPTY_RESPONSE',
+          'cli_config': 'PROVIDER_CLI_CONFIG', 'cli_start': 'PROVIDER_CLI_START',
+          'policy_unverified': 'PROVIDER_POLICY_UNVERIFIED',
           'token_limit': 'OUTPUT_LIMIT', 'max_turns': 'PROVIDER_LIMIT'}
 
 
@@ -42,16 +46,70 @@ class _Stop:
 
 
 class ManagerCodexProvider(CodexProvider):
-    """Reuse review role/JSON parser; restrict this invocation only, never global config."""
+    """Reuse review role/parser, fail closed unless trusted isolation is established.
+
+    isolation_check(cwd, command_tuple) is a trusted host integration seam, NOT a
+    CLI flag or an AI choice. It must enforce/attest no tool execution, host-file
+    reads or inherited MCP/apps/hooks for this exact invocation. No such enforcement
+    is built in for Windows 0.155.1; the default therefore NEVER launches inference.
+    A future isolated host or tool-free text API is required for production use.
+    """
+    def __init__(self, *, isolation_check=None):
+        self._isolation_check = isolation_check
+
+    @staticmethod
+    def _failed(kind):
+        return AgentResult('codex', 'review', False, error_kind=kind)
+
+    @classmethod
+    def classify_output(cls, output):
+        """Classify bounded private CLI output; never echo streams/details in errors."""
+        raw = output.stdout + '\n' + output.stderr
+        if len(raw) > MAX_STREAM_CHARS:
+            return cls._failed('token_limit')
+        config_error = re.search(
+            r'unexpected argument|unrecognized (?:option|argument)|unknown (?:field|variant|feature)|'
+            r'error (?:loading|parsing|deserializing) (?:config|configuration)|'
+            r'invalid (?:value|type).*?(?:config|approval_policy|web_search)|'
+            r'(?:config|configuration).*?(?:invalid|unsupported|not supported)|'
+            r'--[a-z-]+.*?not supported', raw, re.I)
+        # A harmless removed-feature warning is not itself a configuration failure.
+        if config_error and (output.returncode != 0 or not output.stdout.strip()):
+            return cls._failed('cli_config')
+        kind = classify_error(raw)
+        if kind in ('auth', 'quota', 'timeout'):
+            return cls._failed(kind)
+        if output.returncode != 0:
+            return cls._failed('process')
+        if not output.stdout.strip():
+            return cls._failed('empty_response')
+        try:
+            items = [json.loads(line) for line in output.stdout.splitlines() if line.strip()]
+            if any(not isinstance(item, dict) or not isinstance(item.get('type'), str) for item in items):
+                return cls._failed('protocol')
+            if any(item['type'] == 'turn.failed' for item in items):
+                return cls._failed('process')
+            if not any(item['type'] == 'turn.completed' for item in items):
+                return cls._failed('protocol')
+            messages = [item.get('item', {}).get('text') for item in items
+                        if item['type'] == 'item.completed' and isinstance(item.get('item'), dict)
+                        and item['item'].get('type') == 'agent_message']
+            if not messages or not isinstance(messages[-1], str) or not messages[-1].strip():
+                return cls._failed('empty_response')
+            return cls.parse('review', output)
+        except (ValueError, TypeError, KeyError):
+            return cls._failed('protocol')
+
     def _command(self, worktree, sandbox, ephemeral=True):
         if sandbox != 'read-only':
             raise ValueError('REVIEW_ONLY')
         command = super()._command(worktree, sandbox, ephemeral=True)
         options = ['--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--strict-config']
         for key, value in (
-            ('approval_policy', '"never"'), ('web_search', '"disabled"'),
+            ('approval_policy', "'never'"), ('web_search', "'disabled'"),
             ('features.shell_tool', 'false'), ('features.unified_exec', 'false'),
-            ('features.apply_patch_freeform', 'false'), ('features.js_repl', 'false'),
+            # 0.155.1 lists apply_patch_freeform/js_repl as removed. Do not
+            # pretend these retired flags provide a permission boundary.
             ('features.code_mode', 'false'), ('features.multi_agent', 'false'),
             ('features.multi_agent_v2', 'false'), ('agents.enabled', 'false'),
             ('features.apps', 'false'), ('features.plugins', 'false'),
@@ -64,6 +122,11 @@ class ManagerCodexProvider(CodexProvider):
     def _call(self, role, command, worktree, prompt, timeout, hooks):
         if role != 'review':
             raise ValueError('REVIEW_ONLY')
+        try:
+            if self._isolation_check is None or self._isolation_check(worktree, tuple(command)) is not True:
+                return self._failed('policy_unverified')
+        except Exception:
+            return self._failed('policy_unverified')
         budget = threading.Event()
         count = 0
         lock = threading.Lock()
@@ -83,10 +146,10 @@ class ManagerCodexProvider(CodexProvider):
             raise
         except OrchestratorError as exc:
             return AgentResult('codex', 'review', False,
-                error_kind='timeout' if exc.code == 'COMMAND_TIMEOUT' else 'process')
+                error_kind='timeout' if exc.code == 'COMMAND_TIMEOUT' else 'cli_start')
         if budget.is_set() or len(output.stdout) + len(output.stderr) > MAX_STREAM_CHARS:
             return AgentResult('codex', 'review', False, error_kind='token_limit')
-        return self.parse('review', output)
+        return self.classify_output(output)
 
 
 def build_prompt(manager_input):
@@ -197,6 +260,8 @@ class ManagerAgent:
             return result('STOPPED')
         except TimeoutError:
             return result('PROVIDER_TIMEOUT')
+        except OrchestratorError as exc:
+            return result('PROVIDER_TIMEOUT' if exc.code == 'COMMAND_TIMEOUT' else 'PROVIDER_CLI_START')
         except Exception:
             return result('PROVIDER_ERROR')
         finally:

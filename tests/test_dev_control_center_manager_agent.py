@@ -214,7 +214,7 @@ class AgentTests(unittest.TestCase):
         self.assertIsNone(result['decision_kind'])
 
     def test_codex_review_command_and_parser_reused_without_process(self):
-        provider = agent.ManagerCodexProvider()
+        provider = agent.ManagerCodexProvider(isolation_check=lambda cwd, command: True)
         with patch('tools.ai_orchestrator.providers.resolved_command', return_value=['codex']):
             command = provider._command(Path('isolated'), 'read-only')
         self.assertIn('read-only', command)
@@ -222,7 +222,7 @@ class AgentTests(unittest.TestCase):
         self.assertIn('--ephemeral', command)
         self.assertIn('--skip-git-repo-check', command)
         for override in ('features.shell_tool=false', 'features.apps=false',
-                         'web_search="disabled"', 'mcp_servers={}', 'agents.enabled=false'):
+                         "web_search='disabled'", 'mcp_servers={}', 'features.multi_agent_v2=false'):
             self.assertIn(override, command)
         stdout = json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': '{}'}}) + '\n' + json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 2, 'output_tokens': 3}})
         output = CommandResult(('codex',), 0, stdout, '')
@@ -234,8 +234,87 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(result.role, 'review')
         self.assertEqual(streaming.call_args.kwargs['timeout'], 10)
 
+    def test_default_policy_fails_closed_before_any_transport(self):
+        for guard in (None, lambda *args: False, Mock(side_effect=RuntimeError(SECRET))):
+            provider = agent.ManagerCodexProvider(isolation_check=guard)
+            with patch.object(agent, 'run_streaming') as stream:
+                result = provider._call('review', ['codex'], Path('isolated'), 'safe', 10, ProcessHooks())
+            self.assertEqual(result.error_kind, 'policy_unverified')
+            self.assertEqual(result.raw, '')
+            stream.assert_not_called()
+        self.adapter._factory = agent.ManagerCodexProvider
+        with patch('tools.ai_orchestrator.providers.resolved_command', return_value=['codex']), \
+             patch.object(agent, 'run_streaming') as stream:
+            result = self.adapter.infer(allow_ai=True)
+        self.assertEqual(result['code'], 'PROVIDER_POLICY_UNVERIFIED')
+        stream.assert_not_called()
+
+    def test_windows_command_has_safe_literal_toml_and_preserves_controls(self):
+        import tomllib
+        prefix = ['cmd.exe', '/d', '/s', '/c', r'C:\Program Files\Codex\codex.cmd']
+        with patch('tools.ai_orchestrator.providers.resolved_command', return_value=prefix):
+            command = agent.ManagerCodexProvider()._command(Path('isolated'), 'read-only')
+        self.assertEqual(command[:len(prefix)], prefix)
+        self.assertEqual(command[-1], '-')
+        for option in ('--ignore-user-config', '--ignore-rules', '--strict-config', '--ephemeral', '--sandbox'):
+            self.assertIn(option, command)
+        config = {}
+        for index, value in enumerate(command):
+            if value == '-c':
+                parsed = tomllib.loads(command[index + 1])
+                if 'features' in parsed:
+                    config.setdefault('features', {}).update(parsed.pop('features'))
+                config.update(parsed)
+                self.assertNotIn('"', command[index + 1])
+        self.assertEqual(config['approval_policy'], 'never')
+        self.assertEqual(config['web_search'], 'disabled')
+        for feature in ('shell_tool', 'unified_exec', 'multi_agent_v2', 'apps', 'plugins', 'code_mode'):
+            self.assertFalse(config['features'][feature])
+        self.assertNotIn('features.apply_patch_freeform=false', command)
+        self.assertNotIn('features.js_repl=false', command)
+
+    def test_cli_output_failure_classification_is_distinct_and_content_free(self):
+        classify = agent.ManagerCodexProvider.classify_output
+        cases = [
+            (2, '', "error: unexpected argument '--unknown' found " + SECRET, 'cli_config'),
+            (1, '', 'Error loading config.toml: unknown field ' + SECRET, 'cli_config'),
+            (1, '', 'authentication failed: token expired ' + SECRET, 'auth'),
+            (1, '', 'insufficient_quota ' + SECRET, 'quota'),
+            (1, '', SECRET, 'process'),
+            (0, '', '', 'empty_response'),
+            (0, 'not JSON ' + SECRET, '', 'protocol'),
+            (0, '[]', '', 'protocol'),
+            (0, json.dumps({'type': 'thread.started'}), '', 'protocol'),
+            (0, json.dumps({'type': 'turn.failed'}), '', 'process'),
+            (0, json.dumps({'type': 'turn.completed'}), '', 'empty_response'),
+        ]
+        for rc, stdout, stderr, expected in cases:
+            with self.subTest(expected=expected, rc=rc):
+                result = classify(CommandResult(('codex',), rc, stdout, stderr))
+                self.assertFalse(result.ok)
+                self.assertEqual(result.error_kind, expected)
+                self.assertEqual(result.raw, '')
+                self.assertEqual(result.error_detail, '')
+                self.assertNotIn('SECRET', str(result))
+
+    def test_removed_warning_does_not_override_valid_jsonl_and_nonzero_fails(self):
+        stdout = json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': '{}'}}) + '\n' + json.dumps({'type': 'turn.completed'})
+        classify = agent.ManagerCodexProvider.classify_output
+        warning = 'warning: feature apply_patch_freeform has been removed'
+        self.assertTrue(classify(CommandResult(('codex',), 0, stdout, warning)).ok)
+        self.assertEqual(classify(CommandResult(('codex',), 1, stdout, warning)).error_kind, 'process')
+        self.assertEqual(classify(CommandResult(('codex',), 0, 'x' * 256001, '')).error_kind, 'token_limit')
+
+    def test_cli_start_error_distinct_from_provider_process_failure(self):
+        provider = agent.ManagerCodexProvider(isolation_check=lambda *args: True)
+        with patch.object(agent, 'run_streaming', side_effect=OrchestratorError(SECRET, 'PROCESS_START_FAILED')):
+            result = provider._call('review', ['codex'], Path('isolated'), 'safe', 10, ProcessHooks())
+        self.assertEqual(result.error_kind, 'cli_start')
+        self.provider.run_review.side_effect = OrchestratorError(SECRET, 'COMMAND_NOT_FOUND')
+        self.assertEqual(self.adapter.infer(allow_ai=True)['code'], 'PROVIDER_CLI_START')
+
     def test_stream_budget_requests_stop_and_provider_timeout_classification(self):
-        provider = agent.ManagerCodexProvider()
+        provider = agent.ManagerCodexProvider(isolation_check=lambda cwd, command: True)
         def overrun(*args, **kwargs):
             kwargs['hooks'].on_line('stdout', 'x' * (agent.MAX_STREAM_CHARS + 1))
             self.assertTrue(kwargs['hooks'].stop.is_set())
