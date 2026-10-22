@@ -32,6 +32,7 @@ from .providers import (
 )
 from .taskspec import Spec, extract_target_repo_name, load_spec_file
 from .settings import load_codex_main_python, validate_codex_main_python
+from .worktree_access import prepare_worktree_access, verify_worktree_readable
 from .usage import USAGE_PROVIDER_CLASSES, describe, make_usage_provider
 
 DM_ROOT = Path(__file__).resolve().parents[2]
@@ -157,6 +158,7 @@ def repo_baseline(repo_arg: Path, expected_branch: str | None, do_fetch: bool) -
 
 def create_worktree(baseline: RepoBaseline, run_id: str) -> tuple[Path, Path]:
     parent = Path(tempfile.mkdtemp(prefix=f"ai-orch-{slugify(baseline.root.name)}-{run_id}-"))
+    prepare_worktree_access(parent)
     # Same directory name as the source repo: tests that derive the repo name from their
     # checkout directory (e.g. next-day-setup's SYNC contract test) behave as in the source.
     worktree = parent / baseline.root.name
@@ -200,17 +202,21 @@ def diff_snapshot(worktree: Path) -> Snapshot:
     stat = git(worktree, "diff", "--stat", "HEAD").stdout
     diff = git(worktree, "diff", "--no-ext-diff", "--find-renames", "HEAD").stdout
     files = [line for line in git(worktree, "diff", "--name-status", "HEAD").stdout.splitlines() if line.strip()]
-    untracked = [rel for rel in git(worktree, "ls-files", "--others", "--exclude-standard").stdout.strip().splitlines()
-                 if not _is_bytecode_cache(rel)]
+    untracked = [rel for rel in git(worktree, "ls-files", "--others", "--exclude-standard", "-z").stdout.split("\0")
+                 if rel and not _is_bytecode_cache(rel)]
     pieces = [diff]
     for rel in untracked:
         files.append(f"?\t{rel}")
         path = worktree / rel
         if path.is_file():
             try:
-                content = path.read_bytes()[:MAX_UNTRACKED_BYTES].decode("utf-8")
-            except (OSError, UnicodeDecodeError):
-                content = "<binary or unreadable>"
+                with path.open("rb") as handle:
+                    content = handle.read(MAX_UNTRACKED_BYTES).decode("utf-8")
+            except UnicodeDecodeError:
+                content = "<binary>"
+            except OSError as exc:
+                raise OrchestratorError(f"untracked file became unreadable: {ascii(rel)}",
+                                        "WORKTREE_ACCESS_UNREADABLE") from exc
             pieces.append(f"\n# Untracked: {rel}\n{content}")
     return Snapshot(stat, "\n".join(pieces), tuple(files))
 
@@ -281,40 +287,15 @@ class GitHost:
         self.run_id = run_id
 
     def snapshot(self) -> Snapshot:
+        self.normalize_permissions()
         return diff_snapshot(self.worktree)
 
     def check_safety(self) -> None:
         assert_agent_did_not_commit(self.worktree, self.baseline.head_sha)
 
     def normalize_permissions(self) -> None:
-        """Windows: files created by a sandboxed agent (Codex) can be owned by its sandbox account and
-        unreadable by the user who runs the independent Tests. Grant the current user modify rights on
-        exactly the files (and their parent directories) the agent touched. Best effort; no-op elsewhere."""
-        if os.name != "nt":
-            return
-        user = os.environ.get("USERDOMAIN", "") + chr(92) + os.environ.get("USERNAME", "")
-        if not os.environ.get("USERNAME"):
-            return
-        try:
-            listing = git(self.worktree, "status", "--porcelain", "-z", "-uall").stdout
-        except OrchestratorError:
-            return
-        targets: set[Path] = set()
-        for entry in listing.split("\0"):
-            if len(entry) < 4:
-                continue
-            path = (self.worktree / entry[3:]).resolve()
-            targets.add(path)
-            for parent in path.parents:
-                if parent == self.worktree.resolve() or self.worktree.resolve() not in parent.parents:
-                    break
-                targets.add(parent)
-        # icacls takes one target per call; only the files the agent touched, capped for pathological trees.
-        for target in [t for t in sorted(targets) if t.exists()][:400]:
-            try:
-                run_streaming(["icacls", str(target), "/grant", f"{user}:M", "/C", "/Q"], timeout=60)
-            except OrchestratorError:
-                return
+        """Compatibility entry point: verify access; never mutate agent-owned ACLs."""
+        verify_worktree_readable(self.worktree)
 
     def repo_instructions(self) -> str:
         parts = []
@@ -355,6 +336,7 @@ class GitHost:
         return {"PATH": env["PATH"], "VIRTUAL_ENV": env["VIRTUAL_ENV"]}
 
     def run_tests(self, commands: list[str], timeout: int, hooks: ProcessHooks) -> tuple[bool, str]:
+        self.normalize_permissions()
         outputs: list[str] = []
         env, venv_bin = self.tests_env()
         for command in commands:
@@ -392,6 +374,7 @@ class GitHost:
         return True, "\n\n".join(outputs)
 
     def create_candidate(self, task: str, run_id: str) -> dict:
+        self.normalize_permissions()
         branch = f"ai-candidate/{run_id}-{slugify(task, 28)}"
         git(self.worktree, "switch", "-c", branch)
         git(self.worktree, "add", "-A", "--", ".", *BYTECODE_EXCLUDES)
@@ -670,12 +653,13 @@ def start_run(request: StartRequest, *, wait: float = 30.0) -> Path:
     raise OrchestratorError(f"run worker did not register within {wait:.0f}s: {run_dir}", "WORKER_START_TIMEOUT")
 
 
-def _remove_worktree(baseline: RepoBaseline, worktree: Path) -> None:
+def _remove_worktree(baseline: RepoBaseline, worktree: Path) -> bool:
     try:
         git(baseline.root, "worktree", "remove", "--force", str(worktree), timeout=300)
         shutil.rmtree(worktree.parent, ignore_errors=True)
+        return not worktree.parent.exists()
     except OrchestratorError:
-        pass
+        return False
 
 
 def worker_main(run_dir: Path, *, engine_factory=None, refresh_usage: bool = True) -> int:
@@ -711,6 +695,8 @@ def worker_main(run_dir: Path, *, engine_factory=None, refresh_usage: bool = Tru
             pass
         parent, worktree = create_worktree(baseline, record["run_id"])
         rec.update(worktree=str(worktree))
+        rec.log("[worktree-access] fresh container prepared; worker read gate enabled; "
+                "no post-agent ACL repair")
         host = GitHost(baseline, worktree, record["run_id"])
         engine = (engine_factory or Engine)(rec, host, main, reviewer, usage)
         engine.run()
@@ -725,7 +711,11 @@ def worker_main(run_dir: Path, *, engine_factory=None, refresh_usage: bool = Tru
     finally:
         final = (rec.record.get("final_result") or {}).get("stage")
         if final == rs.COMPLETED and worktree is not None:
-            _remove_worktree(baseline, worktree)  # the candidate branch survives in the source repo
+            removed = _remove_worktree(baseline, worktree)  # candidate branch survives
+            rec.update(worktree_cleanup="removed" if removed else "retained")
+            if not removed:
+                rec.log("[WORKTREE_CLEANUP_RETAINED] candidate is saved; run worktree could not be removed; "
+                        "no ACL escalation or ownership change attempted")
         rec.stop_heartbeat()
         rs.release_repo_lock(record["repo"], record["run_id"])
     final = (rec.record.get("final_result") or {}).get("stage")
