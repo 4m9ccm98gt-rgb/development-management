@@ -669,7 +669,8 @@ class App(ttk.Frame):
         self.orchestrator_window = OrchestratorWindow(
             self.master, self.definitions, initial_repo=None,
             drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT,
-            requeue_label_fn=self._requeue_label)
+            requeue_label_fn=self._requeue_label, on_reports_inbox=self.open_reports_inbox,
+            runner_state=self._workflow_runner_state)
 
     def open_reports_inbox(self) -> None:
         """Open (or focus) the reports inbox window. Display/local-decision only; see

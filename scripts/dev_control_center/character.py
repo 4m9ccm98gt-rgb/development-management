@@ -48,11 +48,14 @@ def mood_for(stage: str | None, liveness: str | None) -> str:
 class CharacterView:
     """A Canvas that plays the sprite sheet of the current mood."""
 
-    def __init__(self, master: tk.Misc, *, background: str, asset_dir: Path = ASSET_DIR) -> None:
+    def __init__(self, master: tk.Misc, *, background: str, asset_dir: Path = ASSET_DIR, scale: int = 1) -> None:
+        if type(scale) is not int or scale < 1:
+            raise ValueError('INVALID_CHARACTER_SCALE')
+        self.scale = scale
         self.asset_dir = Path(asset_dir)
-        self.widget = tk.Canvas(master, width=FRAME_W, height=FRAME_H, background=background,
+        self.widget = tk.Canvas(master, width=(FRAME_W+scale-1)//scale, height=(FRAME_H+scale-1)//scale, background=background,
                                 highlightthickness=0, borderwidth=0)
-        self._frame = tk.PhotoImage(master=self.widget, width=FRAME_W, height=FRAME_H)
+        self._frame = tk.PhotoImage(master=self.widget, width=(FRAME_W+scale-1)//scale, height=(FRAME_H+scale-1)//scale)
         self.widget.create_image(0, 0, image=self._frame, anchor="nw")
         self._sheet: tk.PhotoImage | None = None
         self._after_id: str | None = None
@@ -93,7 +96,8 @@ class CharacterView:
             return
         x = (self.index % COLUMNS) * FRAME_W
         y = (self.index // COLUMNS) * FRAME_H
-        self._frame.tk.call(self._frame, "copy", self._sheet, "-from", x, y, x + FRAME_W, y + FRAME_H, "-to", 0, 0)
+        self._frame.tk.call(self._frame, "copy", self._sheet, "-from", x, y, x + FRAME_W, y + FRAME_H, "-to", 0, 0,
+                            '-subsample', self.scale, self.scale)
 
     def _tick(self) -> None:
         if self._destroyed:

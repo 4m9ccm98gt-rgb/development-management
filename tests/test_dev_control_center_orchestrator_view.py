@@ -697,6 +697,11 @@ class _FakeFrame(_FakeTkWidget):
         return {"in": self.master} if self._gridded else {}
 
 
+class _FakeNotebook(_FakeFrame):
+    def add(self, child, **kwargs): pass
+    def select(self, child): pass
+
+
 class _FakeButton(_FakeTkWidget):
     def __init__(self, master=None, *, command=None, text=None, textvariable=None, **kwargs):
         super().__init__(master, **kwargs)
@@ -876,7 +881,7 @@ _FAKE_START_FORM_TK_MODULE = SimpleNamespace(
 )
 _FAKE_START_FORM_TTK_MODULE = SimpleNamespace(
     Frame=_FakeFrame, LabelFrame=_FakeFrame, Label=_FakeTkWidget, Entry=_FakeTkWidget,
-    Button=_FakeButton, Combobox=_FakeCombobox, Style=_FakeStyle,
+    Button=_FakeButton, Combobox=_FakeCombobox, Style=_FakeStyle, Notebook=_FakeNotebook,
 )
 
 
@@ -889,6 +894,12 @@ class FakeOrchestratorWindowCase(unittest.TestCase):
     runs unmodified against fakes instead of a live display."""
 
     def setUp(self):
+        board_patch = mock.patch.object(view, 'LaneBoard')
+        board_patch.start()
+        self.addCleanup(board_patch.stop)
+        feed_patch = mock.patch.object(view, 'WorkflowFeed')
+        feed_patch.start().return_value.poll.return_value = None
+        self.addCleanup(feed_patch.stop)
         tk_patch = mock.patch.object(view, "tk", _FAKE_START_FORM_TK_MODULE)
         tk_patch.start()
         self.addCleanup(tk_patch.stop)

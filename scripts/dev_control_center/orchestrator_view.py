@@ -28,6 +28,7 @@ from tools.ai_orchestrator.common import OrchestratorError
 from tools.ai_orchestrator.providers import DEFAULT_MAIN_AGENT, DEFAULT_REVIEW_AGENT, PROVIDER_CLASSES
 
 from .character import CharacterView, mood_for
+from .orchestrator_lanes import LaneBoard, WorkflowFeed, build_lanes
 
 POLL_SECONDS = 2.0
 UI_TICK_MS = 400
@@ -200,7 +201,9 @@ class OrchestratorWindow:
     def __init__(self, master: tk.Misc, definitions, *, initial_repo: str | None, drafts: dict,
                  on_apply: Callable[[dict, Path], None] | None = None, monitor: RunMonitor | None = None,
                  repos_root: Path | None = None, auto_usage: bool = True,
-                 requeue_label_fn: Callable[[str], str] | None = None) -> None:
+                 requeue_label_fn: Callable[[str], str] | None = None,
+                 on_reports_inbox: Callable[[], None] | None = None,
+                 runner_state=None, workflow_collector=None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._events: queue.Queue = queue.Queue()
@@ -209,6 +212,15 @@ class OrchestratorWindow:
         self.drafts = drafts
         self.on_apply = on_apply
         self.repos_root = repos_root
+        self._on_reports_inbox = on_reports_inbox
+        self._workflow_cards = []
+        self._monitor_ok = False
+        self._workflow_notice = 'Workflow：確認待ち'
+        if workflow_collector is None:
+            from .manager_collector import ManagerCollector
+            # Lazy construction keeps registry/data access off the UI thread.
+            workflow_collector = lambda: ManagerCollector(runner_state=runner_state).collect()
+        self._workflow_feed = WorkflowFeed(workflow_collector, memory=runner_state is not None)
         # DCC Task 19b: optional fixed-word requeue status (枠の回復待ち / 人の確認が必要) appended
         # to a run's own list line. None (the default, and every existing caller/test) leaves the
         # list exactly as before -- this feature is entirely additive and off unless the caller
@@ -258,16 +270,40 @@ class OrchestratorWindow:
 
         outer = ttk.Frame(self.window, padding=12)
         outer.pack(fill="both", expand=True)
-        outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(1, weight=1)
+        self._outer = outer
+        header = ttk.Frame(outer)
+        header.grid(row=0, column=0, sticky='ew')
+        ttk.Label(header, text='AI Orchestrator', font=('Segoe UI', 14, 'bold')).pack(side='left')
+        reports = ttk.Button(header, text='🐱 報告箱（件数不明）', command=self._open_reports)
+        reports.pack(side='left', padx=8)
+        if on_reports_inbox is None:
+            reports.state(['disabled'])
+        ttk.Button(header, text='新規Task・開始設定', command=lambda: self._show_details('form')).pack(side='left', padx=4)
+        ttk.Button(header, text='詳細を閉じる', command=self._hide_details).pack(side='left', padx=4)
+        self.board = LaneBoard(outer, self._select_card)
+        self.board.frame.grid(row=1, column=0, sticky='nsew', pady=8)
+        self.board_notice = ttk.Label(outer, text='Run／Workflow：確認待ち', wraplength=1100)
+        self.board_notice.grid(row=2, column=0, sticky='ew')
+        self.details = ttk.Notebook(outer, height=340)
+        self.details.grid(row=3, column=0, sticky='nsew')
+        self.details.grid_remove()
+        self._detail_pages = {}
+        analysis_page = ttk.Frame(self.details)
+        self.details.add(analysis_page, text='TASK分析・次の対応')
+        self._detail_pages['analysis'] = analysis_page
+        self.selection_text = tk.Text(analysis_page, height=10, state='disabled', wrap='word')
+        configure_dark_text(self.selection_text)
+        self.selection_text.pack(fill='both', expand=True)
 
-        left = ttk.Frame(outer)
-        left.grid(row=0, column=0, sticky="ns", padx=(0, 12))
+        left = ttk.Frame(self.details)
+        self.details.add(left, text='Run履歴')
         ttk.Label(left, text="実行中 / 過去のrun", font=("Segoe UI", 11, "bold")).pack(anchor="w")
         # Packed before the run list so a short window shrinks the list, not the character.
-        self.character = CharacterView(left, background=DARK_BG)
+        self.character = CharacterView(self.board.review_header, background=DARK_BG, scale=4)
         if self.character.available:
-            self.character.widget.pack(side="bottom", pady=(10, 0))
+            self.character.widget.pack(side="right")
         self.run_list = tk.Listbox(left, width=58, exportselection=False)
         configure_dark_listbox(self.run_list)
         self.run_list.pack(fill="both", expand=True, pady=(6, 0))
@@ -279,8 +315,9 @@ class OrchestratorWindow:
         self.run_list.bind("<Button-1>", self._on_run_click)
         self.run_list.bind("<B1-Motion>", self._on_run_drag)
 
-        right = ttk.Frame(outer)
-        right.grid(row=0, column=1, sticky="nsew")
+        right = ttk.Frame(self.details)
+        self.details.add(right, text='開始・仕様・Provider')
+        self._detail_pages['form'] = right
         right.columnconfigure(1, weight=1)
         right.rowconfigure(4, weight=1)
 
@@ -339,7 +376,8 @@ class OrchestratorWindow:
         self.review_box.bind("<<ComboboxSelected>>", lambda _e: self._on_role_changed("review"))
         self.start_button = ttk.Button(roles, text="開始", command=self.start_run)
         self.start_button.pack(side="left", padx=(6, 6))
-        self.stop_button = ttk.Button(roles, text="AI安全停止", command=self.stop_run)
+        self.stop_button = ttk.Button(header, text="AI安全停止（選択Run）", command=self.stop_run)
+        self.stop_button.state(['disabled'])
         self.stop_button.pack(side="left", padx=6)
         self.usage_button = ttk.Button(roles, text="残量更新", command=self.refresh_usage)
         self.usage_button.pack(side="left", padx=6)
@@ -369,8 +407,8 @@ class OrchestratorWindow:
         self.confirm_back_button = ttk.Button(confirm_buttons, text="戻る", command=self._cancel_confirm)
         self.confirm_back_button.pack(side="left")
 
-        usage_frame = ttk.Frame(right)
-        usage_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        usage_frame = ttk.Frame(self.details)
+        self.details.add(usage_frame, text='利用枠')
         usage_frame.columnconfigure(0, weight=1)
         usage_frame.columnconfigure(1, weight=1)
         self.usage_labels = {}
@@ -383,6 +421,12 @@ class OrchestratorWindow:
             self.usage_labels[name] = label
 
         row += 1
+        run_page = ttk.Frame(self.details)
+        self.details.add(run_page, text='Run詳細・Tests・レビュー・ログ')
+        self._detail_pages['run'] = run_page
+        run_page.columnconfigure(0, weight=1)
+        run_page.rowconfigure(row+2, weight=1)
+        right = run_page
         status = ttk.LabelFrame(right, text="選択中のrun", padding=8)
         status.grid(row=row, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         status.columnconfigure(1, weight=1)
@@ -418,6 +462,45 @@ class OrchestratorWindow:
         if auto_usage:
             self._refresh_free_usage()
 
+    def _open_reports(self) -> None:
+        if self._on_reports_inbox is not None:
+            self._on_reports_inbox()  # App owns single-window reuse.
+
+    def _show_details(self, page='run') -> None:
+        self._outer.rowconfigure(3, weight=1)
+        self.details.grid()
+        self.details.select(self._detail_pages[page])
+
+    def _hide_details(self) -> None:
+        self.details.grid_remove()
+        self._outer.rowconfigure(3, weight=0)
+
+    def _select_card(self, card) -> None:
+        text = card['hint'] + '\n' + card['detail']
+        item = next((i for i in self.run_items if i['record']['run_id'] == card['run_id']), None)
+        if item is not None:
+            self.selected_run = card['run_id']
+            self.monitor.select(self.selected_run)
+            self._set_log('')
+            self._render_selected()
+            import json
+            text += '\n\n詳細仕様（Run記録）:\n' + str(item['record'].get('task', '未記録'))
+            text += '\n\nレビュー履歴（Run記録）:\n' + json.dumps(item['record'].get('review_history', []), ensure_ascii=False, indent=2)
+        self.selection_text.configure(state='normal')
+        self.selection_text.delete('1.0', 'end')
+        self.selection_text.insert('1.0', text)
+        self.selection_text.configure(state='disabled')
+        self._show_details('analysis')
+
+    def _refresh_board(self) -> None:
+        model = build_lanes(self._workflow_cards, self.run_items,
+                            repo_names={d.name for d in self.definitions}, monitor_ok=self._monitor_ok)
+        self.board.set_model(model)
+        counts = ' ／ '.join(f'{name} {len(cards)}件' for name, cards in model.items())
+        self.board_notice.configure(text=counts + '\n' + self._workflow_notice +
+                                    (' ／ Run観測済み' if self._monitor_ok else ' ／ Run取得不能・確認待ち') +
+                                    ' ／ 安全停止対象: ' + (self.selected_run or '未選択') + ' ／ Manager AI推論は無効')
+
     def _refresh_free_usage(self) -> None:
         """On open, refresh only what costs nothing: the Codex account query spends no tokens.
         Claude reports its limits only inside a real call, so it stays on last known values until the
@@ -444,6 +527,7 @@ class OrchestratorWindow:
 
     def close(self) -> None:
         """Close the window only. Runs, workers and provider processes are untouched."""
+        self._workflow_feed.stop.set()
         if self._closed:
             return
         self._save_draft()
@@ -563,6 +647,7 @@ class OrchestratorWindow:
         Drops any confirmation that was waiting on a previous spec first (review fix — otherwise
         a stale `_pending_start` could still be started with the old spec after a new one was
         handed off), so the human always sees the start form with the newly loaded spec."""
+        self._show_details('form')
         self._cancel_confirm()
         self._load_spec_file(Path(path))
 
@@ -622,6 +707,7 @@ class OrchestratorWindow:
         self._show_confirm(resolved_name, auto, tests, tests_source)
 
     def _show_confirm(self, resolved_name: str, auto: bool, tests: str, tests_source: str) -> None:
+        self._show_details('form')
         self.confirm_repo_var.set((resolved_name + "（自動決定）") if auto else resolved_name)
         if self.spec is not None:
             self.confirm_source_var.set("仕様ファイル")
@@ -777,6 +863,14 @@ class OrchestratorWindow:
     def _tick(self) -> None:
         if self._closed:
             return
+        workflow = self._workflow_feed.poll()
+        if workflow is not None:
+            self._workflow_cards, self._workflow_notice = workflow
+            self._refresh_board()
+            self.selection_text.configure(state='normal')
+            self.selection_text.delete('1.0', 'end')
+            self.selection_text.insert('1.0', '最新状態でカードを選び直してください。' + self._workflow_notice)
+            self.selection_text.configure(state='disabled')
         try:
             self.window.after_cancel(self._tick_id)  # never keep two tick chains alive
         except (tk.TclError, AttributeError):
@@ -806,11 +900,17 @@ class OrchestratorWindow:
 
     def apply_snapshot(self, snapshot: dict) -> None:
         if "error" in snapshot:
+            self._monitor_ok = False
+            self.run_items = []
+            self._refresh_board()
+            self._render_selected()
             self.notice_var.set("run状態を読み込めません: " + snapshot["error"])
             return
         self.snapshot = snapshot
+        self._monitor_ok = True
         self.run_items = list(snapshot.get("runs", []))
         self._render_runs()
+        self._refresh_board()
         for name, data in (snapshot.get("usage") or {}).items():
             if name in self.usage_vars:
                 rows = usage_mod.describe(data)
@@ -860,6 +960,8 @@ class OrchestratorWindow:
                 break
 
     def _render_selected(self) -> None:
+        if hasattr(self, 'board'):
+            self._refresh_board()
         item = self._selected_item()
         # busy start button while a start is in flight is handled by the notice; recompute here
         self.character.set_mood(mood_for(item["record"]["stage"], item["liveness"]) if item else "idle")
