@@ -131,9 +131,8 @@ class LoopBoard(LaneBoard):
         self.loop.bind('<Configure>', self._resize)
         self._station_items = {}
         self._station_surfaces = {}
-        self._station_visible = {name: False for name in STATIONS}
         for name in STATIONS:
-            surface = PanelSurface(self.loop, art=self._art, accent=COLORS[name], kind='station', inset=8, visible=False)
+            surface = PanelSurface(self.loop, art=self._art, accent=COLORS[name], kind='station', inset=8)
             self._surfaces.append(surface)
             self._station_surfaces[name] = surface
             panel = surface.content
@@ -148,10 +147,11 @@ class LoopBoard(LaneBoard):
             c.configure(yscrollcommand=scroll.set)
             body = self._scroll_body(c)
             self.headers[name], self.bodies[name], self.canvases[name], self.cards[name] = label, body, c, []
-            self._station_items[name] = self.loop.create_window(0, 0, anchor='nw', window=surface, state='hidden')
+            self._station_items[name] = self.loop.create_window(0, 0, anchor='nw', window=surface, state='normal')
         self.character_host = self.loop
         self.character_background = BG
         self.review_header = self.frame  # compatibility only; no second character
+        self._update_headers()
         self._draw_ring()
 
     def _scroll_body(self, canvas):
@@ -224,12 +224,6 @@ class LoopBoard(LaneBoard):
     def _update_headers(self):
         for name in GROUPS:
             values = [c for c in self._data.values() if c['lane'] == name]
-            if name in self._station_items:
-                visible = bool(values)
-                if self._station_visible[name] != visible:
-                    self.loop.itemconfigure(self._station_items[name], state='normal' if visible else 'hidden')
-                    self._station_surfaces[name].set_visible(visible)
-                    self._station_visible[name] = visible
             uncertain = sum(c.get('stale', False) or c.get('task_unknown', False) or c['priority'] == 'PX' for c in values)
             mark = ('▼ ' if self._archive_open else '▶ ') if name == 'Archive' else ''
             text = f'{mark}{LABELS[name]}  {len(values)}件' + (f'／未確認 {uncertain}' if uncertain else '')

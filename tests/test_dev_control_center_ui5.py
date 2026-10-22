@@ -180,46 +180,51 @@ class BoardTests(loop_tests.BoardTests):
                 board.set_model(copy.deepcopy(model));headers.assert_not_called()
             self.assertEqual(board._widgets,before)
 
-    def test_station_zero_hides_whole_area_and_restores_without_moving_ring(self):
+    def test_station_frames_and_zero_counts_always_visible_with_empty_interiors(self):
         from scripts.dev_control_center import orchestrator_loop as loop
         board=self.make_board()
         items=dict(board._station_items)
-        for item in items.values():self.assertEqual(board.loop.rows[item][1]['state'],'hidden')
+        for name,item in items.items():
+            self.assertEqual(board.loop.rows[item][1]['state'],'normal')
+            self.assertIn('0件',board.headers[name].options['text'])
+            self.assertEqual(board.cards[name],[])
+        self.assertEqual(board._widgets,{})  # no placeholder cards
+        surfaces=dict(board._station_surfaces)
         agent=Mock();board.attach_character(agent);agent.reset_mock()
         stages=['implementing','testing','reviewing','repairing','testing']
         model=lanes.build_lanes([], [run(stage,rid=f'20261022-000000-{i:06}') for i,stage in enumerate(stages)])
         board.loop.itemconfigure=Mock();board.loop.coords=Mock()
         with patch.object(board,'_draw_ring') as ring:
             board.set_model(model)
-            for name in loop.STATIONS:
-                board.loop.itemconfigure.assert_any_call(items[name],state='normal')
             self.assertEqual(len(board.cards['Testing']),2)
             first=board.cards['Testing'][0]
+            self.assertIn('2件',board.headers['Testing'].options['text'])
             board.set_model(copy.deepcopy(model))
             self.assertIs(board.cards['Testing'][0],first)
-            for surface in board._station_surfaces.values():surface.set_visible.assert_called_once_with(True)
-            saved=board.cards['Reviewing'][0]
-            empty={name:[] for name in lanes.LANES}
-            board.set_model(empty)
+            board.set_model({name:[] for name in lanes.LANES})
+            self.assertEqual(board._widgets,{})
             for name in loop.STATIONS:
-                board.loop.itemconfigure.assert_any_call(items[name],state='hidden')
-                self.assertFalse(board._station_visible[name])
+                self.assertEqual(board.cards[name],[])
+                self.assertIn('0件',board.headers[name].options['text'])
             board.set_model(model)
             self.assertEqual(board._station_items,items)
+            self.assertEqual(board._station_surfaces,surfaces)
             self.assertEqual(len(board.cards['Testing']),2)
-            self.assertTrue(saved.destroyed)
-            ring.assert_not_called();agent.move.assert_not_called();board.loop.coords.assert_not_called()
+            for surface in surfaces.values():surface.set_visible.assert_not_called()
+            ring.assert_not_called();agent.move.assert_not_called()
+            board.loop.coords.assert_not_called();board.loop.itemconfigure.assert_not_called()
 
-    def test_station_removal_only_changes_that_station_visibility(self):
+    def test_removing_station_tasks_only_updates_cards_and_count(self):
         board=self.make_board()
         model=lanes.build_lanes([], [run('testing'),run('reviewing',rid='20261022-000000-000002')])
         board.set_model(model)
         review=board.cards['Reviewing'][0]
         board.loop.itemconfigure=Mock()
         board.set_model(lanes.build_lanes([], [run('reviewing',rid='20261022-000000-000002')]))
-        board.loop.itemconfigure.assert_called_once_with(board._station_items['Testing'],state='hidden')
+        board.loop.itemconfigure.assert_not_called()
         self.assertIs(board.cards['Reviewing'][0],review)
-        self.assertTrue(board._station_visible['Reviewing'])
+        self.assertIn('0件',board.headers['Testing'].options['text'])
+        self.assertEqual(board.cards['Testing'],[])
 
     def test_resize_burst_one_draw_same_size_cached_and_close_cancels(self):
         board=self.make_board()
