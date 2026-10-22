@@ -1,0 +1,3 @@
+# Optional rendering upgrade for DCC Orchestrator UI-5.
+# Verified on Windows Python 3.13 / Pillow 12.2.0.
+Pillow==12.2.0

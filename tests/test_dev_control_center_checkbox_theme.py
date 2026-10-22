@@ -38,6 +38,9 @@ class _RecordingStyle:
 
     def theme_use(self, _name):
         pass
+    def element_names(self): return ()
+    def element_create(self, *args): pass
+    def layout(self, *args): pass
 
     def configure(self, style_name, **kwargs):
         self.configured.setdefault(style_name, {}).update(kwargs)

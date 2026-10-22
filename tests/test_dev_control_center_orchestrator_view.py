@@ -427,14 +427,31 @@ class RunStatusTests(ViewCase):
 
     def test_log_is_appended_and_reset_on_selection(self):
         self.show(item())
-        self.window.apply_snapshot(self.snapshot(runs=[item()], log="12:00:00 [testing] go\n", log_reset=True))
+        run_id = item()["record"]["run_id"]
+        self.window.apply_snapshot(self.snapshot(runs=[item()], selected=run_id,
+                                                   log="12:00:00 [testing] go\n", log_reset=True))
         self.assertIn("[testing] go", self.window.log.get("1.0", "end"))
-        self.window.apply_snapshot(self.snapshot(runs=[item()], log="12:00:01 next\n"))
+        self.window.apply_snapshot(self.snapshot(runs=[item()], selected=run_id, log="12:00:01 next\n"))
         text = self.window.log.get("1.0", "end")
         self.assertIn("[testing] go", text)
         self.assertIn("next", text)
-        self.window.apply_snapshot(self.snapshot(runs=[item()], log="", log_reset=True))
+        self.window.apply_snapshot(self.snapshot(runs=[item()], selected=run_id, log="", log_reset=True))
         self.assertNotIn("go", self.window.log.get("1.0", "end"))
+
+    def test_a_stale_logs_snapshot_from_a_previously_selected_run_is_ignored(self):
+        self.show(item())
+        run_id = item()["record"]["run_id"]
+        self.window.apply_snapshot(self.snapshot(runs=[item()], selected=run_id,
+                                                   log="12:00:00 [testing] go\n", log_reset=True))
+        self.assertIn("[testing] go", self.window.log.get("1.0", "end"))
+        # Selection changes (or is cleared) before the in-flight poll for the old run lands.
+        self.window.selected_run = None
+        self.window._selection_explicit = True  # an explicit deselect; _render_runs() must not auto-reselect
+        self.window.apply_snapshot(self.snapshot(runs=[item()], selected=run_id,
+                                                   log="12:00:01 stale\n", log_reset=True))
+        text = self.window.log.get("1.0", "end")
+        self.assertIn("[testing] go", text)
+        self.assertNotIn("stale", text)
 
 
 class RunListRowClickLogicTests(unittest.TestCase):
@@ -689,12 +706,18 @@ class _FakeFrame(_FakeTkWidget):
 
     def grid(self, **_kwargs):
         self._gridded = True
+        self.grid_options = dict(_kwargs)
 
     def grid_remove(self):
         self._gridded = False
 
     def grid_info(self):
         return {"in": self.master} if self._gridded else {}
+
+
+class _FakeNotebook(_FakeFrame):
+    def add(self, child, **kwargs): pass
+    def select(self, child): pass
 
 
 class _FakeButton(_FakeTkWidget):
@@ -804,6 +827,9 @@ class _FakeStyle:
 
     def map(self, *_args, **_kwargs):
         pass
+    def element_names(self): return ()
+    def element_create(self, *args): pass
+    def layout(self, *args): pass
 
 
 class _FakeStartFormToplevel(_FakeTkWidget):
@@ -876,7 +902,7 @@ _FAKE_START_FORM_TK_MODULE = SimpleNamespace(
 )
 _FAKE_START_FORM_TTK_MODULE = SimpleNamespace(
     Frame=_FakeFrame, LabelFrame=_FakeFrame, Label=_FakeTkWidget, Entry=_FakeTkWidget,
-    Button=_FakeButton, Combobox=_FakeCombobox, Style=_FakeStyle,
+    Button=_FakeButton, Combobox=_FakeCombobox, Style=_FakeStyle, Notebook=_FakeNotebook,
 )
 
 
@@ -889,6 +915,12 @@ class FakeOrchestratorWindowCase(unittest.TestCase):
     runs unmodified against fakes instead of a live display."""
 
     def setUp(self):
+        board_patch = mock.patch.object(view, 'LaneBoard')
+        board_patch.start()
+        self.addCleanup(board_patch.stop)
+        feed_patch = mock.patch.object(view, 'WorkflowFeed')
+        feed_patch.start().return_value.poll.return_value = None
+        self.addCleanup(feed_patch.stop)
         tk_patch = mock.patch.object(view, "tk", _FAKE_START_FORM_TK_MODULE)
         tk_patch.start()
         self.addCleanup(tk_patch.stop)

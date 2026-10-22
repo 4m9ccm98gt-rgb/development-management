@@ -244,6 +244,10 @@ class UiTests(unittest.TestCase):
             self.root.update()
             window = self.ui.orchestrator_window
             self.assertTrue(window.exists())
+            # UI-merge-A: UI-6 now opens on the lane-board overview with the start/stop
+            # form collapsed; "新規Task・開始設定" is what reveals it (see _show_details).
+            window._show_details('form')
+            self.root.update()
             self.assertTrue(window.start_button.winfo_ismapped())
             self.assertTrue(window.stop_button.winfo_ismapped())
             self.ui.open_orchestrator()
@@ -419,6 +423,24 @@ class OrchestratorAndReportsButtonPlacementTests(unittest.TestCase):
         self.assertNotIn("orchestrator_button", source)
         self.assertNotIn("reports_button", source)
 
+    def test_all_top_buttons_remain_after_the_orchestrator_ui_merge(self):
+        """DCC Task UI-merge-A: the mainline buttons (Orchestrator, 報告, 開発計画,
+        自動処理の状況 from WF-6c) must all still be built in top_buttons after merging in the
+        Orchestrator UI branch, in the mainline order, with none dropped or duplicated."""
+        source = inspect.getsource(dcc.App._build)
+        top_buttons_block = source.split("top_buttons = ttk.Frame(title_bar)", 1)[1].split(
+            "lifecycle = ttk.LabelFrame", 1)[0]
+        expected = [
+            "self.orchestrator_button = ttk.Button(top_buttons,",
+            "self.reports_button = ttk.Button(top_buttons,",
+            "self.workflow_plan_button = ttk.Button(top_buttons,",
+            "self.automation_status_button = ttk.Button(",
+        ]
+        positions = [top_buttons_block.index(marker) for marker in expected]
+        self.assertEqual(positions, sorted(positions))
+        for marker in expected:
+            self.assertEqual(top_buttons_block.count(marker), 1)
+
 
 class OpenOrchestratorDefaultRepoTests(unittest.TestCase):
     """DCC Task 10: open_orchestrator() must pass initial_repo=None (自動 stays the start
@@ -436,6 +458,7 @@ class OpenOrchestratorDefaultRepoTests(unittest.TestCase):
         ui.definitions = []
         ui.ai_drafts = {}
         ui.master = object()
+        ui._workflow_runner_state = None
         with patch.object(orch_view, "OrchestratorWindow") as window_cls:
             ui.open_orchestrator()
         self.assertIsNone(window_cls.call_args.kwargs["initial_repo"])
