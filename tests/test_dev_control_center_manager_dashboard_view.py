@@ -47,6 +47,14 @@ class Widget:
 
 class FakeStyle(Widget):
     def configure(self, name, **kwargs): self.configurations[name] = kwargs
+    def element_names(self): return tuple(getattr(self, 'elements', {}))
+    def element_create(self, name, *args):
+        if not hasattr(self, 'elements'): self.elements = {}
+        assert name not in self.elements
+        self.elements[name] = args
+    def layout(self, name, value):
+        if not hasattr(self, 'layouts'): self.layouts = {}
+        self.layouts[name] = value
 
 
 def snapshot():
@@ -152,6 +160,17 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(style.maps['Manager.Treeview']['background'], [('selected', '#1f6feb')])
         self.assertEqual(window.options['background'], '#0f1419')
         self.assertIn('Manager.Vertical.TScrollbar', style.configurations)
+        for orientation, arrows in (('Horizontal', ('leftarrow', 'rightarrow')), ('Vertical', ('uparrow', 'downarrow'))):
+            name = f'Manager.{orientation}.TScrollbar'
+            prefix = f'Manager.{orientation}.Scrollbar'
+            for part in ('trough', 'thumb', *arrows):
+                self.assertEqual(style.elements[f'{prefix}.{part}'],
+                                 ('from', 'clam', f'{orientation}.Scrollbar.{part}'))
+            children = style.layouts[name][0][1]['children']
+            self.assertEqual(children[-1], (f'{prefix}.thumb', dict(expand=1, sticky='nswe')))
+            self.assertIn(('!active', '#20262d'), style.maps[name]['background'])
+        view.apply_table_theme(window, tree, horizontal, vertical, style)
+        self.assertEqual(len(style.elements), 8)  # repeated refresh does not recreate elements
         style.bg = '#ffffff'
         view.apply_table_theme(window, tree, horizontal, vertical, style)
         self.assertEqual(tree.options['style'], 'Treeview')

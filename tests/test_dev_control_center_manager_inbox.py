@@ -163,6 +163,40 @@ class WidgetTests(GuardedTests):
             self.assertIsInstance(window.inbox, inbox.ManagerInboxView)
             theme.assert_called_once()
 
+    def test_both_tables_keep_scroll_wiring_across_refresh_resize_and_theme_change(self):
+        style = FakeStyle()
+        widgets = self.widgets()
+        widgets.Style = lambda *args: style
+        with patch.object(dashboard, 'tk', SimpleNamespace(Toplevel=Widget)), \
+             patch.object(dashboard, 'ttk', widgets), patch.object(inbox, 'ttk', widgets):
+            window = dashboard.ManagerDashboardWindow(Widget(), snapshot(task('T1')), inbox=True)
+            for table in (window, window.inbox):
+                self.assertEqual(table.horizontal.options['style'], 'Manager.Horizontal.TScrollbar')
+                self.assertEqual(table.vertical.options['style'], 'Manager.Vertical.TScrollbar')
+                # Standard ttk bindings and bidirectional fraction callbacks stay
+                # intact; no custom wheel, drag or geometry implementation.
+                self.assertEqual(table.horizontal.options['command'], table.tree.xview)
+                self.assertEqual(table.vertical.options['command'], table.tree.yview)
+                self.assertEqual(table.tree.options['xscrollcommand'], table.horizontal.set)
+                self.assertEqual(table.tree.options['yscrollcommand'], table.vertical.set)
+            for count in (0, 40, 1):
+                data = snapshot(*(task(f'T{i}') for i in range(count)))
+                window.set_snapshot(data)
+                window.inbox.set_model(model(data))
+                window.window.geometry('800x480')
+                window._apply_theme()
+                self.assertEqual(len(window.tree.rows), count)
+                self.assertEqual(len(window.inbox.tree.rows), count)
+            style.bg = '#ffffff'
+            window._apply_theme()
+            for table in (window, window.inbox):
+                self.assertEqual(table.horizontal.options['style'], 'Horizontal.TScrollbar')
+                self.assertEqual(table.vertical.options['style'], 'Vertical.TScrollbar')
+            style.bg = '#0f1419'
+            window._apply_theme()
+            self.assertEqual(window.inbox.vertical.options['style'], 'Manager.Vertical.TScrollbar')
+            self.assertEqual(len(style.elements), 8)
+
 
 class ControllerTests(GuardedTests):
     def test_update_clears_stale_state_change_failure_and_reopen(self):

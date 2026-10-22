@@ -114,9 +114,28 @@ def apply_table_theme(window, tree, horizontal, vertical, style):
         style.map('Manager.Treeview.Heading', background=[('active', DARK_FIELD), ('pressed', DARK_SELECTION)], foreground=[('active', DARK_FG)])
         for orientation in ('Horizontal', 'Vertical'):
             name = f'Manager.{orientation}.TScrollbar'
+            # Native Windows elements may ignore color options. Copy only the
+            # Manager elements from clam; never switch the application's theme.
+            # Keep ttk's Scrollbar class bindings (drag, arrows, trough, repeat).
+            arrows = ('leftarrow', 'rightarrow') if orientation == 'Horizontal' else ('uparrow', 'downarrow')
+            elements = set(style.element_names())
+            prefix = f'Manager.{orientation}.Scrollbar'
+            for part in ('trough', 'thumb', *arrows):
+                element = f'{prefix}.{part}'
+                if element not in elements:
+                    style.element_create(element, 'from', 'clam', f'{orientation}.Scrollbar.{part}')
+            first, last = ('left', 'right') if orientation == 'Horizontal' else ('top', 'bottom')
+            style.layout(name, [(f'{prefix}.trough', dict(sticky='nswe', children=[
+                (f'{prefix}.{arrows[0]}', dict(side=first, sticky='')),
+                (f'{prefix}.{arrows[1]}', dict(side=last, sticky='')),
+                (f'{prefix}.thumb', dict(expand=1, sticky='nswe'))]))])
             style.configure(name, background=DARK_FIELD, troughcolor=DARK_BG, arrowcolor=DARK_FG,
                             bordercolor=DARK_BORDER, lightcolor=DARK_BORDER, darkcolor=DARK_BORDER)
-            style.map(name, background=[('active', DARK_SELECTION), ('pressed', DARK_SELECTION)])
+            # Explicit defaults also override inherited state maps (including
+            # disabled bars when all rows fit after resize/refresh).
+            style.map(name, background=[('pressed', DARK_SELECTION), ('active', DARK_SELECTION), ('!active', DARK_FIELD)],
+                      troughcolor=[('!active', DARK_BG), ('active', DARK_BG)],
+                      arrowcolor=[('!active', DARK_FG), ('active', DARK_FG)])
     window.configure(background=DARK_BG if dark else style.lookup('TFrame', 'background'))
     tree.configure(style='Manager.Treeview' if dark else 'Treeview')
     horizontal.configure(style='Manager.Horizontal.TScrollbar' if dark else 'Horizontal.TScrollbar')
