@@ -124,7 +124,7 @@ def apply_table_theme(window, tree, horizontal, vertical, style):
 
 
 class ManagerDashboardWindow:
-    def __init__(self, master, snapshot):
+    def __init__(self, master, snapshot, *, inbox=False):
         self.window = tk.Toplevel(master)
         self.window.title('組織ダッシュボード')
         self.window.geometry('1150x650')
@@ -138,8 +138,18 @@ class ManagerDashboardWindow:
         self.summary.grid(row=1, column=0, sticky='ew', pady=8)
         self.notice = ttk.Label(frame)
         self.notice.grid(row=2, column=0, sticky='w')
-        table = ttk.Frame(frame)
-        table.grid(row=3, column=0, sticky='nsew', pady=8)
+        self.inbox = None
+        if inbox:
+            from .manager_inbox import ManagerInboxView
+            tabs = ttk.Notebook(frame)
+            tabs.grid(row=3, column=0, sticky='nsew', pady=8)
+            table = ttk.Frame(tabs)
+            self.inbox = ManagerInboxView(tabs, window=self.window)
+            tabs.add(table, text='TASK一覧')
+            tabs.add(self.inbox.frame, text='判断受信箱')
+        else:
+            table = ttk.Frame(frame)
+            table.grid(row=3, column=0, sticky='nsew', pady=8)
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(table, columns=COLUMNS, show='headings', selectmode='browse')
@@ -167,6 +177,8 @@ class ManagerDashboardWindow:
         if key != getattr(self, '_theme_key', None):
             self._theme_key = key
             apply_table_theme(self.window, self.tree, self.horizontal, self.vertical, style)
+            if self.inbox is not None:
+                self.inbox.apply_theme(style)
 
     def set_snapshot(self, snapshot):
         """Presentation only. Caller owns collection and invokes this on the Tk thread."""

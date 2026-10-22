@@ -19,6 +19,7 @@ import tkinter as tk
 
 from .manager_collector import ManagerCollector
 from .manager_dashboard_view import ManagerDashboardWindow
+from .manager_inbox import build_inbox, empty_inbox
 
 INTERVAL_MS = 10_000
 POLL_MS = 100
@@ -72,6 +73,7 @@ class PreviewController:
     def __init__(self, view, *, collector=None, runner_state=None, scheduler=None,
                  launch=None, now=None, on_close=None):
         self.view = view
+        self._inbox = getattr(view, 'inbox', None)
         self.scheduler = scheduler if scheduler is not None else view.window
         self.collector = collector if collector is not None else ManagerCollector(runner_state=runner_state)
         self.memory_available = runner_state is not None
@@ -103,6 +105,8 @@ class PreviewController:
             self._refresh_id = None
         self._busy = True
         self._notice('更新中（前回表示の最新状態は未確認）')
+        if self._inbox is not None:
+            self._inbox.set_model(empty_inbox('updating'))
         # Worker captures only collector, queue and stop event, never Tk objects.
         collector, results, stop = self.collector, self._results, self._stop
         def read():
@@ -131,6 +135,11 @@ class PreviewController:
             self._busy = False
             snapshot, status = preview_data(payload, memory_available=self.memory_available)
             self.view.set_snapshot(snapshot)  # replaces stale rows on EVERY result, including failure
+            if self._inbox is not None:
+                data = payload if isinstance(payload, dict) else {}
+                self._inbox.set_model(build_inbox(snapshot,
+                    observation_id=data.get('observation_id'), collection_status=data.get('status'),
+                    memory_available=self.memory_available, issues=data.get('issues', ())))
             try:
                 stamp = self._now()
                 self._last_update = stamp.strftime('%Y-%m-%d %H:%M:%S') if isinstance(stamp, datetime) else '時刻確認待ち'
@@ -169,7 +178,7 @@ def main():
     root = tk.Tk()
     root.withdraw()
     configure_dark_theme(root)
-    view = ManagerDashboardWindow(root, copy.deepcopy(UNAVAILABLE))
+    view = ManagerDashboardWindow(root, copy.deepcopy(UNAVAILABLE), inbox=True)
     controller = PreviewController(view, on_close=root.destroy)
     # Keep controller alive throughout Tk's event loop.
     try:

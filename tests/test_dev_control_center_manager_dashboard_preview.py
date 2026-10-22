@@ -235,7 +235,7 @@ class PreviewTests(unittest.TestCase):
         theme.assert_called_once_with(root)
         root.withdraw.assert_called_once()
         root.mainloop.assert_called_once()
-        window.assert_called_once_with(root, preview.UNAVAILABLE)
+        window.assert_called_once_with(root, preview.UNAVAILABLE, inbox=True)
         controller.assert_called_once_with(view, on_close=root.destroy)
         controller.return_value._shutdown.assert_called_once()
 
