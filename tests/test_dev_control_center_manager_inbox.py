@@ -106,7 +106,7 @@ class ModelTests(GuardedTests):
                 self.assertEqual(row[field], suggested[field])
             self.assertEqual(set(row), {'plan_id', 'task_id', 'kind', 'reason_code', 'category',
                                         'source', 'snapshot_id', 'observation_id', 'priority',
-                                        'cause', 'owner', 'action', 'dependencies'})
+                                        'cause', 'owner', 'action', 'dependencies', 'workflow_status', 'proposals'})
         self.assertEqual(data, before)
 
     def test_single_candidate_matches_runner_order_and_dependencies(self):

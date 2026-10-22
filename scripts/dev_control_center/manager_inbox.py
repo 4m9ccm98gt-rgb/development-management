@@ -10,7 +10,8 @@ import re
 from tkinter import ttk
 
 from . import manager_decision as decision
-from .manager_dashboard_view import apply_table_theme
+from . import manager_proposals as proposals
+from .manager_dashboard_view import apply_table_theme, STATUS
 
 GROUPS = (('human', '人間の確認が必要'), ('start_candidate', '開始提案の候補'),
           ('waiting', '待機・保留'), ('done', '完了・対応不要'), ('unknown', '取得不能・確認待ち'))
@@ -104,7 +105,7 @@ def _id(value, limit):
 
 
 def empty_inbox(status='unavailable'):
-    return dict(schema_version=2, status=status if isinstance(status, str) and status in STATUS_TEXT else 'unavailable',
+    return dict(schema_version=3, status=status if isinstance(status, str) and status in STATUS_TEXT else 'unavailable',
                 source='rules', scope='disk', rows=[], unavailable_plans=0)
 
 
@@ -159,7 +160,9 @@ def build_inbox(snapshot, *, observation_id, collection_status, memory_available
             group, kind, reason = 'unknown', 'REQUEST_HUMAN', 'COLLECTION_PARTIAL'
         model['rows'].append(dict(plan_id=pid, task_id=tid, kind=kind, reason_code=reason,
             category=group, source='rules', snapshot_id=item['snapshot_id'], observation_id=observation_id,
+            workflow_status=tasks[(pid, tid)]['status'],
             **analyze_task(tasks[(pid, tid)], reason, memory_available=memory_available)))
+        model['rows'][-1]['proposals'] = proposals.build_proposals(model['rows'][-1])
     return model
 
 
@@ -237,12 +240,16 @@ class ManagerInboxView:
         for index, row in enumerate(rows):
             values = row_values(row) + analysis_values(row)
             key = (values[1], values[2])
+            state = row.get('workflow_status') if isinstance(row, dict) else None
+            state = STATUS.get(state, '確認待ち') if isinstance(state, str) else '確認待ち'
             detail = ('固定ルールによる提案（承認・実行は行いません）\n'
                       f'計画 ID: {values[1]}　TASK ID: {values[2]}\n'
+                      f'現在のWorkflow記録: {state}（Runの稼働確定とは別）\n'
                       f'分類: {values[0]}　判断種別: {values[3]}\n理由コード: {values[4]}\n'
                       f'確認優先度: {values[5]}（業務重要度ではありません。PXは未確定）\n'
                       f'原因: {values[6]}\n対応先: {values[7]}\n対応可否: {values[8]}（実行許可ではありません）\n'
-                      f'依存TASK: {dependency_text(row)}\n観測範囲: {scope}')
+                      f'依存TASK: {dependency_text(row)}\n観測範囲: {scope}\n'
+                      + proposals.proposal_text(row))
             iid = f'inbox-{index}'
             self._rows[iid] = (key, detail)
             self.tree.insert('', 'end', iid=iid, values=values)
