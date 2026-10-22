@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import reports_auto_approve as approval
 from scripts.dev_control_center import reports_auto as auto
 from scripts.dev_control_center import reports_auto_start as start
@@ -15,6 +16,23 @@ from scripts.dev_control_center import reports_inbox_view as view
 
 
 APP = "next-day-setup"
+
+# DCC Task WF-6b (reviewer finding 3): every approval.refresh call in this module must pass its
+# own tmp-backed activity_log_path -- a forgotten one would otherwise silently fall back to
+# activity_log.log_path()'s real %LOCALAPPDATA% default. Patching log_path itself to raise turns
+# that fallback into a loud test failure instead of a silent write to real user data.
+_log_path_guard = patch.object(
+    activity_log, "log_path",
+    side_effect=AssertionError("activity_log.log_path() reached -- a test forgot to pass its own "
+                               "tmp-backed activity_log_path"))
+
+
+def setUpModule():
+    _log_path_guard.start()
+
+
+def tearDownModule():
+    _log_path_guard.stop()
 
 
 def good_values():
@@ -110,6 +128,7 @@ class PersistenceTests(unittest.TestCase):
         self.records = self.root / "starts"
         self.results = self.root / "results"
         self.logs = self.root / "logs"
+        self.activity_path = self.root / "activity.jsonl"
         self.run_fn = Mock(return_value=good_run())
         self.changes_fn = Mock(return_value=changes())
         self.ci_fn = Mock(return_value="GREEN")
@@ -121,7 +140,8 @@ class PersistenceTests(unittest.TestCase):
     def refresh(self):
         approval.refresh([self.report], self.gc, self.sc, self.config, records_dir=self.records,
                          results_dir=self.results, log_dir=self.logs,
-                         run_fn=self.run_fn, changes_fn=self.changes_fn, ci_fn=self.ci_fn)
+                         run_fn=self.run_fn, changes_fn=self.changes_fn, ci_fn=self.ci_fn,
+                         activity_log_path=self.activity_path)
 
     def labels(self):
         return approval.load_labels([self.report.identity], self.gc, self.sc, self.config,
@@ -301,6 +321,71 @@ class PersistenceTests(unittest.TestCase):
         approval.save_config(approval.ApprovalConfig(), window._approval_config_path, start_config=self.sc)
         window._tick()
         self.assertEqual(window._approval_labels, {})
+
+
+class ActivityLogTests(unittest.TestCase):
+    """DCC Task WF-6b 仕様1: 判定（対象／人の確認が必要）の記録点 -- reports_auto_approve.refresh()
+    が呼ぶ activity_log.append() だけを検証する。実際の画面・AI・Orchestrator・外部通信は使わず、
+    保存先は一時フォルダに限る。"""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.gc = auto.AutoModeConfig(enabled=True)
+        self.sc = start.AutoStartConfig(apps={APP: True, "development-management": True})
+        self.config = approval.ApprovalConfig(apps={APP: True})
+        self.report = SimpleNamespace(app_key=APP, report_id="r1", identity=(APP, "r1"))
+        self.records = self.root / "starts"
+        self.results = self.root / "results"
+        self.logs = self.root / "logs"
+        self.activity_path = self.root / "activity.jsonl"
+        self.run_fn = Mock(return_value=good_run())
+        self.changes_fn = Mock(return_value=changes())
+        self.ci_fn = Mock(return_value="GREEN")
+        start._save_record(start.AutoStartRecord(APP, "r1", "2026-10-13", "run-1", start.RESULT_CANDIDATE),
+                           root=self.records)
+
+    def refresh(self):
+        approval.refresh([self.report], self.gc, self.sc, self.config, records_dir=self.records,
+                         results_dir=self.results, log_dir=self.logs,
+                         run_fn=self.run_fn, changes_fn=self.changes_fn, ci_fn=self.ci_fn,
+                         activity_log_path=self.activity_path)
+
+    def test_eligible_decision_is_recorded(self):
+        self.refresh()
+        entries = activity_log.read_recent(path=self.activity_path)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].role, activity_log.ROLE_AUTO_APPROVE)
+        self.assertEqual(entries[0].action, activity_log.ACTION_COMPLETE)
+        self.assertEqual(entries[0].target_type, activity_log.TARGET_REPORT)
+        self.assertEqual(entries[0].target_id, start._hash("r1"))
+        self.assertEqual(entries[0].result, activity_log.RESULT_PROCEED)
+
+    def test_needs_human_decision_is_recorded(self):
+        self.ci_fn.return_value = "FAILED"
+        self.refresh()
+        entries = activity_log.read_recent(path=self.activity_path)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].action, activity_log.ACTION_COMPLETE)
+        self.assertEqual(entries[0].result, activity_log.RESULT_NEEDS_HUMAN)
+
+    def test_activity_log_write_failure_never_changes_the_eligibility_outcome(self):
+        def broken_append(**kwargs):
+            raise activity_log.ActivityLogError("boom")
+
+        with patch.object(activity_log, "append", side_effect=broken_append):
+            self.refresh()
+        labels = approval.load_labels([self.report.identity], self.gc, self.sc, self.config,
+                                      results_dir=self.results, records_dir=self.records)
+        self.assertEqual(labels[self.report.identity], approval.ELIGIBLE)
+        self.assertFalse(self.activity_path.exists())
+
+    def test_entry_has_only_fixed_words_id_and_timestamp(self):
+        self.refresh()
+        raw = self.activity_path.read_text(encoding="utf-8")
+        for banned in ("C:\\", "/home/", "Traceback", "r1", self.report.report_id):
+            self.assertNotIn(banned, raw)
 
 
 class ReadOnlyBoundaryTests(unittest.TestCase):

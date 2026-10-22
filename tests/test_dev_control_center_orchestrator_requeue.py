@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import orchestrator_requeue as req
 from scripts.dev_control_center import reports_auto as auto
 
@@ -27,6 +28,23 @@ NOW = datetime(2026, 3, 10, 16, 50, 0, tzinfo=timezone.utc)
 # DelayCalculationTests' own job, with its own dedicated messages/clocks below).
 DEFAULT_MESSAGE = "rate limited, try again later"
 DUE_AFTER_FALLBACK = NOW + timedelta(minutes=65)  # safely past the 60-minute fallback wait
+
+# DCC Task WF-6b (reviewer finding 3): every req.run_requeue_once call in this module must pass
+# its own tmp-backed activity_log_path -- a forgotten one would otherwise silently fall back to
+# activity_log.log_path()'s real %LOCALAPPDATA% default. Patching log_path itself to raise turns
+# that fallback into a loud test failure instead of a silent write to real user data.
+_log_path_guard = mock.patch.object(
+    activity_log, "log_path",
+    side_effect=AssertionError("activity_log.log_path() reached -- a test forgot to pass its own "
+                               "tmp-backed activity_log_path"))
+
+
+def setUpModule():
+    _log_path_guard.start()
+
+
+def tearDownModule():
+    _log_path_guard.stop()
 
 
 def make_record(run_id="run-a", repo="C:/repos/app", stage="needs_human", code="PROVIDER_QUOTA",
@@ -263,6 +281,10 @@ class RunRequeueOnceTests(unittest.TestCase):
 
     def _run(self, **kwargs):
         kwargs.setdefault("log_dir", self.log_dir)
+        # DCC Task WF-6b (reviewer finding 3): default to this test's own tmp-backed activity log
+        # path rather than leaving it unset (None), which would fall back to the real
+        # %LOCALAPPDATA% activity_log.log_path() default.
+        kwargs.setdefault("activity_log_path", self.tmp / "activity.jsonl")
         return req.run_requeue_once(**kwargs)
 
     # ------------------------------------------------------------------ C1
@@ -722,6 +744,168 @@ class RunRequeueOnceTests(unittest.TestCase):
         self.assertEqual(outcome.status, req.STATUS_NOTHING_TO_DO)
 
 
+class ActivityLogTests(unittest.TestCase):
+    """DCC Task WF-6b 仕様2: 自動再実行の予約・開始・上限・対象外の記録点だけを検証する。
+    実際の画面・AI・Orchestrator・外部通信は使わず、保存先は一時フォルダに限る。target_id は
+    activity_log.TARGET_RUN の形式 (\\d{8}-\\d{6}-\\d{6}) に合わせる -- 形式が違うと
+    activity_log.append() 自体が ActivityLogError で拒否し、_log_activity がそれを握りつぶして
+    何も記録されないため、ここでの検証が意味を持つには run_id 自体をその形式にする必要がある。"""
+
+    def setUp(self):
+        self._tmp_ctx = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp_ctx.name)
+        self.log_dir = self.tmp / "run_log"
+        self.activity_path = self.tmp / "activity.jsonl"
+        self.addCleanup(self._tmp_ctx.cleanup)
+
+    def _start_fn(self, calls, *, ok=True, run_id="20260310-170000-000099"):
+        def fn(*, record):
+            calls.append(record["run_id"])
+            if not ok:
+                raise RuntimeError("source repo has uncommitted changes")
+            return Path(f"/fake/{run_id}")
+        return fn
+
+    def _run(self, **kwargs):
+        kwargs.setdefault("log_dir", self.log_dir)
+        kwargs.setdefault("activity_log_path", self.activity_path)
+        return req.run_requeue_once(**kwargs)
+
+    def _entries(self):
+        return activity_log.read_recent(path=self.activity_path)
+
+    def test_pending_schedule_is_recorded(self):
+        run_id = "20260310-165000-000001"
+        item = make_item(run_id=run_id)
+        self._run(state=req.RequeueState(), global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        entries = self._entries()
+        waiting = [e for e in entries if e.action == activity_log.ACTION_WAITING]
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0].role, activity_log.ROLE_AUTO_RETRY)
+        self.assertEqual(waiting[0].target_type, activity_log.TARGET_RUN)
+        self.assertEqual(waiting[0].target_id, run_id)
+
+    def test_start_is_recorded_with_the_new_run_id(self):
+        run_id = "20260310-165000-000002"
+        new_run_id = "20260310-170000-000099"
+        item = make_item(run_id=run_id)
+        state = req.RequeueState()
+        calls = []
+        self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn(calls, run_id=new_run_id))
+        outcome = self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                            requeue_config=req.RequeueConfig(enabled=True), now=DUE_AFTER_FALLBACK,
+                            list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                            start_requeue_fn=self._start_fn(calls, run_id=new_run_id))
+        self.assertEqual(outcome.status, req.STATUS_STARTED)
+        entries = self._entries()
+        starts = [e for e in entries if e.action == activity_log.ACTION_START]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0].role, activity_log.ROLE_AUTO_RETRY)
+        self.assertEqual(starts[0].target_type, activity_log.TARGET_RUN)
+        self.assertEqual(starts[0].target_id, new_run_id)
+
+    def test_missing_required_fields_exclusion_is_recorded(self):
+        run_id = "20260310-165000-000003"
+        item = make_item(run_id=run_id)
+        item["record"]["criteria"] = []
+        self._run(state=req.RequeueState(), global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        entries = self._entries()
+        excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+        self.assertEqual(len(excluded), 1)
+        self.assertEqual(excluded[0].target_type, activity_log.TARGET_RUN)
+        self.assertEqual(excluded[0].target_id, run_id)
+
+    def test_lineage_limit_exclusion_is_recorded(self):
+        run_id = "20260310-165000-000004"
+        item = make_item(run_id=run_id)
+        state = req.RequeueState()
+        state.lineage_attempts[run_id] = req.MAX_LINEAGE_ATTEMPTS
+        self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        entries = self._entries()
+        excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+        self.assertEqual(len(excluded), 1)
+        self.assertEqual(excluded[0].target_id, run_id)
+
+    def test_rejected_start_exclusion_is_recorded(self):
+        run_id = "20260310-165000-000005"
+        item = make_item(run_id=run_id)
+        state = req.RequeueState()
+        self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=DUE_AFTER_FALLBACK,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([], ok=False))
+        entries = self._entries()
+        excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED
+                    and e.target_id == run_id]
+        self.assertEqual(len(excluded), 1)
+
+    def test_daily_limit_reached_is_recorded(self):
+        items = [make_item(run_id="20260310-165000-000006", repo="C:/repos/one"),
+                 make_item(run_id="20260310-165000-000007", repo="C:/repos/two")]
+        state = req.RequeueState()
+        due = DUE_AFTER_FALLBACK
+        self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True, daily_limit=1), now=NOW,
+                  list_runs_fn=lambda: items, active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True, daily_limit=1), now=due,
+                  list_runs_fn=lambda: items, active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        entries = self._entries()
+        self.assertTrue(any(e.action == activity_log.ACTION_LIMIT for e in entries))
+
+    def test_entry_has_only_fixed_words_id_and_timestamp(self):
+        run_id = "20260310-165000-000008"
+        item = make_item(run_id=run_id, task="Task本文の秘密", repo="C:/secret/repo")
+        self._run(state=req.RequeueState(), global_config=auto.AutoModeConfig(enabled=True),
+                  requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                  list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                  start_requeue_fn=self._start_fn([]))
+        raw = self.activity_path.read_text(encoding="utf-8")
+        for banned in ("C:/secret", "Task本文の秘密", "Traceback"):
+            self.assertNotIn(banned, raw)
+
+    def test_activity_log_write_failure_never_changes_the_outcome(self):
+        run_id = "20260310-165000-000009"
+        new_run_id = "20260310-170000-000098"
+        item = make_item(run_id=run_id)
+        state = req.RequeueState()
+        calls = []
+
+        def broken_append(**kwargs):
+            raise activity_log.ActivityLogError("boom")
+
+        with mock.patch.object(activity_log, "append", side_effect=broken_append):
+            self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                      requeue_config=req.RequeueConfig(enabled=True), now=NOW,
+                      list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                      start_requeue_fn=self._start_fn(calls, run_id=new_run_id))
+            outcome = self._run(state=state, global_config=auto.AutoModeConfig(enabled=True),
+                                requeue_config=req.RequeueConfig(enabled=True), now=DUE_AFTER_FALLBACK,
+                                list_runs_fn=lambda: [item], active_runs_fn=lambda repo: [],
+                                start_requeue_fn=self._start_fn(calls, run_id=new_run_id))
+        self.assertEqual(outcome.status, req.STATUS_STARTED)
+        self.assertEqual(calls, [run_id])
+        self.assertFalse(self.activity_path.exists())
+
+
 class RestartBehaviorTests(unittest.TestCase):
     """DCC Task 19b, 仕様3/仕様6, Reviewer findings 1 & 2: nothing about a stopped run or the
     day's own count may survive a DCC restart in a way that lets this process auto-requeue a run
@@ -744,7 +928,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=NOW,
             list_runs_fn=lambda: [pre_existing], active_runs_fn=lambda repo: [],
             start_requeue_fn=lambda *, record: Path("/fake/should-never-be-called"),
-            log_dir=self.tmp / "log",
+            log_dir=self.tmp / "log", activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertEqual(calls, [])
         self.assertNotIn("run-already-stopped-before-dcc-started", state.pending)
@@ -759,7 +943,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=later,
             list_runs_fn=lambda: [pre_existing], active_runs_fn=lambda repo: [],
             start_requeue_fn=lambda *, record: Path("/fake/should-never-be-called"),
-            log_dir=self.tmp / "log",
+            log_dir=self.tmp / "log", activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertNotIn("run-already-stopped-before-dcc-started", state.pending)
         self.assertNotIn("run-already-stopped-before-dcc-started", state.needs_human)
@@ -779,6 +963,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=NOW,  # now ON
             list_runs_fn=lambda: [pre_existing], active_runs_fn=lambda repo: [],
             start_requeue_fn=self._never(calls), log_dir=self.tmp / "log",
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertEqual(calls, [])
         self.assertNotIn("run-old", state.pending)
@@ -797,6 +982,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=NOW,
             list_runs_fn=lambda: [new_item], active_runs_fn=lambda repo: [],
             start_requeue_fn=self._never(calls), log_dir=self.tmp / "log",
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertIn("run-stopped-after-startup", state.pending)
 
@@ -811,6 +997,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=due,
             list_runs_fn=lambda: [new_item], active_runs_fn=lambda repo: [],
             start_requeue_fn=start_fn, log_dir=self.tmp / "log",
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertEqual(calls, ["run-stopped-after-startup"])
         self.assertEqual(outcome.status, req.STATUS_STARTED)
@@ -846,6 +1033,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=config, now=DUE_AFTER_FALLBACK,
             list_runs_fn=lambda: [make_item(run_id="run-after-restart")], active_runs_fn=lambda repo: [],
             start_requeue_fn=self._never(calls), log_dir=self.tmp / "log",
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertEqual(calls, [])  # today's single slot was already spent in session1
         self.assertEqual(outcome.status, req.STATUS_NOTHING_TO_DO)
@@ -907,12 +1095,14 @@ class RestartBehaviorTests(unittest.TestCase):
                 requeue_config=req.RequeueConfig(enabled=True, daily_limit=2), now=NOW,
                 list_runs_fn=lambda: [item_a, item_b], active_runs_fn=lambda repo: [],
                 start_requeue_fn=start_fn, log_dir=self.tmp / "log",
+                activity_log_path=self.tmp / "activity.jsonl",
             )
             req.run_requeue_once(
                 state=state, global_config=auto.AutoModeConfig(enabled=True),
                 requeue_config=req.RequeueConfig(enabled=True, daily_limit=2), now=DUE_AFTER_FALLBACK,
                 list_runs_fn=lambda: [item_a, item_b], active_runs_fn=lambda repo: [],
                 start_requeue_fn=start_fn, log_dir=self.tmp / "log",
+                activity_log_path=self.tmp / "activity.jsonl",
             )
         self.assertEqual(len(calls), 1)  # 1 (pre-restart) + 1 == daily_limit 2 -- the other stays pending
         self.assertEqual(state.daily_count(today), 2)
@@ -945,6 +1135,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=NOW,
             list_runs_fn=flaky_list_runs, active_runs_fn=lambda repo: [],
             start_requeue_fn=self._never(start_calls), log_dir=self.tmp / "log",
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertTrue(state.startup_seeded)  # the retry (this cycle's 2nd call) succeeded
         self.assertEqual(start_calls, [])
@@ -959,6 +1150,7 @@ class RestartBehaviorTests(unittest.TestCase):
             requeue_config=req.RequeueConfig(enabled=True), now=later,
             list_runs_fn=flaky_list_runs, active_runs_fn=lambda repo: [],
             start_requeue_fn=self._never(start_calls), log_dir=self.tmp / "log",
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         self.assertEqual(start_calls, [])
         self.assertNotIn("run-old-quota", state.pending)

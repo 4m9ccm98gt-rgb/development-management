@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import reports_auto as auto
 from scripts.dev_control_center import reports_create_and_start as cas
 from scripts.dev_control_center import workflow_plan as wf
@@ -23,6 +24,23 @@ from scripts.dev_control_center import workflow_runner as wr
 KEYS = frozenset({"sample-repo"})
 BODY = "対象リポジトリ: sample-repo\n\n## 受入条件\n- 正しい結果が表示されること\n\n## 範囲外\n- 実行\n"
 TODAY = "2026-01-01"
+
+# DCC Task WF-6b (reviewer finding 3): every wr.run_workflow_runner_once call in this module must
+# pass its own tmp-backed activity_log_path -- a forgotten one would otherwise silently fall back
+# to activity_log.log_path()'s real %LOCALAPPDATA% default. Patching log_path itself to raise
+# turns that fallback into a loud test failure instead of a silent write to real user data.
+_log_path_guard = mock.patch.object(
+    activity_log, "log_path",
+    side_effect=AssertionError("activity_log.log_path() reached -- a test forgot to pass its own "
+                               "tmp-backed activity_log_path"))
+
+
+def setUpModule():
+    _log_path_guard.start()
+
+
+def tearDownModule():
+    _log_path_guard.stop()
 
 
 def task(tid="T1", **fields):
@@ -154,7 +172,12 @@ class RunWorkflowRunnerOnceTests(unittest.TestCase):
     def _run(self, tmp: Path, *, state, global_config=None, runner_config=None, global_config_path=None,
               runner_config_path=None, create_and_start_fn=None, busy_fn=None, repo_run_blocked_fn=None,
               reserve_fn=None, release_fn=None, run_lookup_fn=None, is_landed_fn=None, start_run_fn=None,
-              today=TODAY, stop_event=None, default_main_agent=None, default_review_agent=None):
+              today=TODAY, stop_event=None, default_main_agent=None, default_review_agent=None,
+              activity_log_path=None):
+        # DCC Task WF-6b (reviewer finding 3): every call here must stay off the real
+        # %LOCALAPPDATA% activity log -- default to this test's own tmp-backed path rather than
+        # None, which would fall back to activity_log.log_path()'s real on-disk default.
+        activity_log_path = activity_log_path if activity_log_path is not None else tmp / "activity.jsonl"
         return wr.run_workflow_runner_once(
             state=state, today=today, global_config=global_config, global_config_path=global_config_path,
             runner_config=runner_config, runner_config_path=runner_config_path,
@@ -166,6 +189,7 @@ class RunWorkflowRunnerOnceTests(unittest.TestCase):
             create_and_start_fn=create_and_start_fn, start_run_fn=start_run_fn,
             run_lookup_fn=run_lookup_fn, is_landed_fn=is_landed_fn, stop_event=stop_event,
             default_main_agent=default_main_agent, default_review_agent=default_review_agent,
+            activity_log_path=activity_log_path,
         )
 
     # ------------------------------------------------------------------ C1
@@ -806,6 +830,310 @@ class RunWorkflowRunnerOnceTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
 
+class ActivityLogTests(unittest.TestCase):
+    """DCC Task WF-6b 仕様3: 計画の自動実行の、タスクの開始・結果の取り込み・landed への変化・
+    一時停止・上限・対象外の記録点だけを検証する。実際の画面・AI・Orchestrator・外部通信は
+    使わず、保存先は一時フォルダに限る。"""
+
+    def _save_plan(self, tmp: Path, p: dict) -> None:
+        wf.save_plan(p, root=tmp / "plans", registered_keys=KEYS)
+
+    def _load_plan(self, tmp: Path, plan_id="Plan-1") -> dict:
+        return wf.load_plan(plan_id, root=tmp / "plans", registered_keys=KEYS)
+
+    def _state(self, tmp: Path) -> wr.WorkflowRunnerState:
+        return wr.WorkflowRunnerState(daily_count_path=tmp / "daily.json")
+
+    def _fake_create_and_start(self, calls, *, ok=True, reason="", run_dir=None):
+        def fn(shim, criteria_lines, **kwargs):
+            calls.append((shim.app_key, shim.identity, criteria_lines))
+            return cas.StartResult(ok, reason, run_dir=run_dir if ok else None)
+        return fn
+
+    def _run(self, tmp: Path, activity_path: Path, **kwargs):
+        kwargs.setdefault("state", self._state(tmp))
+        kwargs.setdefault("global_config", auto.AutoModeConfig(enabled=True))
+        kwargs.setdefault("runner_config", wr.WorkflowRunnerConfig(plans={"Plan-1": True}))
+        return wr.run_workflow_runner_once(
+            today=TODAY, plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
+            log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
+            busy_fn=kwargs.pop("busy_fn", lambda n: False),
+            repo_run_blocked_fn=kwargs.pop("repo_run_blocked_fn", lambda r: False),
+            activity_log_path=activity_path, **kwargs,
+        )
+
+    def _entries(self, activity_path: Path):
+        return activity_log.read_recent(path=activity_path)
+
+    def test_task_start_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task("T1", status="landed"), task("T2", depends_on=["T1"])))
+            calls = []
+            self._run(tmp, activity_path,
+                      create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-1")))
+            self.assertEqual(len(calls), 1)
+            entries = self._entries(activity_path)
+            starts = [e for e in entries if e.action == activity_log.ACTION_START]
+            self.assertEqual(len(starts), 1)
+            self.assertEqual(starts[0].role, activity_log.ROLE_AUTO_PLAN)
+            self.assertEqual(starts[0].target_type, activity_log.TARGET_PLAN_TASK)
+            self.assertEqual(starts[0].target_id, "Plan-1:T2")
+
+    def test_result_ingestion_candidate_ready_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task(status="running")))
+            wr._save_record("Plan-1", "T1", run_id="run-1", reason="", candidate_sha="", root=tmp / "records")
+            self._run(tmp, activity_path, global_config=auto.AutoModeConfig(enabled=False),
+                      runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": False}),
+                      run_lookup_fn=lambda _rid: {"stage": "completed", "final_result": {"code": "OK"},
+                                                  "candidate_sha": "a" * 40})
+            entries = self._entries(activity_path)
+            completes = [e for e in entries if e.action == activity_log.ACTION_COMPLETE
+                        and e.result == activity_log.RESULT_CANDIDATE]
+            self.assertEqual(len(completes), 1)
+            self.assertEqual(completes[0].target_id, "Plan-1:T1")
+
+    def test_result_ingestion_needs_human_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task(status="running")))
+            wr._save_record("Plan-1", "T1", run_id="run-1", reason="", candidate_sha="", root=tmp / "records")
+            self._run(tmp, activity_path, global_config=auto.AutoModeConfig(enabled=False),
+                      runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": False}),
+                      run_lookup_fn=lambda _rid: {"stage": "needs_human",
+                                                  "final_result": {"code": "REVIEWER_NEEDS_HUMAN"},
+                                                  "candidate_sha": "a" * 40})
+            entries = self._entries(activity_path)
+            matches = [e for e in entries if e.action == activity_log.ACTION_COMPLETE
+                      and e.result == activity_log.RESULT_NEEDS_HUMAN]
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].target_id, "Plan-1:T1")
+
+    def test_result_ingestion_failed_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task(status="running")))
+            wr._save_record("Plan-1", "T1", run_id="run-1", reason="", candidate_sha="", root=tmp / "records")
+            self._run(tmp, activity_path, global_config=auto.AutoModeConfig(enabled=False),
+                      runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": False}),
+                      run_lookup_fn=lambda _rid: {"stage": "failed", "final_result": {"code": "TASK_BLOCKED"},
+                                                  "candidate_sha": "a" * 40})
+            entries = self._entries(activity_path)
+            fails = [e for e in entries if e.action == activity_log.ACTION_FAIL
+                    and e.result == activity_log.RESULT_FAILED]
+            self.assertEqual(len(fails), 1)
+            self.assertEqual(fails[0].target_id, "Plan-1:T1")
+
+    def test_landed_transition_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task(status="candidate_ready")))
+            wr._save_record("Plan-1", "T1", run_id="run-1", reason="", candidate_sha="abc123",
+                            root=tmp / "records")
+            self._run(tmp, activity_path, global_config=auto.AutoModeConfig(enabled=False),
+                      runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": False}),
+                      is_landed_fn=lambda *a: True)
+            entries = self._entries(activity_path)
+            matches = [e for e in entries if e.action == activity_log.ACTION_COMPLETE
+                      and e.result == activity_log.RESULT_PROCEED]
+            self.assertEqual(len(matches), 1)
+            self.assertEqual(matches[0].target_type, activity_log.TARGET_PLAN_TASK)
+            self.assertEqual(matches[0].target_id, "Plan-1:T1")
+
+    def test_paused_by_failed_task_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task("T1", status="failed"), task("T2")))
+            calls = []
+            self._run(tmp, activity_path, create_and_start_fn=self._fake_create_and_start(calls))
+            self.assertEqual(calls, [])
+            entries = self._entries(activity_path)
+            waiting = [e for e in entries if e.action == activity_log.ACTION_WAITING]
+            self.assertEqual(len(waiting), 1)
+            self.assertEqual(waiting[0].role, activity_log.ROLE_AUTO_PLAN)
+            self.assertEqual(waiting[0].target_type, activity_log.TARGET_PLAN_TASK)
+            self.assertEqual(waiting[0].target_id, "Plan-1:T1")
+
+    def test_repo_busy_exclusion_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task()))
+            calls = []
+            self._run(tmp, activity_path, repo_run_blocked_fn=lambda r: True,
+                      create_and_start_fn=self._fake_create_and_start(calls))
+            self.assertEqual(calls, [])
+            entries = self._entries(activity_path)
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].role, activity_log.ROLE_AUTO_PLAN)
+            # Reviewer finding 2: the blocked task itself must be identifiable, not just "some
+            # plan was excluded" -- plan(task()) defaults to task_id "T1".
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_PLAN_TASK)
+            self.assertEqual(excluded[0].target_id, "Plan-1:T1")
+
+    def test_repo_busy_via_unresolvable_repo_names_the_blocked_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task()))
+            calls = []
+            kwargs = dict(
+                state=self._state(tmp), global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}),
+            )
+            # DCC Task WF-6b (reviewer finding 2): an unresolvable repository is the same
+            # START_BLOCK_REPO_BUSY reason as a confirmed-busy one (see _decide_plan_start) and
+            # must carry the same identifiable task_id -- not drop it just because this branch
+            # never even reaches repo_run_blocked_fn/busy_fn.
+            wr.run_workflow_runner_once(
+                today=TODAY, plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
+                log_dir=tmp / "log", resolve_repo_dir=lambda k: None, busy_fn=lambda n: False,
+                repo_run_blocked_fn=lambda r: False, activity_log_path=activity_path,
+                create_and_start_fn=self._fake_create_and_start(calls), **kwargs)
+            self.assertEqual(calls, [])
+            entries = self._entries(activity_path)
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_PLAN_TASK)
+            self.assertEqual(excluded[0].target_id, "Plan-1:T1")
+
+    def test_repo_busy_confirmation_exception_is_recorded_with_the_task_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task()))
+            calls = []
+
+            def raiser(_repo):
+                raise RuntimeError("cannot confirm")
+
+            kwargs = dict(
+                state=self._state(tmp), global_config=auto.AutoModeConfig(enabled=True),
+                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}),
+            )
+            # DCC Task WF-6b (reviewer finding 2): C4 ("確認できないときも進まない") already turns
+            # a repo_run_blocked_fn exception into START_BLOCK_REPO_BUSY -- this confirms that
+            # path's own activity record still names the task, not just "excluded, no target".
+            wr.run_workflow_runner_once(
+                today=TODAY, plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
+                log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
+                repo_run_blocked_fn=raiser, activity_log_path=activity_path,
+                create_and_start_fn=self._fake_create_and_start(calls), **kwargs)
+            self.assertEqual(calls, [])
+            entries = self._entries(activity_path)
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_PLAN_TASK)
+            self.assertEqual(excluded[0].target_id, "Plan-1:T1")
+
+    def test_record_unavailable_block_is_recorded(self):
+        """DCC Task WF-6b (reviewer finding 2): START_BLOCK_RECORD_UNAVAILABLE (the daily-record
+        read failing) was previously not handled by _log_plan_start_block at all -- nothing was
+        recorded. The target task is not known for this reason (it is plan-independent, decided
+        before any task is even picked -- see _global_start_block), so target_type stays
+        TARGET_NONE, same convention as the daily-limit record."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task()))
+            calls = []
+            blocked = wr._PlanStartDecision(wr.PlanStartBlockReason(wr.START_BLOCK_RECORD_UNAVAILABLE))
+            with mock.patch.object(wr, "_decide_plan_start", return_value=blocked):
+                self._run(tmp, activity_path, create_and_start_fn=self._fake_create_and_start(calls))
+            self.assertEqual(calls, [])
+            entries = self._entries(activity_path)
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].role, activity_log.ROLE_AUTO_PLAN)
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_NONE)
+
+    def test_record_unavailable_real_path_is_recorded_without_starting_anything(self):
+        """DCC Task WF-6b Repair (reviewer finding): the test above only drove
+        _log_plan_start_block directly by mocking _decide_plan_start -- it never actually passed
+        through the real stop point. In the real cycle, a daily record that cannot be parsed makes
+        WorkflowRunnerState.seed_startup fail at the very top of run_workflow_runner_once, which
+        returns STATUS_STARTUP_BLOCKED long before _decide_plan_start is ever called. This corrupts
+        the on-disk daily_count.json for real (no mock on _decide_plan_start, no mock on
+        WorkflowRunnerState) and checks that path records ACTION_EXCLUDED and never starts a task."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task()))
+            (tmp / "daily.json").write_text("not json{{{", encoding="utf-8")
+            calls = []
+            outcome = self._run(tmp, activity_path,
+                                create_and_start_fn=self._fake_create_and_start(calls))
+            self.assertEqual(outcome.status, wr.STATUS_STARTUP_BLOCKED)
+            self.assertEqual(calls, [])
+            entries = self._entries(activity_path)
+            excluded = [e for e in entries if e.action == activity_log.ACTION_EXCLUDED]
+            self.assertEqual(len(excluded), 1)
+            self.assertEqual(excluded[0].role, activity_log.ROLE_AUTO_PLAN)
+            self.assertEqual(excluded[0].target_type, activity_log.TARGET_NONE)
+
+    def test_daily_limit_reached_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task()))
+            calls = []
+            outcome = self._run(tmp, activity_path,
+                                runner_config=wr.WorkflowRunnerConfig(plans={"Plan-1": True}, daily_limit=0),
+                                create_and_start_fn=self._fake_create_and_start(calls))
+            self.assertEqual(outcome.status, wr.STATUS_LIMIT_REACHED)
+            entries = self._entries(activity_path)
+            self.assertTrue(any(e.action == activity_log.ACTION_LIMIT for e in entries))
+
+    def test_entry_has_only_fixed_words_id_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task("T1", status="landed"), task("T2", depends_on=["T1"])))
+            calls = []
+            self._run(tmp, activity_path,
+                      create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-1")))
+            raw = activity_path.read_text(encoding="utf-8")
+            for banned in ("C:\\", "/home/", "Traceback", BODY, "表示の修正"):
+                self.assertNotIn(banned, raw)
+
+    def test_activity_log_write_failure_never_changes_the_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            activity_path = tmp / "activity.jsonl"
+            self._save_plan(tmp, plan(task("T1", status="landed"), task("T2", depends_on=["T1"])))
+            calls = []
+
+            def broken_append(**kwargs):
+                raise activity_log.ActivityLogError("boom")
+
+            with mock.patch.object(activity_log, "append", side_effect=broken_append):
+                outcome = self._run(tmp, activity_path,
+                                    create_and_start_fn=self._fake_create_and_start(calls, run_dir=Path("/fake/run-1")))
+            self.assertEqual(outcome.status, wr.STATUS_DONE)
+            self.assertEqual(len(calls), 1)
+            reloaded = self._load_plan(tmp)
+            self.assertEqual(next(t for t in reloaded["tasks"] if t["task_id"] == "T2")["status"], "running")
+            self.assertFalse(activity_path.exists())
+
+    def test_approve_push_build_update_release_never_called_by_this_tasks_additions(self):
+        """DCC Task WF-6b -- the activity-logging additions themselves must never call approve/
+        push/BUILD/UPDATE/RELEASE, exactly like the module's own pre-existing guarantee."""
+        import scripts.dev_control_center.workflow_runner as module
+
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        for forbidden in ("candidate.approve(", "candidate.push(", "provenance.build(", "release_update.plan("):
+            self.assertNotIn(forbidden, source)
+
+
 class PlanStartBlockReasonTests(unittest.TestCase):
     """DCC Task WF-4a: wr.plan_start_block_reason -- workflow_plan_view.py's own read-only
     explanation of why plan_id's next task has not started. Every scenario below also drives the
@@ -850,7 +1178,7 @@ class PlanStartBlockReasonTests(unittest.TestCase):
             global_config=global_config, runner_config=runner_config,
             plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records", log_dir=tmp / "log",
             resolve_repo_dir=resolve_repo_dir, busy_fn=busy_fn, repo_run_blocked_fn=repo_run_blocked_fn,
-            create_and_start_fn=fake_create_and_start)
+            create_and_start_fn=fake_create_and_start, activity_log_path=tmp / "activity.jsonl")
         self.assertEqual(reason.code == wr.START_BLOCK_CAN_START, bool(calls))
         return reason
 
@@ -990,7 +1318,8 @@ class PlanStartBlockReasonTests(unittest.TestCase):
                 state=state, today=TODAY, global_config=global_config, runner_config=runner_config,
                 plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records", log_dir=tmp / "log",
                 resolve_repo_dir=lambda k: tmp / "repos" / k, busy_fn=lambda n: False,
-                repo_run_blocked_fn=lambda r: False, create_and_start_fn=fake_create_and_start)
+                repo_run_blocked_fn=lambda r: False, create_and_start_fn=fake_create_and_start,
+                activity_log_path=tmp / "activity.jsonl")
             self.assertEqual(calls, [])  # the real cycle, sharing the same state, is blocked too
 
     def test_record_unavailable_when_daily_count_file_is_corrupt(self):
@@ -1110,7 +1439,7 @@ class SharedStartJudgmentTests(unittest.TestCase):
                     plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
                     log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
                     busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False,
-                    create_and_start_fn=fake_create_and_start)
+                    create_and_start_fn=fake_create_and_start, activity_log_path=tmp / "activity.jsonl")
             self.assertEqual(calls, [])
 
     def test_start_eligible_task_starts_the_exact_task_the_shared_decision_names(self):
@@ -1140,7 +1469,7 @@ class SharedStartJudgmentTests(unittest.TestCase):
                     plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
                     log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
                     busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False,
-                    create_and_start_fn=fake_create_and_start)
+                    create_and_start_fn=fake_create_and_start, activity_log_path=tmp / "activity.jsonl")
             self.assertEqual(calls, [("Plan-1", "T2")])
             reloaded = wf.load_plan("Plan-1", root=tmp / "plans", registered_keys=KEYS)
             self.assertEqual(next(t for t in reloaded["tasks"] if t["task_id"] == "T2")["status"], "running")
@@ -1170,7 +1499,7 @@ class SharedStartJudgmentTests(unittest.TestCase):
                     plans_root=tmp / "plans", registered_keys=KEYS, records_dir=tmp / "records",
                     log_dir=tmp / "log", resolve_repo_dir=lambda k: tmp / "repos" / k,
                     busy_fn=lambda n: False, repo_run_blocked_fn=lambda r: False,
-                    create_and_start_fn=fake_create_and_start)
+                    create_and_start_fn=fake_create_and_start, activity_log_path=tmp / "activity.jsonl")
             self.assertEqual(calls, [])
             self.assertEqual(outcome.status, wr.STATUS_DISABLED)
 

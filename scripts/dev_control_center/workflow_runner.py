@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from . import activity_log
 from . import reports_auto as auto
 from . import reports_auto_progress as progress
 from . import reports_auto_start as start
@@ -105,6 +106,21 @@ _TERMINAL_STAGE_TO_STATUS = {
 _PAUSED_STATUSES = frozenset(("failed", "needs_human"))
 _RUNNING_STATUSES = frozenset(("running", "candidate_ready"))
 _BLOCKING_STATUSES = _PAUSED_STATUSES | _RUNNING_STATUSES
+
+
+def _plan_task_target_id(plan_id: str, task_id: str) -> str:
+    return f"{plan_id}:{task_id}"
+
+
+def _log_activity(*, action: str, target_type: str = activity_log.TARGET_NONE, target_id: str = "",
+                   result: str = activity_log.RESULT_NONE, path: Path | None = None) -> None:
+    """Best-effort (DCC Task WF-6b): a logging failure must never affect the outcome this
+    module's own cycle has already decided."""
+    try:
+        activity_log.append(role=activity_log.ROLE_AUTO_PLAN, action=action, target_type=target_type,
+                             target_id=target_id, result=result, path=path)
+    except activity_log.ActivityLogError:
+        pass
 
 
 def _root() -> Path:
@@ -558,7 +574,8 @@ def _hot_record(plan_id: str, task_id: str, *, state: "WorkflowRunnerState", rec
 
 
 def _refresh_hot_task(plan_id: str, plan: dict, *, state: "WorkflowRunnerState", records_dir, plans_root,
-                       registered_keys, resolve_repo_dir, run_lookup_fn, is_landed_fn, log_dir) -> None:
+                       registered_keys, resolve_repo_dir, run_lookup_fn, is_landed_fn, log_dir,
+                       activity_log_path: Path | None = None) -> None:
     """The plan's single running/candidate_ready task (by construction there is never more than
     one -- see _eligible_task), reflected into a fixed-word status, or left untouched when the Run
     record / candidate record cannot be read (C7/C8: 次の周期でもう一度見る)."""
@@ -585,6 +602,10 @@ def _refresh_hot_task(plan_id: str, plan: dict, *, state: "WorkflowRunnerState",
             state.forget_run(plan_id, hot["task_id"])
             _write_run_log_entry(plan_id=plan_id, task_id=hot["task_id"], result="landed",
                                   run_id=record["run_id"], log_dir=log_dir)
+            # DCC Task WF-6b 仕様3: landed への変化の記録点。
+            _log_activity(action=activity_log.ACTION_COMPLETE, target_type=activity_log.TARGET_PLAN_TASK,
+                          target_id=_plan_task_target_id(plan_id, hot["task_id"]),
+                          result=activity_log.RESULT_PROCEED, path=activity_log_path)
         return
 
     try:
@@ -613,6 +634,16 @@ def _refresh_hot_task(plan_id: str, plan: dict, *, state: "WorkflowRunnerState",
             state.forget_run(plan_id, hot["task_id"])  # terminal and non-candidate: never revisited
         _write_run_log_entry(plan_id=plan_id, task_id=hot["task_id"], result=new_status, reason=reason,
                              run_id=record["run_id"], log_dir=log_dir)
+        # DCC Task WF-6b 仕様3: 結果の取り込み（候補の用意／人の確認が必要／失敗）の記録点。
+        _result_action = activity_log.ACTION_FAIL if new_status == "failed" else activity_log.ACTION_COMPLETE
+        _result_word = {
+            "candidate_ready": activity_log.RESULT_CANDIDATE,
+            "needs_human": activity_log.RESULT_NEEDS_HUMAN,
+            "failed": activity_log.RESULT_FAILED,
+        }.get(new_status, activity_log.RESULT_NONE)
+        _log_activity(action=_result_action, target_type=activity_log.TARGET_PLAN_TASK,
+                      target_id=_plan_task_target_id(plan_id, hot["task_id"]), result=_result_word,
+                      path=activity_log_path)
 
 
 # --------------------------------------------------------------------------- 仕様1/2: 1タスク分の開始
@@ -625,11 +656,33 @@ def _current_runner(path, fallback):
     return fallback if path is None else load_workflow_runner_config(path)
 
 
+def _log_plan_start_block(plan_id: str, reason: "PlanStartBlockReason", path: Path | None) -> None:
+    """DCC Task WF-6b 仕様3: 一時停止／上限／対象外（他の処理が動いている、確認できない）の記録点
+    -- 自動実行の実際のサイクル（_start_eligible_task）が止めた理由だけを記録する。画面専用の
+    plan_start_block_reason はここを呼ばない（UIの再描画ごとに記録が増えてしまうため）。"""
+    if reason.code == START_BLOCK_PAUSED and reason.task_id:
+        _log_activity(action=activity_log.ACTION_WAITING, target_type=activity_log.TARGET_PLAN_TASK,
+                      target_id=_plan_task_target_id(plan_id, reason.task_id), path=path)
+    elif reason.code == START_BLOCK_LIMIT_REACHED:
+        _log_activity(action=activity_log.ACTION_LIMIT, path=path)
+    elif reason.code == START_BLOCK_REPO_BUSY:
+        if reason.task_id:
+            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_PLAN_TASK,
+                          target_id=_plan_task_target_id(plan_id, reason.task_id), path=path)
+        else:
+            _log_activity(action=activity_log.ACTION_EXCLUDED, path=path)
+    elif reason.code == START_BLOCK_RECORD_UNAVAILABLE:
+        # 確認できない (日次記録が読めない) -- 対象のタスクはまだ分からないため target_type は
+        # TARGET_NONE のまま。
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=path)
+
+
 def _start_eligible_task(plan_id: str, *, global_config, global_config_path, runner_config,
                           runner_config_path, state: WorkflowRunnerState, today: str, plans_root,
                           registered_keys, records_dir, resolve_repo_dir, busy_fn, repo_run_blocked_fn,
                           reserve_fn, release_fn, create_and_start_fn, start_run_fn, default_main_agent,
-                          default_review_agent, log_dir, stop_event) -> None:
+                          default_review_agent, log_dir, stop_event,
+                          activity_log_path: Path | None = None) -> None:
     try:
         plan = wf.load_plan(plan_id, root=plans_root, registered_keys=registered_keys)
     except wf.WorkflowStorageError:
@@ -651,6 +704,7 @@ def _start_eligible_task(plan_id: str, *, global_config, global_config_path, run
         busy_fn=busy_fn, repo_run_blocked_fn=repo_run_blocked_fn,
     )
     if decision.reason.code != START_BLOCK_CAN_START:
+        _log_plan_start_block(plan_id, decision.reason, activity_log_path)
         return
     task = decision.task
     repo_dir = decision.repo_dir
@@ -669,6 +723,11 @@ def _start_eligible_task(plan_id: str, *, global_config, global_config_path, run
         if not _set_task_status(plan_id, task["task_id"], expected="approved", new="running",
                                 root=plans_root, registered_keys=registered_keys):
             return  # plan changed under us (e.g. a human cancelled it) -- try again next cycle
+
+        # DCC Task WF-6b 仕様3: タスクの開始の記録点 -- compare-and-setが成功した、唯一かつ
+        # 権威ある「開始した」印（WorkflowRunnerStateのdocstring参照）そのものを記録する。
+        _log_activity(action=activity_log.ACTION_START, target_type=activity_log.TARGET_PLAN_TASK,
+                      target_id=_plan_task_target_id(plan_id, task["task_id"]), path=activity_log_path)
 
         # 回数と開始済みの印は、記録の保存の成否にかかわらず、開始の前に必ず数える: reserved here,
         # before the real entry point is ever called, so an abnormal exit out of
@@ -744,6 +803,10 @@ def _start_eligible_task(plan_id: str, *, global_config, global_config_path, run
                          root=plans_root, registered_keys=registered_keys)
         _save_record(plan_id, task["task_id"], run_id="", reason=REASON_START_FAILED, candidate_sha="",
                     root=records_dir)
+        # DCC Task WF-6b 仕様3: 結果の取り込み（失敗 -- Run自体が始まる前に失敗した場合）の記録点。
+        _log_activity(action=activity_log.ACTION_FAIL, target_type=activity_log.TARGET_PLAN_TASK,
+                      target_id=_plan_task_target_id(plan_id, task["task_id"]),
+                      result=activity_log.RESULT_FAILED, path=activity_log_path)
         _write_run_log_entry(plan_id=plan_id, task_id=task["task_id"], result="failed",
                              reason=REASON_START_FAILED, log_dir=log_dir)
     finally:
@@ -795,8 +858,9 @@ START_BLOCK_CAN_START = "CAN_START"
 class PlanStartBlockReason:
     """code is always one of the START_BLOCK_* constants above; task_id (an already-validated
     workflow_plan._identifier value, never free text) is only ever set for PAUSED/RUNNING/
-    DEPENDS_INCOMPLETE. The Japanese label text lives in workflow_plan_view.py, same as
-    STATUS_LABELS there for a task's own status -- this module stays judgment-only."""
+    DEPENDS_INCOMPLETE/REPO_BUSY (the eligible task whose own repository turned out busy or
+    unresolvable). The Japanese label text lives in workflow_plan_view.py, same as STATUS_LABELS
+    there for a task's own status -- this module stays judgment-only."""
 
     code: str
     task_id: str | None = None
@@ -895,13 +959,13 @@ def _decide_plan_start(
     except Exception:  # noqa: BLE001 - C4: cannot confirm this repo is free, same as the real check
         repo_dir = None
     if repo_dir is None:
-        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_REPO_BUSY))
+        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_REPO_BUSY, task["task_id"]))
     try:
         blocked = bool(repo_run_blocked_fn(str(repo_dir))) or bool(busy_fn(repo_dir.name))
     except Exception:  # noqa: BLE001
         blocked = True
     if blocked:
-        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_REPO_BUSY))
+        return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_REPO_BUSY, task["task_id"]))
 
     return _PlanStartDecision(PlanStartBlockReason(START_BLOCK_CAN_START), task=task, repo_dir=repo_dir)
 
@@ -972,6 +1036,7 @@ def run_workflow_runner_once(
     default_main_agent: str | None = None,
     default_review_agent: str | None = None,
     log_dir: Path | None = None,
+    activity_log_path: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> WorkflowRunnerCycleOutcome:
     """Run one cycle over every plan this DCC process knows the permission for (runner_config.plans'
@@ -984,6 +1049,10 @@ def run_workflow_runner_once(
 
     today = today if today is not None else auto.today_str()
     if not state.seed_startup(today):
+        # DCC Task WF-6b 仕様3: 確認できない（サイクル全体、日次記録が読めず起動できない）の記録点
+        # -- この先の _decide_plan_start には一度も到達しない（Reviewer finding: 以前はここが無記録
+        # のまま戻っていた）。
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
         return WorkflowRunnerCycleOutcome(STATUS_STARTUP_BLOCKED)
 
     global_config = global_config if global_config is not None else auto.load_auto_mode_config(global_config_path)
@@ -1013,7 +1082,8 @@ def run_workflow_runner_once(
             continue  # unreadable/corrupt -- try again next cycle, never guess
         _refresh_hot_task(plan_id, plan, state=state, records_dir=records_dir, plans_root=plans_root,
                           registered_keys=registered_keys, resolve_repo_dir=resolve_repo_dir,
-                          run_lookup_fn=run_lookup_fn, is_landed_fn=is_landed_fn, log_dir=log_dir)
+                          run_lookup_fn=run_lookup_fn, is_landed_fn=is_landed_fn, log_dir=log_dir,
+                          activity_log_path=activity_log_path)
 
     # C4: the same plan-independent half _decide_plan_start itself checks first for every plan --
     # never a second, separately-expressed "global off"/"limit reached" condition here.
@@ -1023,14 +1093,24 @@ def run_workflow_runner_once(
         return WorkflowRunnerCycleOutcome(STATUS_DISABLED)
     if cycle_blocked is not None and cycle_blocked.code == START_BLOCK_LIMIT_REACHED:
         _write_run_log_entry(plan_id="", task_id="", result=LIMIT_REACHED_TEXT, log_dir=log_dir)
+        # DCC Task WF-6b 仕様3: 計画の自動実行の上限（サイクル全体）の記録点。
+        _log_activity(action=activity_log.ACTION_LIMIT, path=activity_log_path)
         return WorkflowRunnerCycleOutcome(STATUS_LIMIT_REACHED, LIMIT_REACHED_TEXT)
+    if cycle_blocked is not None and cycle_blocked.code == START_BLOCK_RECORD_UNAVAILABLE:
+        # DCC Task WF-6b 仕様3: 確認できない（サイクル全体、1周目のplanループ後の再確認）の記録点。
+        _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
+        return WorkflowRunnerCycleOutcome(STATUS_STARTUP_BLOCKED)
 
     for plan_id, allowed in runner_config.plans.items():
         if stop_event is not None and stop_event.is_set():
             break
         cur_global = _current_global(global_config_path, global_config)
-        if _global_start_block(global_config=cur_global, runner_config=runner_config, state=state,
-                               daily_count_path=None, today=today) is not None:
+        reconfirm_blocked = _global_start_block(global_config=cur_global, runner_config=runner_config, state=state,
+                                                daily_count_path=None, today=today)
+        if reconfirm_blocked is not None:
+            if reconfirm_blocked.code == START_BLOCK_RECORD_UNAVAILABLE:
+                # DCC Task WF-6b 仕様3: 確認できない（計画ループ内の再確認）の記録点。
+                _log_activity(action=activity_log.ACTION_EXCLUDED, path=activity_log_path)
             break  # 仕様1: 全体の停止スイッチOFF/共有の1日の上限は即座に全体を止める
         if not allowed:
             continue  # この計画は対象外。他の計画は妨げない
@@ -1042,7 +1122,7 @@ def run_workflow_runner_once(
             reserve_fn=reserve_fn, release_fn=release_fn,
             create_and_start_fn=create_and_start_fn, start_run_fn=start_run_fn,
             default_main_agent=default_main_agent, default_review_agent=default_review_agent,
-            log_dir=log_dir, stop_event=stop_event,
+            log_dir=log_dir, stop_event=stop_event, activity_log_path=activity_log_path,
         )
 
     return WorkflowRunnerCycleOutcome(STATUS_DONE)

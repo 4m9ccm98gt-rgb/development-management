@@ -42,6 +42,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from . import activity_log
 from . import reports_auto as auto
 from . import reports_auto_approve as approve
 from . import reports_auto_start as start
@@ -76,6 +77,20 @@ STATUS_LIMIT_REACHED = "limit_reached"
 STATUS_DONE = "done"
 
 RUN_LOG_MAX_FILES = 50
+
+
+def _log_activity(*, action: str, target_type: str = activity_log.TARGET_NONE, target_id: str = "",
+                   result: str = activity_log.RESULT_NONE, reason: str = activity_log.REASON_NONE,
+                   path: Path | None = None) -> None:
+    """Best-effort (DCC Task WF-6b): a logging failure must never affect the chain this module's
+    own cycle has already decided (same contract as reports_auto_start._log_activity). `reason`,
+    when given, is one of this module's own STAGE_* words (== activity_log.STAGE_* literally --
+    same fixed vocabulary, never free text) so a 開始/完了/失敗 entry says which stage it is about."""
+    try:
+        activity_log.append(role=activity_log.ROLE_AUTO_APPROVE, action=action, target_type=target_type,
+                             target_id=target_id, result=result, reason=reason, path=path)
+    except activity_log.ActivityLogError:
+        pass
 
 
 def _root() -> Path:
@@ -496,8 +511,10 @@ def _process_candidate(app_key: str, repo_dir: Path, definition, candidate_obj, 
                        state: ProgressState, today: str, *, report_id: str, active_runs_fn, busy_fn, reserve_fn,
                        release_fn, run_dev_fn, approve_fn, push_fn, build_fn, dry_run_fn, latest_candidate_fn,
                        log_dir, labels_dir, global_config, start_config, approve_config,
-                       global_config_path, start_config_path, approve_config_path) -> None:
+                       global_config_path, start_config_path, approve_config_path,
+                       activity_log_path: Path | None = None) -> None:
     repo_name = repo_dir.name
+    report_target_id = start._hash(report_id)
 
     try:
         busy_run = bool(active_runs_fn(str(repo_dir)))
@@ -556,19 +573,38 @@ def _process_candidate(app_key: str, repo_dir: Path, definition, candidate_obj, 
         )
         for stage_name, call_stage in stage_calls:
             current_stage = stage_name
+            # DCC Task WF-6b 仕様1: 各段階の開始・完了・失敗の記録点 -- 段階そのものの判断/結果は
+            # 変えない。段階名は activity_log.STAGE_* と同じ固定語として reason に乗る（自由文では
+            # なく、既存の STAGE_RUN_DEV/STAGE_APPROVE/STAGE_PUSH/STAGE_BUILD/STAGE_DRY_RUN と同じ
+            # 文字列そのもの）。
+            _log_activity(action=activity_log.ACTION_START, target_type=activity_log.TARGET_REPORT,
+                          target_id=report_target_id, reason=current_stage, path=activity_log_path)
             if not boundary_ok() or not sha_unchanged():
+                _log_activity(action=activity_log.ACTION_FAIL, target_type=activity_log.TARGET_REPORT,
+                              target_id=report_target_id, result=activity_log.RESULT_NEEDS_HUMAN,
+                              reason=current_stage, path=activity_log_path)
                 finalize(STATE_NEEDS_HUMAN, current_stage)
                 return
             ok = call_stage()
             stages[current_stage] = RESULT_OK if ok else RESULT_FAIL
+            _log_activity(action=activity_log.ACTION_COMPLETE if ok else activity_log.ACTION_FAIL,
+                          target_type=activity_log.TARGET_REPORT, target_id=report_target_id,
+                          result=activity_log.RESULT_NONE if ok else activity_log.RESULT_NEEDS_HUMAN,
+                          reason=current_stage, path=activity_log_path)
             if not ok:
                 finalize(STATE_NEEDS_HUMAN, current_stage)
                 return
 
+        # DCC Task WF-6b 仕様1: RELEASE待ちの記録点。
+        _log_activity(action=activity_log.ACTION_COMPLETE, target_type=activity_log.TARGET_REPORT,
+                      target_id=report_target_id, result=activity_log.RESULT_CANDIDATE, path=activity_log_path)
         finalize(STATE_RELEASE_READY, "")
     except Exception:  # noqa: BLE001 - 仕様1: 例外も「失敗」。自動で進行中のまま残さない
         if current_stage and current_stage not in stages:
             stages[current_stage] = RESULT_FAIL
+        _log_activity(action=activity_log.ACTION_FAIL, target_type=activity_log.TARGET_REPORT,
+                      target_id=report_target_id, result=activity_log.RESULT_NEEDS_HUMAN,
+                      reason=current_stage, path=activity_log_path)
         _write_log_entry(log_dir=log_dir, app_key=app_key, sha=sha, state_word=STATE_NEEDS_HUMAN,
                          stages=stages, failed_stage=current_stage, files=decision.files, lines=decision.lines)
         _write_progress_label(root=labels_dir, app_key=app_key, report_id=report_id,
@@ -637,6 +673,7 @@ def run_auto_progress_once(
     dry_run_fn: Callable[[Path, object, object], bool] | None = None,
     log_dir: Path | None = None,
     labels_dir: Path | None = None,
+    activity_log_path: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> ProgressCycleOutcome:
     """Run one cycle (C1-C14). Each app is considered independently (仕様1: 他アプリを妨げない):
@@ -659,6 +696,7 @@ def run_auto_progress_once(
     if state.limit_reached(today, approve_config.daily_limit):
         _write_log_entry(log_dir=log_dir, app_key="不明", sha=None, state_word=LIMIT_REACHED_TEXT,
                          stages={}, failed_stage="", files=None, lines=None)
+        _log_activity(action=activity_log.ACTION_LIMIT, path=activity_log_path)
         return ProgressCycleOutcome(STATUS_LIMIT_REACHED, LIMIT_REACHED_TEXT)
 
     reports_config_fn = reports_config_fn or inbox.load_reports_config
@@ -695,6 +733,7 @@ def run_auto_progress_once(
         cur_approve = _current(approve_config, approve_config_path,
                                lambda p, _s=cur_start: approve.load_config(p, start_config=_s))
         if state.limit_reached(today, cur_approve.daily_limit):
+            _log_activity(action=activity_log.ACTION_LIMIT, path=activity_log_path)
             break  # 共有の1日の上限
         if not approve.allowed(app_key, cur_global, cur_start, cur_approve):
             continue  # このアプリは対象外。他アプリは妨げない
@@ -714,7 +753,7 @@ def run_auto_progress_once(
             log_dir=log_dir, labels_dir=labels_dir, global_config=cur_global,
             start_config=cur_start, approve_config=cur_approve,
             global_config_path=global_config_path, start_config_path=start_config_path,
-            approve_config_path=approve_config_path,
+            approve_config_path=approve_config_path, activity_log_path=activity_log_path,
         )
 
     return ProgressCycleOutcome(STATUS_DONE)

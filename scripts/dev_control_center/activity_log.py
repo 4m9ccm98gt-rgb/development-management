@@ -73,7 +73,11 @@ RESULTS = (RESULT_PROCEED, RESULT_NEEDS_HUMAN, RESULT_NOT_APPLICABLE, RESULT_FAI
 # 理由の固定語 (reason, optional): DCC Task WF-6a 仕様3 -- five AI-failure kinds, classified only
 # from the provider's own already-classified error_kind (tools.ai_orchestrator.providers.ERR_* --
 # itself the result of known-phrase matching against the AI's output; see classify_ai_failure),
-# plus the four fixed「人の確認が必要」reasons, plus "" (no reason recorded).
+# plus the four fixed「人の確認が必要」reasons, plus "" (no reason recorded), plus -- DCC Task
+# WF-6b 仕様1 -- the five fixed 自動承認 stage words below, reused on this same field (never a new
+# field/schema change) so a 開始/完了/失敗 entry can say *which* of RUN_DEV/自動承認/PUSH/BUILD/
+# UPDATE-DRY-RUN it is about. This field stays role-specific, as before: reports_auto_progress.py
+# is the only caller that ever passes one of the five STAGE_* words here.
 REASON_LOGIN_EXPIRED = "ログインの期限切れ"
 REASON_QUOTA_LIMIT = "使用枠の上限"
 REASON_CANNOT_LAUNCH = "起動できない"
@@ -84,10 +88,18 @@ REASON_AUTO_CONDITION_NOT_MET = "自動進行の条件を満たさない"
 REASON_PROTECTED_TARGET = "保護された対象"
 REASON_CANNOT_DECIDE = "判断できない"
 REASON_NONE = ""
+# DCC Task WF-6b 仕様1: 自動承認の5段階 -- 同じ文字列を reports_auto_progress.STAGE_* も持つ
+# (そちらからこのモジュールを import しているため、ここでは重複して定義し、import はしない)。
+STAGE_RUN_DEV = "RUN_DEV"
+STAGE_APPROVE = "自動承認"
+STAGE_PUSH = "PUSH"
+STAGE_BUILD = "BUILD"
+STAGE_DRY_RUN = "UPDATE-DRY-RUN"
+STAGES = (STAGE_RUN_DEV, STAGE_APPROVE, STAGE_PUSH, STAGE_BUILD, STAGE_DRY_RUN)
 REASONS = (
     REASON_LOGIN_EXPIRED, REASON_QUOTA_LIMIT, REASON_CANNOT_LAUNCH, REASON_CRASHED, REASON_TIMEOUT,
     REASON_SPEC_CHANGE_REQUEST, REASON_AUTO_CONDITION_NOT_MET, REASON_PROTECTED_TARGET, REASON_CANNOT_DECIDE,
-    REASON_NONE,
+    REASON_NONE, *STAGES,
 )
 
 # 対象 ID の形式 (target_id format), one fixed pattern per TARGET_TYPES member -- never a bare

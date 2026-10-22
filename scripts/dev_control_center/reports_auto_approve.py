@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 
+from . import activity_log
 from . import reports_auto as auto
 from . import reports_auto_start as start
 
@@ -28,6 +29,17 @@ DEFAULT_PROTECTED_PATHS = (".github/", "BUILD*.cmd", "*.spec", "requirements*.tx
                            "saved_data/", "app_data/", "config/", "outputs/", "print_work/",
                            "logs/", "log/", "backup/", "master_settings.json", "ui_prefs.json",
                            "closing_tasks.json", "monthly_tasks.json")
+
+
+def _log_activity(*, action: str, target_type: str = activity_log.TARGET_NONE, target_id: str = "",
+                   result: str = activity_log.RESULT_NONE, path: Path | None = None) -> None:
+    """Best-effort (DCC Task WF-6b): a logging failure must never affect the eligibility decision
+    refresh() has already computed and recorded via record_decision."""
+    try:
+        activity_log.append(role=activity_log.ROLE_AUTO_APPROVE, action=action, target_type=target_type,
+                             target_id=target_id, result=result, path=path)
+    except activity_log.ActivityLogError:
+        pass
 
 
 def root() -> Path:
@@ -283,7 +295,7 @@ def record_decision(app_key, report_id, candidate, decision, *, run_id=None, res
 
 def refresh(reports, global_config, start_config, config, *, records_dir=None,
             results_dir=None, log_dir=None, run_fn=read_run, changes_fn=read_changes, ci_fn=read_ci,
-            current_settings_fn=None):
+            current_settings_fn=None, activity_log_path=None):
     """Observation only. Manual Runs cannot enter: require Task 18's association first."""
     if global_config.enabled is not True:
         return
@@ -324,6 +336,11 @@ def refresh(reports, global_config, start_config, config, *, records_dir=None,
                             results_dir=results_dir, log_dir=log_dir)
         except OSError:
             pass
+        # DCC Task WF-6b 仕様1: 判定（対象／人の確認が必要）の記録点 -- 自動承認そのものの動作は変えない。
+        _log_activity(action=activity_log.ACTION_COMPLETE, target_type=activity_log.TARGET_REPORT,
+                      target_id=start._hash(report.report_id),
+                      result=activity_log.RESULT_NEEDS_HUMAN if decision.reasons else activity_log.RESULT_PROCEED,
+                      path=activity_log_path)
 
 
 def refresh_once():

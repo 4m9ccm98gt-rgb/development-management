@@ -55,6 +55,7 @@ import tempfile
 import threading
 from typing import Callable
 
+from . import activity_log
 from . import reports_auto as auto
 
 DEFAULT_DAILY_LIMIT = 2
@@ -78,6 +79,17 @@ LOG_RESULT_STARTED = "再実行開始"
 LOG_RESULT_START_FAILED = "再実行失敗"
 
 RUN_LOG_MAX_FILES = 50
+
+
+def _log_activity(*, action: str, target_type: str = activity_log.TARGET_NONE, target_id: str = "",
+                   result: str = activity_log.RESULT_NONE, path: Path | None = None) -> None:
+    """Best-effort (DCC Task WF-6b): a logging failure must never affect the outcome
+    run_requeue_once has already decided."""
+    try:
+        activity_log.append(role=activity_log.ROLE_AUTO_RETRY, action=action, target_type=target_type,
+                             target_id=target_id, result=result, path=path)
+    except activity_log.ActivityLogError:
+        pass
 
 
 def _root() -> Path:
@@ -561,6 +573,7 @@ def run_requeue_once(
     active_runs_fn: Callable[[str], list] | None = None,
     start_requeue_fn: Callable[..., Path] | None = None,
     log_dir: Path | None = None,
+    activity_log_path: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> RequeueCycleOutcome:
     """Run at most one automatic requeue per target repository this cycle (C1-C13). Nothing here
@@ -619,14 +632,23 @@ def run_requeue_once(
         lineage_root = state.lineage_root_for(run_id)
         if not required_fields_present(record):
             state.needs_human.add(run_id)
+            # DCC Task WF-6b 仕様2: 対象外（必要な情報が揃っていない）の記録点。
+            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_RUN,
+                          target_id=run_id, path=activity_log_path)
             continue
         if state.lineage_attempts.get(lineage_root, 0) >= MAX_LINEAGE_ATTEMPTS:
             state.needs_human.add(run_id)
+            # DCC Task WF-6b 仕様2: 対象外（再実行の上限に達した系列）の記録点。
+            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_RUN,
+                          target_id=run_id, path=activity_log_path)
             continue
         message = (record.get("final_result") or {}).get("message", "")
         delay = requeue_delay_minutes(message, now=now)
         state.pending[run_id] = _Pending(scheduled_at=now + timedelta(minutes=delay), lineage_root=lineage_root,
                                           attempt=state.lineage_attempts.get(lineage_root, 0) + 1)
+        # DCC Task WF-6b 仕様2: 予約（枠の回復を待つ）の記録点。
+        _log_activity(action=activity_log.ACTION_WAITING, target_type=activity_log.TARGET_RUN,
+                      target_id=run_id, path=activity_log_path)
 
     if stop_event is not None and stop_event.is_set():
         return RequeueCycleOutcome(STATUS_STOPPED)
@@ -659,6 +681,9 @@ def run_requeue_once(
         if not current_global.enabled or not current_requeue.enabled:
             continue  # C7: stays pending, retried next cycle
         if state.daily_count(today) >= current_requeue.daily_limit:
+            # DCC Task WF-6b 仕様2: 上限（本日の再実行の上限）の記録点。
+            _log_activity(action=activity_log.ACTION_LIMIT, target_type=activity_log.TARGET_RUN,
+                          target_id=run_id, path=activity_log_path)
             continue  # C6: stays pending (shown via limit_notice), retried once the day rolls over
 
         def _guarded_start(_record=record, _global_path=global_config_path, _requeue_path=requeue_config_path,
@@ -688,6 +713,9 @@ def run_requeue_once(
             state.needs_human.add(run_id)
             write_run_log_entry(repo=repo, original_run_id=run_id, new_run_id="", attempt=pending.attempt,
                                 outcome=LOG_RESULT_START_FAILED, log_dir=log_dir)
+            # DCC Task WF-6b 仕様2: 対象外（開始が拒否された、人の確認が必要）の記録点。
+            _log_activity(action=activity_log.ACTION_EXCLUDED, target_type=activity_log.TARGET_RUN,
+                          target_id=run_id, path=activity_log_path)
             continue
 
         new_run_id = Path(new_run_dir).name
@@ -698,6 +726,9 @@ def run_requeue_once(
         state.lineage_of[new_run_id] = pending.lineage_root
         write_run_log_entry(repo=repo, original_run_id=run_id, new_run_id=new_run_id, attempt=pending.attempt,
                             outcome=LOG_RESULT_STARTED, log_dir=log_dir)
+        # DCC Task WF-6b 仕様2: 開始（新しいRunを開始した）の記録点。
+        _log_activity(action=activity_log.ACTION_START, target_type=activity_log.TARGET_RUN,
+                      target_id=new_run_id, path=activity_log_path)
         started.append((run_id, new_run_id))
 
     if started:

@@ -21,11 +21,30 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from scripts.dev_control_center import activity_log
 from scripts.dev_control_center import reports_auto as auto
 from scripts.dev_control_center import reports_auto_approve as approve
 from scripts.dev_control_center import reports_auto_progress as progress
 from scripts.dev_control_center import reports_auto_start as start
 from scripts.dev_control_center import reports_inbox as inbox
+
+# DCC Task WF-6b (reviewer finding 3): every progress.run_auto_progress_once call in this module
+# must pass its own tmp-backed activity_log_path -- a forgotten one would otherwise silently fall
+# back to activity_log.log_path()'s real %LOCALAPPDATA% default. Patching log_path itself to raise
+# turns that fallback into a loud test failure instead of a silent write to real user data.
+_log_path_guard = mock.patch.object(
+    activity_log, "log_path",
+    side_effect=AssertionError("activity_log.log_path() reached -- a test forgot to pass its own "
+                               "tmp-backed activity_log_path"))
+
+
+def setUpModule():
+    _log_path_guard.start()
+
+
+def tearDownModule():
+    _log_path_guard.stop()
+
 
 SHA = "a" * 40
 SHA2 = "b" * 40
@@ -134,6 +153,7 @@ class Fixture:
             active_runs_fn=lambda repo: [],
             latest_candidate_fn=lambda repo, _c=self.candidate_obj: _c,
             log_dir=self.log_dir, labels_dir=self.labels_dir,
+            activity_log_path=self.tmp / "activity.jsonl",
         )
         base.update(overrides)
         return base
@@ -522,7 +542,7 @@ class RunOnceTests(unittest.TestCase):
                 records_dir=records_dir, results_dir=results_dir, resolve_repo_dir=lambda k, _r=repo_dir: _r,
                 resolve_repo_definition=lambda n, _d=definition: _d, active_runs_fn=lambda repo: [],
                 latest_candidate_fn=lambda repo, _c=candidate_obj: _c, log_dir=log_dir, labels_dir=labels_dir,
-                reserve_fn=reserve_fn, release_fn=release_fn, **fns)
+                reserve_fn=reserve_fn, release_fn=release_fn, activity_log_path=tmp / "activity.jsonl", **fns)
 
         return report_a, report_b, candidate_a, candidate_b, kwargs_for
 
@@ -865,7 +885,7 @@ class RunOnceTests(unittest.TestCase):
                 scan_fn=scan_fn_for(reports), records_dir=fx_busy.records_dir, results_dir=fx_busy.results_dir,
                 resolve_repo_dir=resolve_repo_dir, resolve_repo_definition=resolve_repo_definition,
                 active_runs_fn=active_runs, latest_candidate_fn=latest_candidate, log_dir=tmp / "log",
-                labels_dir=tmp / "labels", **fns)
+                labels_dir=tmp / "labels", activity_log_path=tmp / "activity.jsonl", **fns)
             self.assertEqual(len(calls), 5)
 
     # ------------------------------------------------------------------ C13
@@ -901,6 +921,124 @@ class RunOnceTests(unittest.TestCase):
             progress.run_auto_progress_once(**fx.kwargs(**fns))
             self.assertNotIn("RELEASE", calls)
             self.assertEqual(calls[-1], progress.STAGE_DRY_RUN)  # the chain stops at the plan, never beyond
+
+
+class ActivityLogTests(unittest.TestCase):
+    """DCC Task WF-6b 仕様1: 各段階（RUN_DEV/自動承認/PUSH/BUILD/DRY-RUN）の開始・完了・失敗、
+    RELEASE待ち、1日の上限に達した、の記録点だけを検証する。実際の画面・AI・Orchestrator・外部
+    通信は使わず、保存先は一時フォルダに限る。"""
+
+    def test_each_stage_start_and_complete_and_release_ready_are_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            activity_path = Path(tmp) / "activity.jsonl"
+            calls, fns = stage_spies()
+            progress.run_auto_progress_once(**fx.kwargs(activity_log_path=activity_path, **fns))
+            entries = activity_log.read_recent(path=activity_path)
+            self.assertTrue(entries)
+            for entry in entries:
+                self.assertEqual(entry.role, activity_log.ROLE_AUTO_APPROVE)
+                self.assertEqual(entry.target_type, activity_log.TARGET_REPORT)
+                self.assertEqual(entry.target_id, start._hash(fx.report_id))
+            starts = [e for e in entries if e.action == activity_log.ACTION_START]
+            completes = [e for e in entries if e.action == activity_log.ACTION_COMPLETE]
+            self.assertEqual(len(starts), 5)  # one per stage
+            # Reviewer finding 1: each start must itself say *which* stage it is about (reason ==
+            # one of activity_log.STAGES, the same fixed word reports_auto_progress.STAGE_* uses) --
+            # not merely five indistinguishable entries that happen to number five.
+            self.assertEqual(sorted(e.reason for e in starts), sorted(progress.STAGES))
+            # 5 per-stage completions + 1 overall RELEASE待ち completion.
+            self.assertEqual(len(completes), 6)
+            per_stage_completes = [e for e in completes if e.reason in progress.STAGES]
+            self.assertEqual(sorted(e.reason for e in per_stage_completes), sorted(progress.STAGES))
+            overall = [e for e in completes if e.reason == activity_log.REASON_NONE]
+            self.assertEqual(len(overall), 1)
+            self.assertEqual(overall[0].result, activity_log.RESULT_CANDIDATE)
+
+    def test_stage_failure_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            activity_path = Path(tmp) / "activity.jsonl"
+            calls, fns = stage_spies(fail_at=progress.STAGE_PUSH)
+            progress.run_auto_progress_once(**fx.kwargs(activity_log_path=activity_path, **fns))
+            entries = activity_log.read_recent(path=activity_path)
+            fails = [e for e in entries if e.action == activity_log.ACTION_FAIL]
+            self.assertEqual(len(fails), 1)
+            self.assertEqual(fails[0].result, activity_log.RESULT_NEEDS_HUMAN)
+            # Reviewer finding 1: the failed entry must itself name PUSH, not just "some stage
+            # failed" -- distinguishable from every other stage's own failure entry.
+            self.assertEqual(fails[0].reason, progress.STAGE_PUSH)
+            # the chain stopped: no overall RELEASE待ち completion was ever recorded.
+            self.assertFalse(any(e.result == activity_log.RESULT_CANDIDATE for e in entries))
+
+    def test_each_stages_own_start_and_failure_is_individually_identifiable(self):
+        """Reviewer finding 1: run every stage as the one that fails, in its own isolated tmp
+        dir, and confirm the saved record names exactly that stage -- a single aggregate count
+        (as the two tests above already also check) is not enough to prove *which* stage a given
+        entry is about; this proves it per stage, for both ACTION_START and ACTION_FAIL."""
+        with tempfile.TemporaryDirectory() as tmp_root:
+            for fail_stage in progress.STAGES:
+                with self.subTest(fail_stage=fail_stage):
+                    tmp = Path(tmp_root) / fail_stage.replace("-", "_")
+                    tmp.mkdir()
+                    fx = Fixture(tmp)
+                    activity_path = tmp / "activity.jsonl"
+                    calls, fns = stage_spies(fail_at=fail_stage)
+                    progress.run_auto_progress_once(**fx.kwargs(activity_log_path=activity_path, **fns))
+                    entries = activity_log.read_recent(path=activity_path)
+                    fails = [e for e in entries if e.action == activity_log.ACTION_FAIL
+                            and e.result == activity_log.RESULT_NEEDS_HUMAN]
+                    self.assertEqual(len(fails), 1)
+                    self.assertEqual(fails[0].reason, fail_stage)
+                    starts = [e for e in entries if e.action == activity_log.ACTION_START]
+                    self.assertIn(fail_stage, [e.reason for e in starts])
+                    # Every stage before the one that failed must have completed successfully
+                    # and be individually identifiable as such -- not just counted.
+                    completed_before = [e.reason for e in entries if e.action == activity_log.ACTION_COMPLETE
+                                       and e.reason in progress.STAGES]
+                    expected_before = progress.STAGES[:progress.STAGES.index(fail_stage)]
+                    self.assertEqual(sorted(completed_before), sorted(expected_before))
+
+    def test_daily_limit_reached_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            activity_path = Path(tmp) / "activity.jsonl"
+            fx.state.seed_startup("2026-02-01")
+            fx.state.record_daily_attempt("2026-02-01")
+            calls, fns = stage_spies()
+            outcome = progress.run_auto_progress_once(**fx.kwargs(
+                approve_config=approve.ApprovalConfig(apps={fx.app_key: True}, daily_limit=1),
+                activity_log_path=activity_path, **fns))
+            self.assertEqual(outcome.status, progress.STATUS_LIMIT_REACHED)
+            entries = activity_log.read_recent(path=activity_path)
+            self.assertTrue(any(e.action == activity_log.ACTION_LIMIT for e in entries))
+
+    def test_entry_has_only_fixed_words_id_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            activity_path = Path(tmp) / "activity.jsonl"
+            calls, fns = stage_spies()
+            progress.run_auto_progress_once(**fx.kwargs(activity_log_path=activity_path, **fns))
+            raw = activity_path.read_text(encoding="utf-8")
+            for banned in ("C:\\", "/home/", "Traceback", "本文", fx.report.report_id, fx.sha):
+                self.assertNotIn(banned, raw)
+
+    def test_activity_log_write_failure_never_changes_the_outcome(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fx = Fixture(Path(tmp))
+            activity_path = Path(tmp) / "activity.jsonl"
+            calls, fns = stage_spies()
+
+            def broken_append(**kwargs):
+                raise activity_log.ActivityLogError("boom")
+
+            with mock.patch.object(activity_log, "append", side_effect=broken_append):
+                outcome = progress.run_auto_progress_once(**fx.kwargs(activity_log_path=activity_path, **fns))
+            self.assertEqual(outcome.status, progress.STATUS_DONE)
+            self.assertEqual(calls, [progress.STAGE_RUN_DEV, progress.STAGE_APPROVE,
+                                     progress.STAGE_PUSH, progress.STAGE_BUILD, progress.STAGE_DRY_RUN])
+            self.assertTrue(any(e["state"] == progress.STATE_RELEASE_READY for e in fx.log_entries()))
+            self.assertFalse(activity_path.exists())
 
 
 class ProgressLabelTests(unittest.TestCase):
