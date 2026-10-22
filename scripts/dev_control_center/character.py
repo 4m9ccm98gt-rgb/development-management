@@ -97,6 +97,15 @@ class CharacterView:
         self.mood: str | None = None
         self.index = 0
         self.available = all((self.asset_dir / f"{mood}.png").is_file() for mood in MOODS)
+        self._worker = None
+        self._frame_key = None
+        if self.available and not self._owns_widget:
+            from .sprite_renderer import SpriteWorker, Image
+            if Image is not None:
+                self._worker = SpriteWorker(self.asset_dir)
+            else:
+                # Avoid the old full-sheet Tk decode stall without the optional renderer.
+                self.available = False
         if self.available:
             self.set_mood(IDLE)
             self._after_id = self.widget.after(1000 // FPS, self._tick)
@@ -106,6 +115,11 @@ class CharacterView:
             return
         mood = mood if mood in MOODS else IDLE
         if mood == self.mood:
+            return
+        if self._worker is not None:
+            self.mood = mood
+            self.index = 0
+            self._worker.request(mood, self.scale)
             return
         sheet = self._load(mood)
         if sheet is None:
@@ -137,6 +151,9 @@ class CharacterView:
         if type(scale) is not int or not 1 <= scale <= 4 or self._destroyed or self.scale == scale:
             return
         self.scale = scale
+        if getattr(self, '_worker', None) is not None:
+            self._worker.request(self.mood, scale)
+            return
         self._frame = tk.PhotoImage(master=self.widget, width=(FRAME_W+scale-1)//scale, height=(FRAME_H+scale-1)//scale)
         self.widget.itemconfigure(self._image_id, image=self._frame)
         if self._owns_widget:
@@ -144,6 +161,19 @@ class CharacterView:
         self._draw()
 
     def _draw(self) -> None:
+        if getattr(self, '_worker', None) is not None:
+            frames = self._worker.request(self.mood, self.scale)
+            if frames is None:
+                return
+            from PIL import ImageTk
+            key = (self.mood, self.scale)
+            if self._frame_key != key:
+                self._frame = ImageTk.PhotoImage(frames[self.index], master=self.widget)
+                self.widget.itemconfigure(self._image_id, image=self._frame)
+                self._frame_key = key
+            else:
+                self._frame.paste(frames[self.index])
+            return
         if self._sheet is None:
             return
         x = (self.index % COLUMNS) * FRAME_W
@@ -173,6 +203,8 @@ class CharacterView:
             except tk.TclError:
                 pass
         self._after_id = None
+        if getattr(self, '_worker', None) is not None:
+            self._worker.close()
         self._sheet = None
         self._frame = None
         try:

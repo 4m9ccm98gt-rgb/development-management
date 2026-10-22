@@ -5,11 +5,14 @@ partitions display cards. Feedback contains failure/stop confirmation, not an
 invented human reply. Archive is a view filter, never a Workflow operation.
 """
 import math
-import unicodedata
 import tkinter as tk
 from tkinter import ttk
 
 from .orchestrator_lanes import LaneBoard, LANES
+from .orchestrator_art import ArtWorker, Image
+from .orchestrator_cards import CanvasCard, PanelSurface
+if Image is not None:
+    from PIL import ImageTk
 
 BG = '#080f20'
 SURFACE = '#101c32'
@@ -92,6 +95,16 @@ class LoopBoard(LaneBoard):
         self.frame.rowconfigure(0, weight=1)
         for col, weight, minimum in ((0, 2, 200), (1, 6, 500), (2, 2, 210)):
             self.frame.columnconfigure(col, weight=weight, minsize=minimum)
+        self._art = ArtWorker()
+        self._resize_job = None
+        self._art_job = None
+        self._closed = False
+        self._ring_photo = None
+        self._ring_key = None
+        self._drawn_size = None
+        self._last_source = None
+        self._header_text = {}
+        self._surfaces = []
         self.on_select = on_select
         self.headers, self.bodies, self.canvases, self.cards = {}, {}, {}, {}
         self._widgets, self._data, self._positions = {}, {}, {}
@@ -145,13 +158,15 @@ class LoopBoard(LaneBoard):
         return body
 
     def _side(self, col, title, note):
-        panel = ttk.Frame(self.frame, style='OrchestratorLoop.TFrame', padding=8)
-        panel.grid(row=0, column=col, sticky='nsew')
+        surface = PanelSurface(self.frame, art=self._art, accent='#7086ff' if col == 0 else '#a47aff')
+        surface.grid(row=0, column=col, sticky='nsew')
+        self._surfaces.append(surface)
+        panel = surface.content
         panel.columnconfigure(0, weight=1)
         panel.rowconfigure(2, weight=1)
         ttk.Label(panel, text=title, style='OrchestratorLoop.Title.TLabel').grid(row=0, column=0, sticky='w')
         ttk.Label(panel, text=note, style='OrchestratorLoop.Section.TLabel', wraplength=210).grid(row=1, column=0, sticky='ew', pady=8)
-        canvas = tk.Canvas(panel, background=BG, highlightthickness=1, highlightbackground='#394b7d', width=200)
+        canvas = tk.Canvas(panel, background=BG, highlightthickness=0, width=200)
         canvas.grid(row=2, column=0, sticky='nsew')
         scroll = ttk.Scrollbar(panel, orient='vertical', command=canvas.yview)
         scroll.grid(row=2, column=1, sticky='ns')
@@ -180,23 +195,25 @@ class LoopBoard(LaneBoard):
         self._update_headers()
 
     def _card_text(self, card, name, title):
-        def short(text):
-            out, width = '', 0
-            for char in text:
-                width += 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
-                if width > 20:
-                    return out+'…'
-                out += char
-            return out
-        return f"{short(card['title'])}\n{short(card['state'])}\n{card['priority']} ／ 確認用カード"
+        ai = card.get('reviewer_ai') if name == 'Reviewing' else card.get('assigned_ai')
+        ai = ai if ai in ('codex', 'claude') else '未設定・確認待ち'
+        label = 'システム工程' if name == 'Testing' else '担当設定: '+ai
+        return f"{card['title']}\n{card['state']}\n{label}\n{card['priority']} ／ 確認用カード"
+
+    def _make_card(self, name, key):
+        return CanvasCard(self.bodies[name], accent=COLORS[name], art=self._art, command=lambda:self._activate(key))
 
     def _card_style(self, name):
         return f'Loop{name}.TButton'
 
     def set_model(self, model):
+        if model == self._last_source:
+            return
+        self._last_source = {group: [dict(card) for card in cards] for group, cards in model.items()}
         grouped = project_loop(model, self._positions)
         super().set_model(grouped)
-        self.hint.configure(text='円形矢印＝工程構成（移動履歴ではありません）。Testsはシステム工程。Manager AIの自律実行は未実装。')
+        self.hint.configure(text='円形矢印＝工程構成（移動履歴ではありません）。Testsはシステム工程。Manager AIの自律実行は未実装。'
+                            + (' ／ 装飾未取得：簡易描画' if not self._art.available else ''))
         self._update_headers()
 
     def _update_headers(self):
@@ -204,7 +221,10 @@ class LoopBoard(LaneBoard):
             values = [c for c in self._data.values() if c['lane'] == name]
             uncertain = sum(c.get('stale', False) or c.get('task_unknown', False) or c['priority'] == 'PX' for c in values)
             mark = ('▼ ' if self._archive_open else '▶ ') if name == 'Archive' else ''
-            self.headers[name].configure(text=f'{mark}{LABELS[name]}  {len(values)}件' + (f'／未確認 {uncertain}' if uncertain else ''))
+            text = f'{mark}{LABELS[name]}  {len(values)}件' + (f'／未確認 {uncertain}' if uncertain else '')
+            if self._header_text.get(name) != text:
+                self.headers[name].configure(text=text)
+                self._header_text[name] = text
 
     def _focus_card(self, button, canvas, card):
         self.hint.configure(text=card['hint'])
@@ -226,14 +246,59 @@ class LoopBoard(LaneBoard):
             self._character.move(w/2, h*.53)
 
     def _resize(self, event):
-        size = (max(500, event.width), max(630, event.height))
-        self.loop.configure(scrollregion=(0, 0, *size))
-        if size != self._size:
-            self._size = size
-            self._draw_ring()
+        self._pending_size = (max(500, event.width), max(630, event.height))
+        if self._pending_size == self._size:
+            return
+        if self._resize_job is not None:
+            self.loop.after_cancel(self._resize_job)
+        self._resize_job = self.loop.after(90, self._finish_resize)
+
+    def _finish_resize(self):
+        self._resize_job = None
+        if self._closed or self._pending_size == self._size:
+            return
+        self._size = self._pending_size
+        self.loop.configure(scrollregion=(0, 0, *self._size))
+        self._draw_ring()
+
+    def _paint_art(self):
+        self._art_job = None
+        if self._closed or not self._art.available:
+            return
+        key = ('ring', *self._size, '#000000', 'normal')
+        if self._ring_key == key:
+            return
+        raster = self._art.request(key)
+        if raster is None:
+            self._art_job = self.loop.after(60, self._paint_art)
+            return
+        self._ring_photo = ImageTk.PhotoImage(raster, master=self.loop)
+        self.loop.itemconfigure(self._background_item, image=self._ring_photo)
+        self._ring_key = key
+
+    def close(self):
+        self._closed = True
+        for job in (self._resize_job, self._art_job):
+            if job is not None:
+                self.loop.after_cancel(job)
+        for card in self._widgets.values():
+            card.destroy()
+        for surface in self._surfaces:
+            surface.close()
+        self._art.close()
+        self._ring_photo = None
 
     def _draw_ring(self):
+        if self._drawn_size == self._size:
+            return
+        self._drawn_size = self._size
         c = self.loop
+        if self._art_job is not None:
+            c.after_cancel(self._art_job)
+            self._art_job = None
+        if not hasattr(self, '_background_item'):
+            self._background_item = c.create_image(0, 0, anchor='nw')
+        self._paint_art()
         c.delete('ring')
         w, h = self._size
         cx, cy = w/2, h*.53
@@ -243,17 +308,19 @@ class LoopBoard(LaneBoard):
             return cx+r*math.cos(a), cy-r*math.sin(a)
         c.create_text(cx, 20, text='Development Loop', fill=FG, font=('Segoe UI', 18, 'bold'), tags='ring')
         c.create_text(cx, 48, text='実測段階のみ表示 ／ 自動指揮・架空の進捗なし', fill=MUTED, font=('Yu Gothic UI', 9), tags='ring')
-        c.create_oval(cx-radius*.78, cy-radius*.78, cx+radius*.78, cy+radius*.78, outline='#20375e', dash=(2, 5), tags='ring')
+        if not self._art.available:
+            c.create_oval(cx-radius*.78, cy-radius*.78, cx+radius*.78, cy+radius*.78, outline='#20375e', dash=(2, 5), tags='ring')
         panel_h = max(75, min(155, (h-150)*.27))
         badge_y = {}
         for name, start in zip(STATIONS, (135, 45, -45, -135)):
             coords = [n for angle in range(start-8, start-79, -3) for n in point(angle)]
-            c.create_line(*coords, fill='#17294a', width=12, smooth=True, tags='ring')
-            c.create_line(*coords, fill=COLORS[name], width=3, smooth=True, arrow='last', arrowshape=(13, 16, 6), tags='ring')
+            if not self._art.available:
+                c.create_line(*coords, fill=COLORS[name], width=3, smooth=True, arrow='last', tags='ring')
             x, y = point(start, radius*.83)
             y = min(y, h-panel_h-58) if start < 0 else max(108, y)
             badge_y[name] = y
-            c.create_oval(x-42, y-42, x+42, y+42, fill='#101a35', outline=COLORS[name], width=2, tags='ring')
+            if not self._art.available:
+                c.create_oval(x-42, y-42, x+42, y+42, fill='#101a35', outline=COLORS[name], width=2, tags='ring')
             icon = dict(Implementing='</>', Testing='⚗', Reviewing='✓', Repairing='⚒')[name]
             title = dict(Implementing='実装', Testing='テスト', Reviewing='レビュー', Repairing='修正')[name]
             c.create_text(x, y-9, text=icon, fill=COLORS[name], font=('Segoe UI', 19, 'bold'), tags='ring')
@@ -267,4 +334,5 @@ class LoopBoard(LaneBoard):
             c.coords(self._station_items[name], x, y)
             c.itemconfigure(self._station_items[name], width=panel_w, height=panel_h)
         c.tag_lower('ring')
+        c.tag_lower(self._background_item)
         self._position_character()

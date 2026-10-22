@@ -588,6 +588,8 @@ class OrchestratorWindow:
         if self._own_monitor:
             self.monitor.stop()
         self.character.destroy()
+        if hasattr(self.board, 'close'):
+            self.board.close()
         self.window.destroy()
 
     # ---------------------------------------------------------------- repo / drafts
@@ -914,11 +916,22 @@ class OrchestratorWindow:
     def _tick(self) -> None:
         if self._closed:
             return
+        self._batch_render = True
+        self._tick_dirty = False
+        try:
+            self._tick_updates()
+        finally:
+            self._batch_render = False
+        if not self._closed and self._tick_dirty:
+            self._render_selected()
+
+    def _tick_updates(self) -> None:
+        if self._closed:
+            return
         workflow = self._workflow_feed.poll()
         if workflow is not None:
             self._workflow_cards, self._workflow_notice = workflow
-            self._refresh_board()
-            self._render_selected()
+            self._tick_dirty = True
         try:
             self.window.after_cancel(self._tick_id)  # never keep two tick chains alive
         except (tk.TclError, AttributeError):
@@ -961,7 +974,6 @@ class OrchestratorWindow:
             self._set_log('')
             self._monitor_ok = False
             self.run_items = []
-            self._refresh_board()
             self._render_selected()
             self.notice_var.set("run状態を読み込めません: " + snapshot["error"])
             return
@@ -976,7 +988,6 @@ class OrchestratorWindow:
             self._selection_explicit = True
             self.monitor.select(None)
         self._render_runs()
-        self._refresh_board()
         for name, data in (snapshot.get("usage") or {}).items():
             if name in self.usage_vars:
                 rows = usage_mod.describe(data)
@@ -1027,6 +1038,9 @@ class OrchestratorWindow:
                 break
 
     def _render_selected(self) -> None:
+        if getattr(self, '_batch_render', False):
+            self._tick_dirty = True
+            return
         if hasattr(self, 'board'):
             self._refresh_board()
         item = self._selected_item()

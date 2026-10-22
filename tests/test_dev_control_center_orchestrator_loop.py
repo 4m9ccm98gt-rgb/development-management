@@ -21,6 +21,9 @@ class FakeWidget(Widget):
     def focus_get(self): return None
 
 class Canvas(FakeCanvas):
+    def create_image(self, *args, **kwargs): return self._create(args, kwargs)
+    def after(self, *args): return 1
+    def after_cancel(self, *args): pass
     def create_window(self, *args, **kwargs): return self._create(args, kwargs)
     def itemconfigure(self, *args, **kwargs): pass
     def tag_lower(self, *args): pass
@@ -87,6 +90,8 @@ class BoardTests(unittest.TestCase):
         for module in (loop, lanes):
             ctx = patch.object(module, 'ttk', widgets); ctx.start(); self.addCleanup(ctx.stop)
         ctx = patch.object(loop, 'tk', SimpleNamespace(Canvas=Canvas)); ctx.start(); self.addCleanup(ctx.stop)
+        for name, value in [('ArtWorker', lambda: Mock(available=False)), ('CanvasCard', FakeWidget), ('PanelSurface', lambda *args, **kwargs: Mock(content=FakeWidget()))]:
+            ctx = patch.object(loop, name, value); ctx.start(); self.addCleanup(ctx.stop)
         return loop.LoopBoard(FakeWidget(), Mock())
 
     def test_diff_selection_move_archive_and_resize(self):
@@ -108,6 +113,7 @@ class BoardTests(unittest.TestCase):
         station_ids = dict(board._station_items)
         for w, h in ((600, 650), (800, 840), (500, 250)):
             board._resize(SimpleNamespace(width=w, height=h))
+            board._finish_resize()
         self.assertEqual(board._station_items, station_ids)
         self.assertEqual(board._size, (500, 630))
         agent.set_scale.assert_called_with(2)

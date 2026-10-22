@@ -46,7 +46,7 @@ def workflow_cards(payload, memory=False):
                  f'確認済みRun段階: {stage} ／ 理由: {t["reason"]} ／ 次の対応: {SHORT_ACTIONS[t["action_code"]]}',
             detail=t['detail'] + ('\nWorkflow本文・Run履歴はこの安全な集約入力には含まれません。Run未関連の詳細仕様は既存Workflow画面で確認してください。' if not valid_id(rid) else ''),
             association_confirmed=not t['unknown'] and valid_id(rid), workflow_status=t['status'],
-            cause=t['cause'], task_unknown=t['unknown']))
+            cause=t['cause'], task_unknown=t['unknown'], assigned_ai=t['main_ai'], reviewer_ai=t['reviewer_ai']))
         cards[-1]['observed_stage'] = t['stage']
     return cards, 'Workflow：' + ('一部取得不能・確認待ち' if model['status'] == 'partial' else '取得済み') + ('／本体メモリ優先' if memory else '／ディスクのみ・メモリ未確認')
 
@@ -109,7 +109,7 @@ def build_lanes(workflow, runs, *, repo_names=(), monitor_ok=True):
             priority=priority, state=state,
             hint=f'repo: {repo} ／ 担当設定: {main} / {reviewer}\n{state}／Workflow TASKとの紐付け未確認',
             detail='Runの詳細・テスト・レビュー結果・ログは既存の詳細パネルで確認できます。',
-            observed_stage=stage if confirmed else 'unknown', task_unknown=not confirmed))
+            observed_stage=stage if confirmed else 'unknown', task_unknown=not confirmed, assigned_ai=main, reviewer_ai=reviewer))
     return result
 
 
@@ -249,12 +249,12 @@ class LaneBoard:
                     self._positions.pop(key, None)
                 fresh = key not in self._widgets
                 if fresh:
-                    button = ttk.Button(self.bodies[name], style=self._card_style(name), command=lambda k=key: self._activate(k))
+                    button = self._make_card(name, key)
                     if self._selected_key == key:
                         button.state(['selected'])
                     self._widgets[key] = button
-                    button.bind('<Enter>', lambda e, k=key: self.hint.configure(text=self._data[k]['hint']))
-                    button.bind('<FocusIn>', lambda e, k=key: self._focus_card(self._widgets[k], self.canvases[self._data[k]['lane']], self._data[k]))
+                    button.bind('<Enter>', lambda e, k=key: self.hint.configure(text=self._data[k]['hint']), add='+')
+                    button.bind('<FocusIn>', lambda e, k=key: self._focus_card(self._widgets[k], self.canvases[self._data[k]['lane']], self._data[k]), add='+')
                     button.bind('<Return>', lambda e, k=key: self._activate(k))
                     button.bind('<MouseWheel>', lambda e, k=key: self.canvases[self._data[k]['lane']].yview_scroll(-int(e.delta/120), 'units'))
                 button = self._widgets[key]
@@ -273,6 +273,9 @@ class LaneBoard:
                         button.focus_set()
                     self._positions[key] = (name, index)
             self.cards[name] = [self._widgets[c['key']] for c in ordered]
+
+    def _make_card(self, name, key):
+        return ttk.Button(self.bodies[name], style=self._card_style(name), command=lambda k=key: self._activate(k))
 
     def _card_text(self, card, name, title):
         return f'{title}\n{card["state"]}\n{card["priority"]} ／ {self.group_labels.get(name, name)}'
