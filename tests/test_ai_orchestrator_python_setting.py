@@ -64,7 +64,8 @@ class PythonSettingTests(unittest.TestCase):
         command = runner.call_args.args[0]
         env = runner.call_args.kwargs["env"]
         self.assertEqual(env["AI_ORCHESTRATOR_PYTHON"], str(self.exe.resolve()))
-        self.assertEqual(env["PATH"].split(os.pathsep)[0], str(self.root))
+        # Different Windows spellings (including 8.3 aliases) can refer to the same folder.
+        self.assertEqual(Path(env["PATH"].split(os.pathsep)[0]).resolve(), self.root.resolve())
         self.assertEqual(env["PATH"].split(os.pathsep)[1], "repo-venv")
         overrides = tomllib.loads("\n".join(command[i+1] for i, x in enumerate(command) if x == "-c"))
         self.assertEqual(overrides, {"shell_environment_policy": {"set": {

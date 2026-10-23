@@ -215,6 +215,16 @@ class StartValidationTests(HostCase):
 
 
 class WorkerRunTests(HostCase):
+    def test_cleanup_failure_preserves_candidate_and_is_reported(self):
+        with mock.patch.object(orch, "_remove_worktree", return_value=False):
+            run_dir, record, code = self.run_worker()
+        self.assertEqual((code, record["stage"]), (0, rs.COMPLETED))
+        self.assertTrue(record["candidate_sha"])
+        self.assertEqual(record["worktree_cleanup"], "retained")
+        self.assertIn("WORKTREE_CLEANUP_RETAINED", (run_dir / "events.log").read_text(encoding="utf-8"))
+        self.addCleanup(lambda: orch._remove_worktree(
+            orch.RepoBaseline(self.repo, "main", "", ""), Path(record["worktree"])))
+
     def test_worker_gives_saved_python_only_to_codex_main(self):
         exe = self.tmp / "python.exe"
         exe.write_bytes(b"fake; provider is fake too")
@@ -357,22 +367,24 @@ class GitHostTests(HostCase):
         committed = git(host.worktree, "show", "--name-only", "--format=", info["sha"]).split()
         self.assertEqual(committed, ["feature.txt"])
 
-    @unittest.skipUnless(os.name == "nt", "Windows ACL normalisation")
-    def test_windows_files_touched_by_a_sandboxed_agent_get_user_modify_rights(self):
+    def test_read_gate_never_changes_existing_acls(self):
         host = self.make_host()
         (host.worktree / "sub").mkdir()
         (host.worktree / "sub" / "made_by_agent.txt").write_text("x", encoding="utf-8")
         (host.worktree / "untouched_dir").mkdir()
-        host.normalize_permissions()
-        user = os.environ["USERDOMAIN"] + chr(92) + os.environ["USERNAME"]
+        paths = [host.worktree, host.worktree / "sub", host.worktree / "sub" / "made_by_agent.txt",
+                 host.worktree / "untouched_dir"]
 
-        def acl(path):
-            return subprocess.run(["icacls", str(path)], capture_output=True).stdout.decode("cp932", errors="replace")
+        def permissions():
+            if os.name == "nt":
+                return [subprocess.check_output(["icacls", str(path)]) for path in paths]
+            return [(path.stat().st_mode, path.stat().st_uid, path.stat().st_gid) for path in paths]
 
-        self.assertIn(user + ":(M)", acl(host.worktree / "sub" / "made_by_agent.txt"))
-        self.assertIn(user + ":(M)", acl(host.worktree / "sub"))
-        # only what the agent touched is changed: the ACE list of an unrelated empty dir is not modified
-        self.assertNotIn(user + ":(M)", acl(host.worktree / "untouched_dir"))
+        before = permissions()
+        with mock.patch("tools.ai_orchestrator.worktree_access.run_streaming") as process:
+            host.normalize_permissions()
+        process.assert_not_called()  # no icacls /grant, even for new files
+        self.assertEqual(permissions(), before)
 
     def test_agent_environment_never_writes_bytecode(self):
         self.assertEqual(providers.agent_env()["PYTHONDONTWRITEBYTECODE"], "1")
