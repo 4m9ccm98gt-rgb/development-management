@@ -37,7 +37,7 @@ class ReadGateTests(unittest.TestCase):
         host = GitHost(RepoBaseline(self.root, 'main', '', ''), self.root, 'test')
         original = Path.open
         def deny(path, *args, **kwargs):
-            if path == p:
+            if path.resolve(strict=False) == p.resolve(strict=False):
                 raise PermissionError(13, 'denied')
             return original(path, *args, **kwargs)
         for call in (host.snapshot, lambda: host.run_tests(['unused'], 1, None),

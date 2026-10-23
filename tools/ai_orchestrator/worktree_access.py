@@ -61,9 +61,11 @@ def verify_worktree_readable(worktree: Path) -> None:
     checked: set[Path] = set()
     rel = "."
     try:
-        _plain_directory(root)
-        if root.resolve(strict=True) != root:
-            raise ValueError("worktree path resolves elsewhere")
+        # Verify every ancestor before canonicalization. Windows can supply an
+        # 8.3 alias (RUNNER~1) for the same plain directory; that is not a link.
+        for directory in (root, *root.parents):
+            _plain_directory(directory)
+        root = root.resolve(strict=True)
         listing = git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z")
         if listing.stderr.strip():
             raise OSError("Git could not enumerate the complete worktree")
