@@ -71,7 +71,7 @@ python -m tests.benchmark_orchestrator_ui --tk
 
 ## Windows配布と依存
 
-`requirements-dcc-ui.txt` に **Pillow==12.2.0** を明記した。この作業では既存のPython環境・bootstrap・配布設定を変更せず、追加インストールもしない。検証に使用したWindows Pythonには既に導入済みだった。
+Pillow は任意の描画強化であり、DCC の起動・操作の必須依存ではない。標準ライブラリのみでも簡易表示で利用できる。`requirements-dcc-ui.txt` に **Pillow==12.2.0** を明記した。この作業では既存のPython環境・bootstrap・配布設定を変更せず、追加インストールもしない。検証に使用したWindows Pythonには既に導入済みだった。
 
 高品質描画には、**DCCを実際に起動するPython環境**へのPillow導入が必要:
 
@@ -79,7 +79,13 @@ python -m tests.benchmark_orchestrator_ui --tk
 <その環境のpython.exe> -m pip install -r requirements-dcc-ui.txt
 ```
 
-Pillow未導入時は固定文で簡易描画を示し、共有Canvasのアニメーションを無効にする。旧方式の長い全画像デコードへ戻さない。開始設定・利用枠・安全停止などの操作は維持する。通常の独立CharacterViewの既存経路は変更しない。
+DCC は Pillow を自動インストールしない。上記は希望する場合にリポジトリ直下で手動実行する手順である。
+
+Pillow未導入時は固定文「装飾未取得：簡易描画」を初期表示・更新・カードフォーカス時に示し、画像描画と共有Canvasのアニメーションを無効にする。旧方式の長い全画像デコードへ戻さない。開始設定・利用枠・安全停止などの操作は維持する。通常の独立CharacterViewの既存経路は変更しない。
+
+UI-B の回帰試験は `tests/test_dev_control_center_ui6.py` に追加。PIL の import 失敗を偽り、実装モジュールを読み込み直して偽Tkで画面生成・開始設定・Main/Reviewer・利用枠・ログコピー・停止確認・報告箱callback・カード選択／詳細・簡易描画を検証する。候補操作と外部プロセスは呼出し禁止の偽物とし、素材の代用品は一時フォルダに置く。既存試験の検証内容は変更していない。
+
+`python -B -m unittest tests.test_dev_control_center_ui5 tests.test_dev_control_center_ui6 tests.test_dev_control_center_orchestrator_loop -q`：44件成功。実Tkは起動していない。Pillowを外したPythonでの実起動、見た目、ダークモードは別途実機確認が必要。
 
 このrepoにはDCC専用の凍結ビルド定義が確認できなかったため、exe配布での自動同梱は保証しない。凍結配布を行う場合はPIL.ImageTk・_imagingtk・Tcl/Tkを含む成果物を、対象Python／Windowsで別途確認する。配布容量と画像キャッシュ分のメモリが増える。有料API・画像ダウンロードは追加していない。
 

@@ -19,6 +19,7 @@ BG = '#080f20'
 SURFACE = '#101c32'
 FG = '#dfebff'
 MUTED = '#9caed2'
+SIMPLE_RENDERING_NOTICE = ' ／ 装飾未取得：簡易描画'
 COLORS = dict(Implementing='#2ba8ff', Testing='#a47aff', Reviewing='#25dbe5', Repairing='#f3b666',
               ManagerPlan='#7086ff', ManagerWait='#7086ff', Approval='#a47aff', Decision='#a47aff',
               Feedback='#f3b666', Archive='#66799e')
@@ -115,7 +116,7 @@ class LoopBoard(LaneBoard):
         self._character = None
         self._size = (650, 630)
         self.hint = ttk.Label(self.frame, style='OrchestratorLoop.TLabel', wraplength=1100,
-            text='円形矢印は工程構成です。実際の失敗・移動履歴を示しません。Manager AIの自律実行は未実装です。')
+            text=self._hint_text('円形矢印は工程構成です。実際の失敗・移動履歴を示しません。Manager AIの自律実行は未実装です。'))
         self.hint.grid(row=1, column=0, columnspan=3, sticky='ew', pady=(6, 0))
         left, left_canvas = self._side(0, 'Manager', '読み取り・分析・提案のみ／自動指揮なし')
         self._section(left, left_canvas, 'ManagerPlan')
@@ -218,8 +219,7 @@ class LoopBoard(LaneBoard):
         self._last_source = {group: [dict(card) for card in cards] for group, cards in model.items()}
         grouped = project_loop(model, self._positions)
         super().set_model(grouped)
-        self.hint.configure(text='円形矢印＝工程構成（移動履歴ではありません）。Testsはシステム工程。Manager AIの自律実行は未実装。'
-                            + (' ／ 装飾未取得：簡易描画' if not self._art.available else ''))
+        self.hint.configure(text=self._hint_text('円形矢印＝工程構成（移動履歴ではありません）。Testsはシステム工程。Manager AIの自律実行は未実装。'))
         self._update_headers()
 
     def _update_headers(self):
@@ -232,8 +232,11 @@ class LoopBoard(LaneBoard):
                 self.headers[name].configure(text=text)
                 self._header_text[name] = text
 
+    def _hint_text(self, text):
+        return text + (SIMPLE_RENDERING_NOTICE if not self._art.available else '')
+
     def _focus_card(self, button, canvas, card):
-        self.hint.configure(text=card['hint'])
+        self.hint.configure(text=self._hint_text(card['hint']))
         bounds = canvas.bbox('all')
         if bounds:
             y = button.winfo_rooty() - canvas.winfo_rooty() + canvas.canvasy(0)
