@@ -406,6 +406,10 @@ class App(ttk.Frame):
         self.master.after(1100, self._start_requeue_loop)
         self.master.after(1300, self._start_auto_progress_loop)
         self.master.after(1500, self._start_workflow_runner_loop)
+        # DCC Task UI-C: open the Orchestrator window once, automatically, after startup -- off
+        # only when startup_display's own setting says OFF; a read or open failure here must
+        # never block DCC's own startup (see _show_orchestrator_on_startup).
+        self.master.after(1700, self._show_orchestrator_on_startup)
 
     # --- state read only through the epoch-stamped accessors -----------------
     @property
@@ -542,18 +546,13 @@ class App(ttk.Frame):
         title_bar.grid(row=0, column=0, sticky="ew")
         title_bar.columnconfigure(0, weight=1)
         ttk.Label(title_bar, textvariable=self.title_var, font=("Segoe UI", 18, "bold")).grid(row=0, column=0, sticky="w")
-        # Repo-independent: these open their own windows regardless of which repo (if any) is selected.
+        # Repo-independent: this opens its own window regardless of which repo (if any) is
+        # selected. DCC Task UI-C: 報告 / 開発計画 / 自動処理の状況 moved into the Orchestrator
+        # window's own header (orchestrator_view.py) -- this strip now only ever opens Orchestrator.
         top_buttons = ttk.Frame(title_bar)
         top_buttons.grid(row=0, column=1, sticky="e")
         self.orchestrator_button = ttk.Button(top_buttons, textvariable=self.orchestrator_button_var, command=self.open_orchestrator)
         self.orchestrator_button.pack(side="left", padx=(0, 6))
-        self.reports_button = ttk.Button(top_buttons, text="報告", command=self.open_reports_inbox)
-        self.reports_button.pack(side="left")
-        self.workflow_plan_button = ttk.Button(top_buttons, text="開発計画", command=self.open_workflow_plan)
-        self.workflow_plan_button.pack(side="left", padx=(6, 0))
-        self.automation_status_button = ttk.Button(
-            top_buttons, text="自動処理の状況", command=self.open_automation_status)
-        self.automation_status_button.pack(side="left", padx=(6, 0))
         ttk.Label(right, textvariable=self.meta_var, wraplength=580).grid(row=1, column=0, sticky="w", pady=(2, 10))
 
         # Local and GitHub state side by side: the candidate flow needs the vertical space at 1080x720.
@@ -663,6 +662,25 @@ class App(ttk.Frame):
         self.log.grid(row=0, column=0, sticky="nsew")
         ttk.Label(right, textvariable=self.banner_var).grid(row=8, column=0, sticky="w", pady=(8, 0))
 
+    def _show_orchestrator_on_startup(self) -> None:
+        """DCC Task UI-C 仕様3: open the Orchestrator window exactly once after startup, unless
+        startup_display's own setting is OFF. open_orchestrator's own single-window reuse means
+        this is a no-op if something already opened it first; any failure (reading the setting or
+        opening the window) is swallowed -- DCC's own startup and every other behaviour must keep
+        running regardless."""
+        if self._closed:
+            return
+        try:
+            from . import startup_display
+
+            if not startup_display.load_startup_display_settings().show_orchestrator:
+                return
+            self.open_orchestrator()
+        except Exception:  # noqa: BLE001 - startup auto-display must never block DCC from opening
+            import logging
+
+            logging.getLogger(__name__).exception("startup orchestrator auto-display failed")
+
     def open_orchestrator(self) -> None:
         """Open (or focus) the Orchestrator window. It is only a client of the run files."""
         from .orchestrator_view import OrchestratorWindow
@@ -679,6 +697,7 @@ class App(ttk.Frame):
             self.master, self.definitions, initial_repo=None,
             drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT,
             requeue_label_fn=self._requeue_label, on_reports_inbox=self.open_reports_inbox,
+            on_workflow_plan=self.open_workflow_plan, on_automation_status=self.open_automation_status,
             runner_state=self._workflow_runner_state)
 
     def open_reports_inbox(self) -> None:

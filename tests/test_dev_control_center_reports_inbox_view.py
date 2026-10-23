@@ -1405,9 +1405,16 @@ class AppReportsButtonTests(unittest.TestCase):
         self.destroyed = True
 
     def test_main_screen_wires_a_reports_button_to_open_reports_inbox(self):
-        source = inspect.getsource(dcc.App.__init__) + inspect.getsource(dcc.App._build)
-        self.assertIn("self.reports_button", source)
-        self.assertIn("command=self.open_reports_inbox", source)
+        """DCC Task UI-C: 報告 moved into the Orchestrator window's own header. The main screen
+        no longer builds its own 報告 button at all -- it only ever forwards open_reports_inbox
+        to OrchestratorWindow, whose header button calls it back through self._on_reports_inbox."""
+        from scripts.dev_control_center import orchestrator_view as orch_view
+
+        self.assertNotIn("self.reports_button", inspect.getsource(dcc.App))
+        self.assertIn("on_reports_inbox=self.open_reports_inbox", inspect.getsource(dcc.App.open_orchestrator))
+        header_source = inspect.getsource(orch_view.OrchestratorWindow.__init__)
+        self.assertIn("command=self._open_reports", header_source)
+        self.assertIn("self._on_reports_inbox()", inspect.getsource(orch_view.OrchestratorWindow._open_reports))
 
     def test_opening_twice_focuses_the_existing_window_instead_of_duplicating(self):
         self.app.open_reports_inbox()

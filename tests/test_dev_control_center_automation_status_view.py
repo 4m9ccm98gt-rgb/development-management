@@ -541,9 +541,20 @@ class AppAutomationStatusButtonTests(unittest.TestCase):
         self.destroyed = True
 
     def test_main_screen_wires_a_button_to_open_automation_status(self):
-        source = inspect.getsource(dcc.App.__init__) + inspect.getsource(dcc.App._build)
-        self.assertIn("self.automation_status_button", source)
-        self.assertIn("command=self.open_automation_status", source)
+        """DCC Task UI-C: 自動処理の状況 moved into the Orchestrator window's own header. The
+        main screen no longer builds its own 自動処理の状況 button at all -- it only ever
+        forwards open_automation_status to OrchestratorWindow, whose header button calls it back
+        through self._on_automation_status."""
+        from scripts.dev_control_center import orchestrator_view as orch_view
+
+        self.assertNotIn("self.automation_status_button", inspect.getsource(dcc.App))
+        self.assertIn(
+            "on_automation_status=self.open_automation_status", inspect.getsource(dcc.App.open_orchestrator))
+        header_source = inspect.getsource(orch_view.OrchestratorWindow.__init__)
+        self.assertIn("command=self._open_automation_status", header_source)
+        self.assertIn(
+            "self._on_automation_status()",
+            inspect.getsource(orch_view.OrchestratorWindow._open_automation_status))
 
     def test_opening_twice_focuses_the_existing_window_instead_of_duplicating(self):
         self.app.open_automation_status()

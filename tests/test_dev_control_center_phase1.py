@@ -400,20 +400,19 @@ class UiTests(unittest.TestCase):
 
 
 class OrchestratorAndReportsButtonPlacementTests(unittest.TestCase):
-    """DCC Task 10: the Orchestrator/報告 buttons move beside the title (top-right), independent
-    of repo selection and of the run/build/release enable logic that only ever touches the
-    lifecycle row. Verified by source inspection, not a real Tk window: App extends ttk.Frame
-    itself (`class App(ttk.Frame)`), so -- unlike OrchestratorWindow or ReportsInboxWindow,
-    which only read tk/ttk as module-level references their own tests can swap for fakes --
-    App's widget tree can't be rebuilt against fakes once scripts.dev_control_center.app is
-    already imported."""
+    """DCC Task UI-C: DCC's own top-right strip keeps only the Orchestrator button -- 報告 /
+    開発計画 / 自動処理の状況 moved into the Orchestrator window's own header (see
+    OrchestratorHeaderButtonTests in test_dev_control_center_orchestrator_lanes.py). Verified by
+    source inspection, not a real Tk window: App extends ttk.Frame itself
+    (`class App(ttk.Frame)`), so -- unlike OrchestratorWindow or ReportsInboxWindow, which only
+    read tk/ttk as module-level references their own tests can swap for fakes -- App's widget
+    tree can't be rebuilt against fakes once scripts.dev_control_center.app is already imported."""
 
     def test_buttons_are_built_in_their_own_frame_separate_from_the_lifecycle_row(self):
         source = inspect.getsource(dcc.App._build)
         top_buttons_block = source.split("top_buttons = ttk.Frame(title_bar)", 1)[1].split(
             "lifecycle = ttk.LabelFrame", 1)[0]
         self.assertIn("self.orchestrator_button = ttk.Button(top_buttons,", top_buttons_block)
-        self.assertIn("self.reports_button = ttk.Button(top_buttons,", top_buttons_block)
         self.assertNotIn("self.run_button", top_buttons_block)
         self.assertNotIn("self.build_button", top_buttons_block)
         self.assertNotIn("self.release_button", top_buttons_block)
@@ -423,23 +422,115 @@ class OrchestratorAndReportsButtonPlacementTests(unittest.TestCase):
         self.assertNotIn("orchestrator_button", source)
         self.assertNotIn("reports_button", source)
 
-    def test_all_top_buttons_remain_after_the_orchestrator_ui_merge(self):
-        """DCC Task UI-merge-A: the mainline buttons (Orchestrator, 報告, 開発計画,
-        自動処理の状況 from WF-6c) must all still be built in top_buttons after merging in the
-        Orchestrator UI branch, in the mainline order, with none dropped or duplicated."""
+    def test_only_the_orchestrator_button_remains_in_the_main_screens_top_buttons(self):
+        """DCC Task UI-C C1: 報告 / 開発計画 / 自動処理の状況 are no longer built on the main
+        screen at all -- they moved to the Orchestrator window's header instead of being
+        duplicated here."""
         source = inspect.getsource(dcc.App._build)
         top_buttons_block = source.split("top_buttons = ttk.Frame(title_bar)", 1)[1].split(
             "lifecycle = ttk.LabelFrame", 1)[0]
-        expected = [
-            "self.orchestrator_button = ttk.Button(top_buttons,",
-            "self.reports_button = ttk.Button(top_buttons,",
-            "self.workflow_plan_button = ttk.Button(top_buttons,",
-            "self.automation_status_button = ttk.Button(",
-        ]
-        positions = [top_buttons_block.index(marker) for marker in expected]
-        self.assertEqual(positions, sorted(positions))
-        for marker in expected:
-            self.assertEqual(top_buttons_block.count(marker), 1)
+        self.assertNotIn("self.reports_button", top_buttons_block)
+        self.assertNotIn("self.workflow_plan_button", top_buttons_block)
+        self.assertNotIn("self.automation_status_button", top_buttons_block)
+        self.assertEqual(top_buttons_block.count("ttk.Button(top_buttons,"), 1)
+        self.assertNotIn("self.reports_button", inspect.getsource(dcc.App))
+        self.assertNotIn("self.workflow_plan_button", inspect.getsource(dcc.App))
+        self.assertNotIn("self.automation_status_button", inspect.getsource(dcc.App))
+
+
+class StartupOrchestratorAutoDisplayTests(unittest.TestCase):
+    """DCC Task UI-C 仕様3: Orchestrator opens once after startup, settings-gated, failure-proof."""
+
+    def _holder(self):
+        holder = dcc.App.__new__(dcc.App)
+        holder._closed = False
+        holder.open_orchestrator = MagicMock()
+        return holder
+
+    def test_scheduled_once_after_the_other_startup_after_calls(self):
+        source = inspect.getsource(dcc.App.__init__)
+        after_block = source.split("self._build()", 1)[1]
+        self.assertIn("self.master.after(1700, self._show_orchestrator_on_startup)", after_block)
+        # Must come after every other periodic-loop startup call, not interleaved.
+        other_calls = ["_start_orchestrator_badge", "_start_auto_triage_loop", "_start_auto_start_loop",
+                       "_start_requeue_loop", "_start_auto_progress_loop", "_start_workflow_runner_loop"]
+        last_other = max(after_block.index(name) for name in other_calls)
+        self.assertGreater(after_block.index("_show_orchestrator_on_startup"), last_other)
+
+    def test_opens_once_when_setting_is_on(self):
+        from scripts.dev_control_center import startup_display as sd
+
+        holder = self._holder()
+        with patch.object(sd, "load_startup_display_settings",
+                          return_value=sd.StartupDisplaySettings(show_orchestrator=True)):
+            dcc.App._show_orchestrator_on_startup(holder)
+        holder.open_orchestrator.assert_called_once_with()
+
+    def test_does_not_open_when_setting_is_off(self):
+        from scripts.dev_control_center import startup_display as sd
+
+        holder = self._holder()
+        with patch.object(sd, "load_startup_display_settings",
+                          return_value=sd.StartupDisplaySettings(show_orchestrator=False)):
+            dcc.App._show_orchestrator_on_startup(holder)
+        holder.open_orchestrator.assert_not_called()
+
+    def test_off_setting_round_trips_through_a_real_temp_file(self):
+        from scripts.dev_control_center import startup_display as sd
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            sd.save_startup_display_settings(sd.StartupDisplaySettings(show_orchestrator=False), path)
+            self.assertFalse(sd.load_startup_display_settings(path).show_orchestrator)
+
+    def test_missing_or_corrupt_config_defaults_on(self):
+        from scripts.dev_control_center import startup_display as sd
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "nope" / "config.json"
+            self.assertTrue(sd.load_startup_display_settings(missing).show_orchestrator)
+            corrupt = Path(tmp) / "corrupt.json"
+            corrupt.write_text("not json", encoding="utf-8")
+            self.assertTrue(sd.load_startup_display_settings(corrupt).show_orchestrator)
+
+    def test_a_failure_opening_or_reading_settings_never_raises(self):
+        holder = self._holder()
+        with patch(
+                "scripts.dev_control_center.startup_display.load_startup_display_settings",
+                side_effect=OSError("boom")):
+            dcc.App._show_orchestrator_on_startup(holder)  # must not raise
+        holder.open_orchestrator = MagicMock(side_effect=RuntimeError("boom"))
+        from scripts.dev_control_center import startup_display as sd
+        with patch.object(sd, "load_startup_display_settings",
+                          return_value=sd.StartupDisplaySettings(show_orchestrator=True)):
+            dcc.App._show_orchestrator_on_startup(holder)  # must not raise
+        holder.open_orchestrator.assert_called_once_with()
+
+    def test_skipped_entirely_once_dcc_has_already_closed(self):
+        holder = self._holder()
+        holder._closed = True
+        dcc.App._show_orchestrator_on_startup(holder)
+        holder.open_orchestrator.assert_not_called()
+
+
+class NoLifecycleActionIsReachableFromTheUiCChangesTests(unittest.TestCase):
+    """DCC Task UI-C C7: moving the three buttons and adding the startup auto-display must never
+    call approve / PUSH / BUILD / UPDATE / RELEASE. Verified by source inspection of exactly the
+    code this task touches."""
+
+    def test_forbidden_actions_are_absent_from_the_touched_source(self):
+        forbidden = ["approve_candidate", "push_candidate", "discard_candidate",
+                     "push_build_dry_run", "revert_release", 'launch("build")', 'launch("release")',
+                     'launch("sync")']
+        touched = "\n".join([
+            inspect.getsource(dcc.App._show_orchestrator_on_startup),
+            inspect.getsource(dcc.App.open_orchestrator),
+            inspect.getsource(dcc.App.open_reports_inbox),
+            inspect.getsource(dcc.App.open_workflow_plan),
+            inspect.getsource(dcc.App.open_automation_status),
+        ])
+        for marker in forbidden:
+            self.assertNotIn(marker, touched)
 
 
 class OpenOrchestratorDefaultRepoTests(unittest.TestCase):

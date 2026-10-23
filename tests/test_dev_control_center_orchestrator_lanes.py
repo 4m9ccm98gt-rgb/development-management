@@ -1,5 +1,6 @@
 """Four lanes and unchanged operation wiring, with fake Tk/collectors only."""
 import copy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import unittest
@@ -165,6 +166,33 @@ class OperationWiringTests(FakeOrchestratorWindowCase):
         self.window._hide_details()
         self.assertFalse(self.window.details.grid_info())
 
+    def test_workflow_plan_and_automation_status_header_buttons_forward_to_their_callbacks(self):
+        """DCC Task UI-C C2/C7: 開発計画 and 自動処理の状況 in the Orchestrator header only ever
+        forward to the existing open_workflow_plan / open_automation_status DCC already had --
+        same optional-callback shape as 報告箱, and neither one starts a run or touches
+        approve/push/BUILD/UPDATE/RELEASE."""
+        workflow_plan = Mock()
+        automation_status = Mock()
+        window = view.OrchestratorWindow(
+            object(), self.definitions, initial_repo="app", drafts=self.drafts, on_apply=self.on_apply,
+            monitor=self.monitor, repos_root=Path("C:/repos"), auto_usage=False,
+            on_workflow_plan=workflow_plan, on_automation_status=automation_status)
+        self.assertTrue(window.workflow_plan_button.instate(['!disabled']))
+        self.assertTrue(window.automation_status_button.instate(['!disabled']))
+        with patch.object(view.orch, 'start_run') as start:
+            window._open_workflow_plan()
+            window._open_automation_status()
+            start.assert_not_called()
+        workflow_plan.assert_called_once_with()
+        automation_status.assert_called_once_with()
+
+    def test_workflow_plan_and_automation_status_buttons_disable_without_a_callback(self):
+        # self.window (built in setUp via make_window) never supplies either callback.
+        self.assertTrue(self.window.workflow_plan_button.instate(['disabled']))
+        self.assertTrue(self.window.automation_status_button.instate(['disabled']))
+        self.window._open_workflow_plan()  # a missing callback is a no-op, not an error
+        self.window._open_automation_status()
+
     def test_error_clears_lanes_and_disables_stale_selected_run(self):
         self.window.run_items = [run('testing')]
         self.window.selected_run = RID
@@ -181,6 +209,59 @@ class OperationWiringTests(FakeOrchestratorWindowCase):
             stop.assert_not_called()
             start.assert_not_called()
 
+    def test_close_never_touches_dccs_own_periodic_processing(self):
+        """DCC Task UI-C C6: closing the Orchestrator window must never reach into DCC's own
+        periodic processing. Rather than reinventing a disconnected tick, this drives the real
+        App._heartbeat_tick -- the actual Tk-main-thread stop-flag-plus-reschedule loop App wires
+        up via master.after(HEARTBEAT_MS, self._heartbeat_tick) -- against a fake App-shaped
+        fixture (fake master/selection/heartbeat, same SimpleNamespace-as-self convention
+        test_app_callback_and_existing_window_reuse below already uses for unbound App methods).
+        A real OrchestratorWindow is opened from that fixture through the real App.open_orchestrator
+        (tk/ttk/LaneBoard/WorkflowFeed/CharacterView are the fakes FakeOrchestratorWindowCase.setUp
+        already installs) and closed through its own real close(). The fixture's stop flag, its
+        heartbeat processing, and its next-tick reservation are driven and checked both before and
+        after that close -- no real Tk, thread, AI or Orchestrator run is started."""
+        from scripts.dev_control_center.app import App
+
+        master = Mock()
+        holder = SimpleNamespace(
+            orchestrator_window=None, master=master, definitions=self.definitions,
+            ai_drafts={}, apply_ai_candidate=Mock(), _requeue_label=Mock(),
+            _workflow_runner_state=object(), open_reports_inbox=Mock(),
+            open_workflow_plan=Mock(), open_automation_status=Mock(), current=None,
+            _closed=False, _heartbeat=Mock(beat=Mock(return_value=0.0)),
+            selection=Mock(), _drain_lifecycle_events=Mock(), _drain_orchestrator_badge=Mock(),
+            _set_button_states=Mock(), _current_orchestrator_roles=Mock(return_value=('codex', 'claude')))
+        holder._heartbeat_tick = lambda: App._heartbeat_tick(holder)  # self._heartbeat_tick, bound to holder
+
+        holder._heartbeat_tick()
+        self.assertEqual(master.after.call_count, 1)
+        self.assertEqual(master.after.call_args.args[1], holder._heartbeat_tick)
+        self.assertEqual(holder._heartbeat.beat.call_count, 1)
+        self.assertFalse(holder._closed)
+
+        App.open_orchestrator(holder)
+        window = holder.orchestrator_window
+        self.assertIsNotNone(window)
+
+        with patch.object(view.rs, 'force_stop') as stop, patch.object(view.orch, 'start_run') as start:
+            window.close()
+            stop.assert_not_called()
+            start.assert_not_called()
+
+        # DCC's own stop flag is unchanged, its processing still runs, and it still reserves
+        # its next tick -- the window's close() never reached into any of this.
+        self.assertFalse(holder._closed)
+        holder._heartbeat_tick()
+        self.assertEqual(holder._heartbeat.beat.call_count, 2)
+        self.assertEqual(holder.selection.pump.call_count, 2)
+        self.assertEqual(master.after.call_count, 2)
+
+        # The "Orchestrator" button can still open a fresh window afterwards (C6's other half).
+        window.exists = Mock(return_value=False)
+        App.open_orchestrator(holder)
+        self.assertIsNot(holder.orchestrator_window, window)
+
 
 class ThumbnailTests(unittest.TestCase):
     def test_thumbnail_uses_existing_sprite_copy_with_subsample(self):
@@ -196,14 +277,22 @@ class AppAndMonitorTests(unittest.TestCase):
     def test_app_callback_and_existing_window_reuse(self):
         from scripts.dev_control_center.app import App
         holder = SimpleNamespace(orchestrator_window=None, master=Mock(), definitions=[], ai_drafts={},
-            apply_ai_candidate=Mock(), _requeue_label=Mock(), _workflow_runner_state=object(), open_reports_inbox=Mock(), current=None)
+            apply_ai_candidate=Mock(), _requeue_label=Mock(), _workflow_runner_state=object(),
+            open_reports_inbox=Mock(), open_workflow_plan=Mock(), open_automation_status=Mock(), current=None)
         with patch.object(view, 'OrchestratorWindow') as factory:
             App.open_orchestrator(holder)
             self.assertIs(factory.call_args.kwargs['on_reports_inbox'], holder.open_reports_inbox)
+            self.assertIs(factory.call_args.kwargs['on_workflow_plan'], holder.open_workflow_plan)
+            self.assertIs(factory.call_args.kwargs['on_automation_status'], holder.open_automation_status)
             self.assertIs(factory.call_args.kwargs['runner_state'], holder._workflow_runner_state)
             App.open_orchestrator(holder)
             self.assertEqual(factory.call_count, 1)
             factory.return_value.focus.assert_called_once()
+            # DCC Task UI-C C6: once the window reports itself closed, the Orchestrator button
+            # must be able to open a fresh one again (not stay stuck reusing the dead window).
+            factory.return_value.exists.return_value = False
+            App.open_orchestrator(holder)
+            self.assertEqual(factory.call_count, 2)
         reports = SimpleNamespace(reports_window=Mock())
         App.open_reports_inbox(reports)
         reports.reports_window.focus.assert_called_once()

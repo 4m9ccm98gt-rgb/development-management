@@ -1047,9 +1047,18 @@ class AppWorkflowPlanButtonTests(unittest.TestCase):
         self.destroyed = True
 
     def test_main_screen_wires_a_button_to_open_workflow_plan(self):
-        source = inspect.getsource(dcc.App.__init__) + inspect.getsource(dcc.App._build)
-        self.assertIn("self.workflow_plan_button", source)
-        self.assertIn("command=self.open_workflow_plan", source)
+        """DCC Task UI-C: 開発計画 moved into the Orchestrator window's own header. The main
+        screen no longer builds its own 開発計画 button at all -- it only ever forwards
+        open_workflow_plan to OrchestratorWindow, whose header button calls it back through
+        self._on_workflow_plan."""
+        from scripts.dev_control_center import orchestrator_view as orch_view
+
+        self.assertNotIn("self.workflow_plan_button", inspect.getsource(dcc.App))
+        self.assertIn("on_workflow_plan=self.open_workflow_plan", inspect.getsource(dcc.App.open_orchestrator))
+        header_source = inspect.getsource(orch_view.OrchestratorWindow.__init__)
+        self.assertIn("command=self._open_workflow_plan", header_source)
+        self.assertIn(
+            "self._on_workflow_plan()", inspect.getsource(orch_view.OrchestratorWindow._open_workflow_plan))
 
     def test_open_workflow_plan_passes_the_shared_runner_state(self):
         self.app.open_workflow_plan()

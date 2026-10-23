@@ -218,6 +218,8 @@ class OrchestratorWindow:
                  repos_root: Path | None = None, auto_usage: bool = True,
                  requeue_label_fn: Callable[[str], str] | None = None,
                  on_reports_inbox: Callable[[], None] | None = None,
+                 on_workflow_plan: Callable[[], None] | None = None,
+                 on_automation_status: Callable[[], None] | None = None,
                  runner_state=None, workflow_collector=None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
@@ -228,6 +230,8 @@ class OrchestratorWindow:
         self.on_apply = on_apply
         self.repos_root = repos_root
         self._on_reports_inbox = on_reports_inbox
+        self._on_workflow_plan = on_workflow_plan
+        self._on_automation_status = on_automation_status
         self._workflow_cards = []
         self._monitor_ok = False
         self._workflow_notice = 'Workflow：確認待ち'
@@ -301,6 +305,18 @@ class OrchestratorWindow:
         reports.pack(side='left', padx=8)
         if on_reports_inbox is None:
             reports.state(['disabled'])
+        # DCC Task UI-C: 開発計画 / 自動処理の状況 moved here from DCC's own top-right strip --
+        # both just forward to the same open_workflow_plan / open_automation_status DCC already
+        # had; no new window-opening logic is added.
+        self.workflow_plan_button = ttk.Button(header, text='開発計画', command=self._open_workflow_plan)
+        self.workflow_plan_button.pack(side='left', padx=8)
+        if on_workflow_plan is None:
+            self.workflow_plan_button.state(['disabled'])
+        self.automation_status_button = ttk.Button(
+            header, text='自動処理の状況', command=self._open_automation_status)
+        self.automation_status_button.pack(side='left', padx=8)
+        if on_automation_status is None:
+            self.automation_status_button.state(['disabled'])
         ttk.Button(header, text='新規Task・開始設定', command=lambda: self._show_details('form')).pack(side='left', padx=4)
         ttk.Button(header, text='詳細を閉じる', command=self._hide_details).pack(side='left', padx=4)
         self.board = LaneBoard(outer, self._select_card)
@@ -490,6 +506,14 @@ class OrchestratorWindow:
     def _open_reports(self) -> None:
         if self._on_reports_inbox is not None:
             self._on_reports_inbox()  # App owns single-window reuse.
+
+    def _open_workflow_plan(self) -> None:
+        if self._on_workflow_plan is not None:
+            self._on_workflow_plan()  # App owns single-window reuse.
+
+    def _open_automation_status(self) -> None:
+        if self._on_automation_status is not None:
+            self._on_automation_status()  # App owns single-window reuse.
 
     def _show_details(self, page='run') -> None:
         self._outer.rowconfigure(3, weight=0 if page == 'form' else 1)
