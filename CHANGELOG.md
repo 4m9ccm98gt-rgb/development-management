@@ -1,5 +1,9 @@
 # 変更履歴
 
+## 2026-10-24 — photo-capture-relay を本番反映（旅券画像をDriveに残さない）
+
+用途が外国人宿泊者の旅券画像のため、Google側に画像を残さない方式へ変更し、フロントPCの本番に反映した。Apps Script を `67c79a7`（バージョン5）へ更新（`gas/Code.gs` は GitHub と SHA-256 一致を確認）、`appsscript.json` に Drive 拡張サービス（v3）を追加。フロントPCが使うデプロイ（ID先頭 `AKfycbwxoic…`）を更新しURLは不変、未使用の旧デプロイ（ID先頭 `AKfycbx-9HaREm…`、バージョン1）をアーカイブし有効なデプロイは1つ。取込済み（ack）は `Drive.Files.remove` で即時完全削除、未取込は `RETENTION_HOURS`（72時間）で完全削除、削除は受信フォルダ直下のファイルのみ、ack後の再送は clientId の目印（7日）で二重保存を防ぐ。旧ゴミ箱の写真は `previewTrashedInboxFiles`（39件: acked 39 / pending 0 / 判別不能 0、親が確認できないもの 0）で確認後、`purgeTrashedInboxFiles` で39件を完全削除（失敗0、ゴミ箱は空）。旧版が0件と表示した原因は `DriveApp.searchFiles` の検索そのもの（親情報は正常）で、ゴミ箱の検索は `Drive.Files.list` に変更（`67c79a7`）。repo の `gas/appsscript.json` に本番と同じ webapp 設定を追加（`b1a4327`、README に貼り替え時の注意）。送信テスト（スマホ → フロントPC取込 → ack）で受信フォルダにもゴミ箱にも写真が残らないことを確認。未確認: ack後の再送の実機確認、72時間後の削除の実動作。repo側は 65135a3 / 67c79a7 / b1a4327 を push 済み。development-management のBUILD / UPDATE / DEPLOYなし。
+
 ## 2026-10-04 — photo-capture-relay を新規プロジェクトとして登録
 
 スマホ写真を Google Apps Script ＋ 非公開Drive一時受信箱経由で事務所PCへ届け、共有フォルダの `<保存先>\yyyy-MM-dd\`（送信日JST、同名は連番、書き込み成功後だけ取込済み）へ保存する `service` 種別の新repoを作成。方式・安全境界は俺伝（food-cost-calculation-system）の Google 4G/5G 受信をコピーして独立（俺伝repoは無変更）。ユーザー決定: 実行は事務所の別PC、保存先は共有フォルダ、入口は48時間セッション（常駐側が自動更新しQRページを出力）、状態管理はDrive説明欄のみ（スプレッドシート不使用）、ack後はゴミ箱。GitHub private repo へ初回commit `b28560c` を push。`repo_types.toml`（service）、`dev_control_center_repos.toml`（branch / initial_tests / `[run.photo-capture-relay]`）、REPOSITORIES / PROJECT_STATUS / SYSTEM_OVERVIEW / VERSION_MATRIX / `projects/photo-capture-relay.md` に登録。確認状況: photo-capture-relay の pytest 52件成功、`RUN_DEV.cmd check` 起動確認、development-management の unittest 886件成功・`check_standards.py` ERROR 0。Apps Script 実デプロイ・スマホ実機・事務所PCのタスク登録は未確認。BUILD / UPDATE / DEPLOYなし。

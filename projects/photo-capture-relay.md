@@ -1,6 +1,6 @@
 # photo-capture-relay
 
-最終確認: 2026-10-04（JST）
+最終確認: 2026-10-24（JST）
 
 ## 正式ソース
 
@@ -21,21 +21,24 @@ GitHub: `https://github.com/4m9ccm98gt-rgb/photo-capture-relay`（private）。2
 - 状態管理は Drive ファイル説明欄のみ（スプレッドシートは使わない）。ack 後はゴミ箱へ（俺伝と同じ）。
 - 設定は `%LOCALAPPDATA%\PhotoCaptureRelay\config\settings.json`。repoには `settings.example.json`（ダミー）のみ。
 
-## 現在の状態
+## 現在の状態（2026-10-24）
 
-- 実装済み: `gas/`、PC側 `src/photo_capture_relay/`、`RUN_DEV.cmd`、`SHOW_CAPTURE_LINK_CLICK_ME.cmd`、
-  `INSTALL_TASK_CLICK_ME.cmd` / `UNINSTALL_TASK_CLICK_ME.cmd`、README / docs / AI_HANDOFF。
-- pytest 52件（Google通信モック）PASS。`RUN_DEV.cmd check` を一時 LOCALAPPDATA で起動確認。
+- **フロントPCで稼働中**。用途は外国人宿泊者の旅券画像の受け渡しのため、Googleドライブに画像を残さない方針（取込済みは ack で即時完全削除、未取込は `RETENTION_HOURS` = 72時間で完全削除）。
+- **本番の Apps Script はバージョン5 = `67c79a7`**（`gas/Code.gs` は GitHub と SHA-256 一致を確認済み）。有効なデプロイは1つ（ID先頭 `AKfycbwxoic…`、フロントPCが使用、URL不変）。未使用だった旧デプロイ（ID先頭 `AKfycbx-9HaREm…`、バージョン1）はアーカイブ済み。
+- 本番の `appsscript.json` は Drive 拡張サービス（v3）と webapp 設定（`executeAs` = `USER_DEPLOYING`、`access` = `ANYONE_ANONYMOUS`）を持つ。repo の `gas/appsscript.json` も同じ内容に揃えた（`b1a4327`）。
+- repo `main` の最新は `b1a4327`（pytest 148件 PASS）。実装: `gas/`（完全削除・clientId 目印7日・手動 preview / purge）、PC側 `src/photo_capture_relay/`、本番セットアップ・診断・配布スクリプト。
+- 2026-10-24 の本番作業（Apps Script エディタで手作業）: 上記の更新、`previewTrashedInboxFiles` で旧ゴミ箱 39件（acked 39 / pending 0 / 判別不能 0、親が確認できないもの 0）を確認、`purgeTrashedInboxFiles` で39件を完全削除（失敗0、ゴミ箱は空）。
+  旧版が0件と表示したのは `DriveApp.searchFiles` の検索自体が原因で、ファイルの親情報は正常だった。
+- 送信テスト: スマホ → フロントPC取込 → ack の後、写真が受信フォルダにもゴミ箱にも残らないことを確認済み。
 
 ## 未確認
 
-- Apps Script 実デプロイ（ユーザー作業）と実URLでの往復。
-- スマホ実機（カメラ直接起動・複数選択・HEIC・大きい写真）。
-- 事務所PCでのタスク登録（非管理者）、ログオン直後の共有フォルダ接続、SMB / NAS 上の連番 rename。
+- ack 後の再送が「受信済み」（clientId の目印）になる実機確認。
+- 未取込写真の72時間後の完全削除（`cleanupExpired` の実動作）。
+- スマホ実機の細部（HEIC・大きい写真・複数選択）、共有フォルダ上の連番 rename の長期運用。
+- フロントPC側の配布版（exe）の版の記録（この記録では未確認）。
 
 ## 次の作業
 
-1. ユーザーが README の手順で Apps Script をデプロイし、開発PCで `RUN_DEV.cmd once` の実往復を確認する。
-2. スマホ実機で送信・失敗時の再送を確認する。
-3. 事務所PCへ配置し、タスク登録・共有フォルダ保存を確認する。
-4. repo側 `AI_HANDOFF.md` の「GitHub 未作成」記載を現状へ更新する（初回commit時点の記述のまま）。
+1. 運用しながら上記の未確認を確認する。
+2. repo側 `AI_HANDOFF.md` を現状に合わせる（デプロイ済みの記述）。

@@ -184,14 +184,14 @@
 | GitHubリポジトリ名 | `photo-capture-relay`（private） |
 | 種別 | **service**（事務所PCでログオン時常駐） |
 | 最新確認タグ | なし |
-| `main` の最新コミット | `b28560c` — `Initial commit: photo-capture-relay`（2026-10-04） |
-| 実運用中バージョン | 未配置（事務所PCへの配置前） |
-| Apps Script デプロイ版 | 未デプロイ（ユーザー作業） |
+| `main` の最新コミット | `b1a4327` — `Add webapp settings to gas/appsscript.json to match production`（2026-10-24） |
+| 実運用中バージョン | フロントPCで稼働中（2026-10-24 時点。PC側配布版の版は未記録） |
+| Apps Script デプロイ版 | **バージョン5 = `67c79a7`**（`gas/Code.gs` は GitHub と SHA-256 一致を確認、2026-10-24）。有効デプロイは1つ（ID先頭 `AKfycbwxoic…`）、旧デプロイ（ID先頭 `AKfycbx-9HaREm…`、バージョン1）はアーカイブ済み |
 | 正式ソースのローカルパス | `C:\Users\suisy\Documents\Development\repos\photo-capture-relay` |
 | 使用Python | Python 3.13（開発PC）、リポジトリ直下の`.venv`。要件は 3.11+ |
 | 主要依存関係 | `Pillow 12.3.0`、`qrcode 8.2`（開発: `pytest 9.1.1`） |
-| 確認済み機能 | pytest 52件（Google通信モック）PASS、`RUN_DEV.cmd check` 起動確認（2026-10-04） |
-| 最終動作確認日 | 実機未確認（GAS実デプロイ・スマホ実機・事務所PC常駐） |
+| 確認済み機能 | pytest 148件（Google通信・Driveモック）PASS（2026-10-24）。本番: 旧ゴミ箱39件の完全削除、スマホ → フロントPC取込 → ack 後に受信フォルダにもゴミ箱にも写真が残らないこと（2026-10-24） |
+| 最終動作確認日 | 2026-10-24（本番の送信 → 取込 → 削除）。ack後の再送「受信済み」・72時間削除の実機確認は未 |
 
 ## 更新手順
 
