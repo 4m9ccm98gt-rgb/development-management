@@ -124,25 +124,39 @@ class PreviewController:
                 payload = collector.collect()
             except Exception:
                 payload = None  # never queue exception text, paths or tracebacks
+            running = None
             if not stop.is_set():
-                results.put(payload)
+                # DCC Task UI-D1: a second, independent read on the same worker/cycle -- never
+                # the generation/fingerprint collect() issues for AI-decision validation.
+                try:
+                    running = collector.collect_running_tasks()
+                except Exception:
+                    running = None
+                if not isinstance(running, list):
+                    running = None
+            if not stop.is_set():
+                results.put((payload, running))
         try:
             self._launch(read)
         except Exception:
-            self._results.put(None)
+            self._results.put((None, None))
 
     def _poll(self):
         self._poll_id = None
         if self._closed:
             return
         try:
-            payload = self._results.get_nowait()
+            item = self._results.get_nowait()
         except queue.Empty:
             pass
         else:
+            payload, running = item if isinstance(item, tuple) and len(item) == 2 else (item, None)
             self._busy = False
             snapshot, status = preview_data(payload, memory_available=self.memory_available)
             self.view.set_snapshot(snapshot)  # replaces stale rows on EVERY result, including failure
+            set_running = getattr(self.view, 'set_running_tasks', None)
+            if set_running is not None:
+                set_running(running if isinstance(running, list) else [])
             if self._inbox is not None or self._overview is not None or self._map is not None:
                 data = payload if isinstance(payload, dict) else {}
                 inbox_model = build_inbox(snapshot,

@@ -1020,5 +1020,45 @@ class LoadAutoStartRecordsTests(unittest.TestCase):
             self.assertEqual(results[("app", "r1")].result, auto_start.RESULT_CANDIDATE)
 
 
+class StartedRunIdsTests(unittest.TestCase):
+    """DCC Task UI-D1 (C1/C5): the Manager screen's 報告 出どころ signal reads only these local
+    records, never the shared report-inbox files themselves."""
+
+    def test_collects_every_recorded_run_id_across_apps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "records"
+            auto_start._save_record(auto_start.AutoStartRecord("app1", "r1", "2026-01-01T00:00:00Z",
+                                                                 "20261021-000000-000001"), root=root)
+            auto_start._save_record(auto_start.AutoStartRecord("app2", "r2", "2026-01-01T00:00:00Z",
+                                                                 "20261021-000000-000002"), root=root)
+            self.assertEqual(auto_start.started_run_ids(root=root),
+                             {"20261021-000000-000001", "20261021-000000-000002"})
+
+    def test_pending_or_failed_start_without_a_run_id_is_excluded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "records"
+            auto_start._save_record(auto_start.AutoStartRecord("app1", "r1", "2026-01-01T00:00:00Z"), root=root)
+            self.assertEqual(auto_start.started_run_ids(root=root), set())
+
+    def test_missing_or_corrupt_records_root_degrades_to_empty_set_without_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist"
+            self.assertEqual(auto_start.started_run_ids(root=missing), set())
+            root = Path(tmp) / "records"
+            root.mkdir()
+            (root / "broken.json").write_text("{", encoding="utf-8")
+            self.assertEqual(auto_start.started_run_ids(root=root), set())
+
+    def test_never_writes_or_modifies_any_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "records"
+            auto_start._save_record(auto_start.AutoStartRecord("app1", "r1", "2026-01-01T00:00:00Z",
+                                                                 "20261021-000000-000003"), root=root)
+            before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            auto_start.started_run_ids(root=root)
+            after = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+            self.assertEqual(before, after)
+
+
 if __name__ == "__main__":
     unittest.main()

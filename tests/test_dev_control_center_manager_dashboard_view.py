@@ -143,6 +143,31 @@ class ModelTests(unittest.TestCase):
             self.assertNotIn('SECRET', str(view.display_model(source)))
 
 
+class RunningTasksModelTests(unittest.TestCase):
+    """DCC Task UI-D1: pure allowlisted presentation for 動いているタスク rows."""
+
+    def test_valid_rows_pass_through_with_fixed_labels(self):
+        rows = [dict(run_id=RID, repo='sample-repo', stage='testing', origin='報告',
+                     main_agent='claude', review_agent='codex')]
+        self.assertEqual(view.running_tasks_model(rows),
+                         [dict(run_id=RID, repo='sample-repo', stage_label='テスト中', origin_label='報告')])
+
+    def test_invalid_run_id_stage_or_origin_is_dropped(self):
+        base = dict(run_id=RID, repo='sample-repo', stage='testing', origin='報告')
+        for bad in (dict(base, run_id='../secret'), dict(base, stage='completed'),
+                    dict(base, stage='created'), dict(base, origin='SECRET'),
+                    dict(base, run_id=None), {}, None, []):
+            self.assertEqual(view.running_tasks_model([bad]), [])
+        self.assertEqual(view.running_tasks_model(None), [])
+        self.assertEqual(view.running_tasks_model('not-a-list'), [])
+
+    def test_unsafe_repo_value_becomes_unknown_not_leaked(self):
+        secret = 'C:\\private\\data\nAI output'
+        rows = view.running_tasks_model([dict(run_id=RID, repo=secret, stage='testing', origin='報告')])
+        self.assertEqual(rows[0]['repo'], view.UNKNOWN)
+        self.assertNotIn('private', str(rows))
+
+
 class WindowTests(unittest.TestCase):
     def test_notebook_dark_elements_states_and_light_restore(self):
         style, notebook = FakeStyle(), Widget()
@@ -192,6 +217,25 @@ class WindowTests(unittest.TestCase):
             self.assertIn('TASKを選択', window.detail.options['text'])
             window.window.bindings['<<ThemeChanged>>'](None)
 
+    def test_set_running_tasks_renders_badges_and_clears(self):
+        """DCC Task UI-D1: widget-level check only -- the update-path (appear/disappear through
+        PreviewController) is covered separately in test_dev_control_center_manager_dashboard_preview."""
+        fake_ttk = SimpleNamespace(**{name: Widget for name in
+            ('Frame', 'Label', 'LabelFrame', 'Treeview', 'Scrollbar')}, Style=FakeStyle)
+        with patch.object(view, 'tk', SimpleNamespace(Toplevel=Widget)), \
+             patch.object(view, 'ttk', fake_ttk), \
+             patch('subprocess.Popen', side_effect=AssertionError('no process')):
+            window = view.ManagerDashboardWindow(None, snapshot())
+            self.assertEqual(window.running_tree.rows, {})
+            window.set_running_tasks([dict(run_id=RID, repo='sample-repo', stage='testing', origin='報告')])
+            self.assertEqual(len(window.running_tree.rows), 1)
+            values = next(iter(window.running_tree.rows.values()))
+            self.assertEqual(values, ('報告', RID, 'sample-repo', 'テスト中'))
+            window.set_running_tasks([])
+            self.assertEqual(window.running_tree.rows, {})
+            window.set_running_tasks('not-a-list')
+            self.assertEqual(window.running_tree.rows, {})
+
     def test_theme_matches_dcc_and_light_restores_native_styles(self):
         style = FakeStyle()
         window, tree, horizontal, vertical = Widget(), Widget(), Widget(), Widget()
@@ -217,6 +261,15 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(tree.options['style'], 'Treeview')
         self.assertEqual(horizontal.options['style'], 'Horizontal.TScrollbar')
         self.assertEqual(vertical.options['style'], 'Vertical.TScrollbar')
+
+    def test_apply_table_theme_styles_extra_trees_without_their_own_scrollbars(self):
+        style = FakeStyle()
+        window, tree, horizontal, vertical, extra = Widget(), Widget(), Widget(), Widget(), Widget()
+        view.apply_table_theme(window, tree, horizontal, vertical, style, extra)
+        self.assertEqual(extra.options['style'], 'Manager.Treeview')
+        style.bg = '#ffffff'
+        view.apply_table_theme(window, tree, horizontal, vertical, style, extra)
+        self.assertEqual(extra.options['style'], 'Treeview')
 
 
 if __name__ == '__main__':

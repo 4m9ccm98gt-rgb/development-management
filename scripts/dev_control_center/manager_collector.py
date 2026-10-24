@@ -112,6 +112,7 @@ class ManagerCollector:
     def __init__(self, *, registered_keys=None, plans_root=None, records_root=None,
                  runs_root=None, runner_state=None, list_plans=None, load_plan=None,
                  read_association=None, inspect_run=None, next_observation=None,
+                 list_active_runs=None, report_run_ids=None,
                  now=None, max_age_seconds=300):
         if (type(max_age_seconds) not in (int, float) or not math.isfinite(max_age_seconds)
             or max_age_seconds <= 0):
@@ -128,6 +129,10 @@ class ManagerCollector:
         self._read_association = read_association or self._disk_reader(records_root)
         self._inspect = inspect_run or self._run_reader(runs_root)
         self._next = next_observation or _CLOCK
+        # DCC Task UI-D1: independent of collect()'s generation/fingerprint/revalidate machinery
+        # -- display data only, never execution permission (see collect_running_tasks).
+        self._list_active_runs = list_active_runs or self._active_runs_reader(runs_root)
+        self._report_run_ids = report_run_ids or self._default_report_run_ids
         self._last_generation = -1
         self._previous = None  # safe comparison metadata only, never fallback data
         self._lock = threading.Lock()
@@ -150,12 +155,116 @@ class ManagerCollector:
             return runstate.inspect_run(base / rid)
         return inspect
 
+    def _active_runs_reader(self, root):
+        """DCC Task UI-D1: every run DCC currently knows about, regardless of plan association --
+        the only way a direct-request or report-started run (never in a workflow plan) is visible
+        at all. Walks every directory under root (an injected test can point this at a temp
+        directory); unlike tools.ai_orchestrator.runstate.list_runs's own bounded listing, this
+        must not stop early -- a long-running task that is still active must not disappear just
+        because enough newer runs have since finished. Liveness comes from self._inspect (shared
+        with _collect's own observations, and injectable in tests) via the same _safe_observation
+        projection, so a stage that still looks active but whose worker is lost/unresponsive/
+        unknown is marked accordingly rather than passed through as a bare stage string.
+        Read-only: inspect_run never writes; a listing failure yields an empty list."""
+        def list_active():
+            from tools.ai_orchestrator import runstate
+            base = runstate.runs_root() if root is None else Path(root)
+            try:
+                directories = sorted((d for d in base.iterdir() if d.is_dir()),
+                                     key=lambda d: d.name, reverse=True)
+            except OSError:
+                return []
+            items = []
+            for directory in directories:
+                rid = directory.name
+                try:
+                    info = self._inspect(rid)
+                except Exception:
+                    continue
+                safe = _safe_observation(rid, info)
+                if safe['record'] is None:
+                    continue
+                record = info['record']
+                items.append(dict(run_id=rid, stage=safe['record']['stage'], liveness=safe['liveness'],
+                                  repo=record.get('repo'), main_agent=record.get('main_agent'),
+                                  review_agent=record.get('review_agent')))
+            return items
+        return list_active
+
+    @staticmethod
+    def _default_report_run_ids():
+        from . import reports_auto_start
+        try:
+            return reports_auto_start.started_run_ids()
+        except Exception:
+            return set()
+
     def _association(self, pid, tid):
         if self._runner_state is not None:
             hot = self._runner_state.hot_run(pid, tid)
             if hot is not None:
                 return hot  # never fall back to an older disk association, even if corrupt
         return self._read_association(pid, tid)
+
+    def _plan_linked_run_ids(self) -> set:
+        """DCC Task UI-D1 (C1): every run_id linked to ANY task of ANY saved plan, regardless of
+        that task's current status -- a run the workflow runner once started from a plan task is
+        計画-sourced for display purposes even if the task's status later changed. Independent of
+        collect(): no generation, no issue tracking, no revalidate interaction. A malformed plan,
+        task or association is simply skipped (fails closed to 依頼 at the classifier), never
+        raised."""
+        run_ids: set = set()
+        try:
+            entries = self._list()
+        except Exception:
+            return run_ids
+        if not isinstance(entries, list):
+            return run_ids
+        for pid in entries:
+            if not _identifier(pid, 32):
+                continue
+            try:
+                loaded = self._load(pid)
+            except Exception:
+                continue
+            if not isinstance(loaded, dict) or not isinstance(loaded.get('tasks'), list):
+                continue
+            for task in loaded['tasks']:
+                if not isinstance(task, dict):
+                    continue
+                tid = task.get('task_id')
+                if not _identifier(tid, 16):
+                    continue
+                try:
+                    raw = self._association(pid, tid)
+                except Exception:
+                    continue
+                if isinstance(raw, dict) and _run_id(raw.get('run_id')):
+                    run_ids.add(raw['run_id'])
+        return run_ids
+
+    def collect_running_tasks(self) -> list:
+        """DCC Task UI-D1 (C2/C3/C4): best-effort, read-only list of every currently 動いている
+        task (any origin), each tagged with its fixed-word 出どころ (overview.task_origin).
+        Independent of collect()/revalidate() -- display data only, never execution permission or
+        AI-decision validation; never raises, never mutates any state."""
+        try:
+            plan_run_ids = self._plan_linked_run_ids()
+        except Exception:
+            plan_run_ids = set()
+        try:
+            report_run_ids = self._report_run_ids()
+            if not isinstance(report_run_ids, (set, frozenset, list, tuple)):
+                report_run_ids = set()
+        except Exception:
+            report_run_ids = set()
+        try:
+            all_runs = self._list_active_runs()
+            if not isinstance(all_runs, list):
+                all_runs = []
+        except Exception:
+            all_runs = []
+        return overview.running_tasks(all_runs, plan_run_ids=plan_run_ids, report_run_ids=report_run_ids)
 
     def collect(self):
         """New generation + fresh safe payload; no cached-success fallback."""

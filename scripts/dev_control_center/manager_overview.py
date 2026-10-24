@@ -21,6 +21,74 @@ CATEGORY = {'proposed': 'not_started', 'approved': 'waiting', 'held': 'waiting',
             'landed': 'completed', 'failed': 'failed', 'needs_human': 'needs_human',
             'cancelled': 'cancelled'}
 
+# DCC Task UI-D1: 動いているタスク＝準備中・実装中・テスト中・修理中・レビュー中・最終処理中のみ
+# （作成済み／停止処理中／完了・失敗・停止・needs_humanはここに含めない）。
+RUNNING_STAGES = frozenset(('preflight', 'implementing', 'testing', 'repairing', 'reviewing', 'finalizing'))
+# A stage still looking active on disk is not actually 動いている unless its worker is
+# provably alive: lost/unresponsive/unknown (or finished, which a stage in RUNNING_STAGES
+# should never carry) must not render as a normal running row.
+ALIVE_LIVENESS = frozenset(('running', 'starting'))
+
+ORIGIN_PLAN = '計画'
+ORIGIN_REPORT = '報告'
+ORIGIN_REQUEST = '依頼'
+ORIGINS = frozenset((ORIGIN_PLAN, ORIGIN_REPORT, ORIGIN_REQUEST))
+
+_RUN_ID = re.compile(r'[0-9]{8}-[0-9]{6}-[0-9]{6}')
+_REPO_NAME = re.compile(r'[A-Za-z0-9_.-]{1,80}')
+
+
+def task_origin(run_id, *, plan_run_ids, report_run_ids):
+    """Fixed-word 出どころ for one run_id (DCC Task UI-D1, C1): 計画 when the run is linked to a
+    workflow-plan task (plan_run_ids), else 報告 when it is linked to a report-inbox automatic
+    start (report_run_ids), else 依頼 -- the fallback for anything else, including an unrecognized
+    or unidentifiable run_id. Never guesses; membership only."""
+    if isinstance(run_id, str) and run_id in (plan_run_ids or ()):
+        return ORIGIN_PLAN
+    if isinstance(run_id, str) and run_id in (report_run_ids or ()):
+        return ORIGIN_REPORT
+    return ORIGIN_REQUEST
+
+
+def _repo_name(value):
+    if not isinstance(value, str):
+        return None
+    name = value.replace('\\', '/').rsplit('/', 1)[-1]
+    return name if _REPO_NAME.fullmatch(name) else None
+
+
+def running_tasks(all_runs, *, plan_run_ids, report_run_ids):
+    """Pure projection: one row per currently 動いている run (stage in RUNNING_STAGES AND
+    liveness in ALIVE_LIVENESS), each tagged with task_origin. A row whose worker is
+    lost/unresponsive/unknown (or whose liveness is otherwise missing/invalid) is dropped even
+    if its saved stage still looks active -- a stage alone never proves the worker is alive.
+    `all_runs` entries missing/invalid required fields are dropped, never guessed; a duplicate
+    run_id keeps only its first entry. Only run_id/stage/repo/main_agent/review_agent/origin are
+    exposed -- no other field of an `all_runs` entry passes through."""
+    rows = []
+    seen = set()
+    plan_run_ids = plan_run_ids or ()
+    report_run_ids = report_run_ids or ()
+    for item in all_runs if isinstance(all_runs, list) else ():
+        if not isinstance(item, dict):
+            continue
+        rid = item.get('run_id')
+        stage = item.get('stage')
+        liveness = item.get('liveness')
+        if not (isinstance(rid, str) and _RUN_ID.fullmatch(rid)):
+            continue
+        if rid in seen or stage not in RUNNING_STAGES or liveness not in ALIVE_LIVENESS:
+            continue
+        seen.add(rid)
+        main_agent = item.get('main_agent')
+        review_agent = item.get('review_agent')
+        rows.append(dict(
+            run_id=rid, stage=stage, repo=_repo_name(item.get('repo')),
+            main_agent=main_agent if main_agent in ('claude', 'codex') else None,
+            review_agent=review_agent if review_agent in ('claude', 'codex') else None,
+            origin=task_origin(rid, plan_run_ids=plan_run_ids, report_run_ids=report_run_ids)))
+    return rows
+
 
 def _word(value, allowed, default='unknown'):
     return value if isinstance(value, str) and value in allowed else default

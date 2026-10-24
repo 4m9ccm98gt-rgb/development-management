@@ -41,9 +41,12 @@ class View:
         self.window = Window()
         self.notice = Mock()
         self.snapshots = []
+        self.running_calls = []
     def set_snapshot(self, data):
         self.snapshots.append(data)
         self.model = display_model(data)
+    def set_running_tasks(self, rows):
+        self.running_calls.append(rows)
 
 
 class PreviewTests(unittest.TestCase):
@@ -145,6 +148,38 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(source, before)
         data, _ = preview.preview_data(dict(status='available', snapshot=source), memory_available=True)
         self.assertEqual(display_model(data)['counts']['running'], 1)
+
+    def test_running_tasks_appear_then_disappear_through_the_real_update_path(self):
+        """DCC Task UI-D1 (C3): exercised only through PreviewController's own initial
+        request_refresh() + periodic _scheduled_refresh() -- never by calling
+        view.set_running_tasks directly. A running task's origin badge appears on the first
+        poll and is gone after the task ends, exactly as the real update route would show it."""
+        controller = self.make([dict(status='available', snapshot=snapshot())] * 2)
+        running_row = dict(run_id='20261021-123331-908753', repo='sample-repo',
+                           stage='testing', origin='報告')
+        self.collector.collect_running_tasks.side_effect = [[running_row], []]
+        self.complete()
+        self.assertEqual(self.view.running_calls[-1], [running_row])
+        self.assertEqual(self.view.running_calls[-1][0]['origin'], '報告')
+        self.scheduler.run(preview.INTERVAL_MS)
+        self.complete()
+        self.assertEqual(self.view.running_calls[-1], [])
+        self.assertFalse(controller._busy)
+
+    def test_running_tasks_collection_failure_clears_the_table_without_raising(self):
+        controller = self.make()
+        self.collector.collect_running_tasks.side_effect = OSError('SECRET C:/private')
+        self.complete()
+        self.assertEqual(self.view.running_calls[-1], [])
+        self.assertNotIn('SECRET', str(self.view.running_calls))
+        self.assertFalse(controller._busy)
+
+    def test_non_list_running_tasks_result_renders_as_empty(self):
+        controller = self.make()
+        self.collector.collect_running_tasks.return_value = {'not': 'a list'}
+        self.complete()
+        self.assertEqual(self.view.running_calls[-1], [])
+        self.assertFalse(controller._busy)
 
     def test_runner_state_injection_and_scope(self):
         state = object()

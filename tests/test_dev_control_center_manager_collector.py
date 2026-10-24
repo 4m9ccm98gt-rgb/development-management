@@ -370,5 +370,159 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(collector.collect()['status'], 'partial')
 
 
+THIRD_RID = '20261021-123334-908753'
+TERMINAL_RID = '20261021-123335-908753'
+
+
+class CollectRunningTasksTests(unittest.TestCase):
+    """DCC Task UI-D1 (C2/C3/C4): collect_running_tasks is independent of collect()/revalidate --
+    display data only. Only RUNNING_STAGES survive, each tagged with its fixed-word 出どころ."""
+
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        for target in ('subprocess.Popen', 'socket.socket',
+                       'scripts.dev_control_center.workflow_plan.save_plan',
+                       'scripts.dev_control_center.workflow_plan.update_plan',
+                       'scripts.dev_control_center.workflow_runner._save_record',
+                       'tools.ai_orchestrator.runstate.write_json_atomic',
+                       'tools.ai_orchestrator.orchestrator.start_run'):
+            forbidden = self.stack.enter_context(patch(target, side_effect=AssertionError('FORBIDDEN')))
+            self.addCleanup(forbidden.assert_not_called)
+
+    def collector(self, plans=None, **kwargs):
+        plans = plans if plans is not None else [plan(task('T1'))]
+        by_id = {p['plan_id']: p for p in plans}
+        defaults = dict(registered_keys=KEYS, list_plans=lambda: list(by_id),
+            load_plan=lambda pid: copy.deepcopy(by_id[pid]), read_association=lambda pid, tid: None,
+            list_active_runs=lambda: [], report_run_ids=lambda: set(),
+            inspect_run=lambda rid: observed(rid), next_observation=itertools.count(1).__next__)
+        defaults.update(kwargs)
+        return mc.ManagerCollector(**defaults)
+
+    def test_tags_plan_report_and_request_origins_and_filters_terminal(self):
+        all_runs = [
+            dict(run_id=RID, stage='implementing', liveness='running', repo='sample-repo'),
+            dict(run_id=OTHER_RID, stage='testing', liveness='running', repo='other-repo'),
+            dict(run_id=THIRD_RID, stage='reviewing', liveness='starting', repo='sample-repo'),
+            dict(run_id=TERMINAL_RID, stage='completed', liveness='finished', repo='sample-repo'),
+        ]
+        collector = self.collector([plan(task('T1'))], read_association=lambda pid, tid: {'run_id': RID},
+            list_active_runs=lambda: all_runs, report_run_ids=lambda: {OTHER_RID})
+        rows = collector.collect_running_tasks()
+        by_run = {r['run_id']: r for r in rows}
+        self.assertEqual(set(by_run), {RID, OTHER_RID, THIRD_RID})
+        self.assertEqual(by_run[RID]['origin'], '計画')
+        self.assertEqual(by_run[OTHER_RID]['origin'], '報告')
+        self.assertEqual(by_run[THIRD_RID]['origin'], '依頼')
+
+    def test_plan_association_read_through_hot_runner_state_counts_as_plan_origin(self):
+        state = wr.WorkflowRunnerState()
+        state.remember_run('Plan-1', 'T1', run_id=RID, reason='because')
+        disk = Mock(return_value=None)
+        collector = self.collector([plan(task('T1'))], runner_state=state, read_association=disk,
+            list_active_runs=lambda: [dict(run_id=RID, stage='testing', liveness='running')])
+        rows = collector.collect_running_tasks()
+        self.assertEqual(rows[0]['origin'], '計画')
+        disk.assert_not_called()
+
+    def test_broken_plan_listing_never_raises_and_falls_back_to_request(self):
+        collector = self.collector(list_plans=Mock(side_effect=OSError('broken')),
+            list_active_runs=lambda: [dict(run_id=RID, stage='testing', liveness='running')])
+        rows = collector.collect_running_tasks()
+        self.assertEqual(rows[0]['origin'], '依頼')
+
+    def test_broken_active_run_listing_or_report_lookup_never_raises(self):
+        collector = self.collector(list_active_runs=Mock(side_effect=OSError('broken')))
+        self.assertEqual(collector.collect_running_tasks(), [])
+        collector = self.collector(list_active_runs=lambda: [dict(run_id=RID, stage='testing', liveness='running')],
+            report_run_ids=Mock(side_effect=OSError('broken')))
+        self.assertEqual(collector.collect_running_tasks()[0]['origin'], '依頼')
+
+    def test_independent_of_collect_generation_and_revalidate(self):
+        collector = self.collector(list_active_runs=lambda: [dict(run_id=RID, stage='testing', liveness='running')])
+        first = collector.collect()
+        response = json.dumps(md.suggest_decisions(first['snapshot'], observation_id=first['observation_id'])[0])
+        collector.collect_running_tasks()  # must not consume the generation or revoke the pending issue
+        self.assertTrue(collector.revalidate(response)['validation']['accepted'])
+        second = collector.collect()
+        self.assertEqual(second['observation_id'], first['observation_id'] + 2)  # +1 from revalidate's own collect
+        self.assertEqual(collector.collect_running_tasks(), collector.collect_running_tasks())
+
+    def test_default_readers_use_only_temporary_files_and_never_write(self):
+        from scripts.dev_control_center import reports_auto_start as auto_start
+        import time as time_module
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            plans, records, runs, reports = root / 'plans', root / 'records', root / 'runs', root / 'reports'
+            plans.mkdir()
+            wf._plan_path('Plan-1', plans).write_text(json.dumps(plan(task('T1'))), encoding='utf-8')
+            assoc_path = wr._record_path('Plan-1', 'T1', root=records)
+            assoc_path.parent.mkdir(parents=True)
+            assoc_path.write_text(json.dumps({'run_id': RID}), encoding='utf-8')
+            # No worker/heartbeat recorded, so inspect_run reports 'starting' liveness as long as
+            # created_at is within STARTING_GRACE_SECONDS -- enough to prove liveness flows through.
+            created_at = time_module.strftime('%Y-%m-%dT%H:%M:%S', time_module.localtime())
+            for rid, stage, repo in ((RID, 'implementing', 'sample-repo'), (OTHER_RID, 'testing', 'other-repo')):
+                run_dir = runs / rid
+                run_dir.mkdir(parents=True)
+                (run_dir / 'run.json').write_text(
+                    json.dumps({'run_id': rid, 'stage': stage, 'repo': repo, 'created_at': created_at}),
+                    encoding='utf-8')
+            auto_start._save_record(auto_start.AutoStartRecord('app', 'r1', '2026-01-01T00:00:00Z', OTHER_RID),
+                                    root=reports)
+            before = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+            collector = mc.ManagerCollector(registered_keys=KEYS, plans_root=plans, records_root=records,
+                runs_root=runs, report_run_ids=lambda: auto_start.started_run_ids(root=reports))
+            rows = collector.collect_running_tasks()
+            by_run = {r['run_id']: r for r in rows}
+            self.assertEqual(set(by_run), {RID, OTHER_RID})
+            self.assertEqual(by_run[RID]['origin'], '計画')
+            self.assertEqual(by_run[OTHER_RID]['origin'], '報告')
+            self.assertEqual({p: p.read_bytes() for p in root.rglob('*') if p.is_file()}, before)
+
+    def test_dead_worker_liveness_is_not_shown_as_running_even_though_stage_still_looks_active(self):
+        """Repair regression: inspect_run's liveness must reach the running-tasks judgment -- a
+        saved stage of 'testing' whose worker is lost/unresponsive/unknown must not render as
+        動いている just because no one has rewritten the stage field yet. Uses the real default
+        _active_runs_reader (runs_root points at a temp directory) with a fake inspect_run, per
+        the reviewer's instruction to exercise this through fake inspect results."""
+        with tempfile.TemporaryDirectory() as temp:
+            runs = Path(temp)
+            (runs / RID).mkdir()
+            for live in ('lost', 'unresponsive', 'unknown'):
+                with self.subTest(live=live):
+                    collector = self.collector(runs_root=runs, list_active_runs=None,
+                        inspect_run=lambda rid, live=live: observed(rid, stage='testing', live=live))
+                    self.assertEqual(collector.collect_running_tasks(), [])
+            for live in ('running', 'starting'):
+                with self.subTest(live=live):
+                    collector = self.collector(runs_root=runs, list_active_runs=None,
+                        inspect_run=lambda rid, live=live: observed(rid, stage='testing', live=live))
+                    rows = collector.collect_running_tasks()
+                    self.assertEqual([r['run_id'] for r in rows], [RID])
+
+    def test_running_run_beyond_200_newer_finished_runs_still_appears(self):
+        """Repair regression: a run-directory cap must not drop a still-running task just
+        because 200+ newer runs have since finished. Uses the real default _active_runs_reader
+        against a temp runs_root with 210 newer finished directories plus one older running one."""
+        with tempfile.TemporaryDirectory() as temp:
+            runs = Path(temp)
+            old_rid = '20260101-000000-000001'
+            (runs / old_rid).mkdir()
+            newer_finished_ids = []
+            for i in range(210):
+                rid = f'20270101-{i:06d}-000000'
+                (runs / rid).mkdir()
+                newer_finished_ids.append(rid)
+            observations = {old_rid: observed(old_rid, stage='testing', live='running')}
+            for rid in newer_finished_ids:
+                observations[rid] = observed(rid, stage='completed', live='finished')
+            collector = self.collector(runs_root=runs, list_active_runs=None,
+                inspect_run=lambda rid: observations[rid])
+            rows = collector.collect_running_tasks()
+            self.assertEqual([r['run_id'] for r in rows], [old_rid])
+
+
 if __name__ == '__main__':
     unittest.main()

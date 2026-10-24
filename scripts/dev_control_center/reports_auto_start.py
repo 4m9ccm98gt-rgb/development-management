@@ -282,6 +282,29 @@ def load_auto_start_records(identities: Iterable[tuple[str, str]], *,
     return out
 
 
+def started_run_ids(*, root: Path | None = None) -> set[str]:
+    """DCC Task UI-D1 (C1/C5): every run_id this module itself started automatically from a
+    report -- used only to tag such a run's Manager-screen 出どころ as 報告. Reads only this
+    module's own local records (never the shared report-inbox files themselves, never a report's
+    own content); a missing/unreadable records directory or entry degrades to an empty set,
+    never raises. report_id itself is never read back here -- only the run_id each record already
+    carries in the clear (see AutoStartRecord)."""
+    base = root if root is not None else records_root()
+    run_ids: set[str] = set()
+    try:
+        entries = list(base.rglob('*.json'))
+    except OSError:
+        return run_ids
+    for path in entries:
+        data = _read_json(path)
+        if not isinstance(data, dict):
+            continue
+        run_id = data.get('run_id')
+        if isinstance(run_id, str) and run_id:
+            run_ids.add(run_id)
+    return run_ids
+
+
 def already_started(app_key: str, report_id: str, *, root: Path | None = None) -> bool:
     """C3/C4: a record exists -- the report is never auto-started a second time, which is also how
     a failed start is never retried (仕様2). The record is written as a reservation *before*

@@ -25,6 +25,14 @@ COUNTS = (('total', 'TASK総数'), ('running', '実行中'), ('waiting', '待機
           ('unavailable', '状態取得不能'), ('cancelled', '取消'))
 COLUMNS = ('task', 'plan', 'repo', 'ai', 'status', 'dependencies', 'run')
 HEADINGS = ('TASK ID', '計画 ID', '対象アプリ', '担当AI（設定）', '状態', '依存TASKの状態', 'Run ID')
+# DCC Task UI-D1: 動いているタスク（準備中・実装中・テスト中・修理中・レビュー中・最終処理中）だけの
+# 固定語ラベル。完了・失敗・停止・needs_human はここに現れない（overview.RUNNING_STAGES の対象外）。
+RUNNING_STAGE_LABELS = dict(preflight='準備中', implementing='実装中', testing='テスト中',
+                            repairing='修理中', reviewing='レビュー中', finalizing='最終処理中')
+RUNNING_ORIGIN_LABELS = {overview.ORIGIN_PLAN: '計画', overview.ORIGIN_REPORT: '報告',
+                         overview.ORIGIN_REQUEST: '依頼'}
+RUNNING_COLUMNS = ('origin', 'run', 'repo', 'stage')
+RUNNING_HEADINGS = ('出どころ', 'Run ID', '対象アプリ', '状態')
 
 
 def _id(value, limit):
@@ -34,6 +42,29 @@ def _id(value, limit):
 
 def _fixed(value, labels):
     return labels.get(value, UNKNOWN) if isinstance(value, str) else UNKNOWN
+
+
+def running_tasks_model(rows):
+    """Pure allowlisted presentation for 動いているタスク (DCC Task UI-D1): never forward an
+    arbitrary string. Only a valid Run ID, a known running stage and a known fixed origin word
+    produce a row; anything else (wrong shape, unknown stage/origin) is dropped, never guessed."""
+    result = []
+    if not isinstance(rows, list):
+        return result
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        rid = row.get('run_id')
+        stage = row.get('stage')
+        origin = row.get('origin')
+        if (not (isinstance(rid, str) and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9]{6}', rid))
+                or stage not in RUNNING_STAGE_LABELS or origin not in RUNNING_ORIGIN_LABELS):
+            continue
+        repo = row.get('repo')
+        repo_text = repo if isinstance(repo, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', repo) else UNKNOWN
+        result.append(dict(run_id=rid, repo=repo_text, stage_label=RUNNING_STAGE_LABELS[stage],
+                           origin_label=RUNNING_ORIGIN_LABELS[origin]))
+    return result
 
 
 def display_model(snapshot):
@@ -101,8 +132,11 @@ def summary_text(model):
     return '　'.join(f'{label}: {model["counts"][key]}' for key, label in COUNTS)
 
 
-def apply_table_theme(window, tree, horizontal, vertical, style):
-    """Use the same palette/detection as reports_inbox_view, with local styles."""
+def apply_table_theme(window, tree, horizontal, vertical, style, *extra_trees):
+    """Use the same palette/detection as reports_inbox_view, with local styles.
+
+    `extra_trees` (DCC Task UI-D1: the 動いているタスク table) share the same Manager.Treeview
+    style without their own scrollbars; passing none leaves every existing caller unchanged."""
     from .app import DARK_BG, DARK_SURFACE, DARK_FIELD, DARK_FG, DARK_BORDER, DARK_SELECTION
     dark = style.lookup('TFrame', 'background') == DARK_BG
     if dark:
@@ -118,6 +152,8 @@ def apply_table_theme(window, tree, horizontal, vertical, style):
     tree.configure(style='Manager.Treeview' if dark else 'Treeview')
     horizontal.configure(style='Manager.Horizontal.TScrollbar' if dark else 'Horizontal.TScrollbar')
     vertical.configure(style='Manager.Vertical.TScrollbar' if dark else 'Vertical.TScrollbar')
+    for extra in extra_trees:
+        extra.configure(style='Manager.Treeview' if dark else 'Treeview')
 
 
 def apply_notebook_theme(notebook, style):
@@ -140,12 +176,22 @@ class ManagerDashboardWindow:
         frame = ttk.Frame(self.window, padding=12)
         frame.pack(fill='both', expand=True)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(3, weight=1)
+        frame.rowconfigure(4, weight=1)
         ttk.Label(frame, text=MANAGER_TEXT).grid(row=0, column=0, sticky='w')
         self.summary = ttk.Label(frame, wraplength=1080)
         self.summary.grid(row=1, column=0, sticky='ew', pady=8)
         self.notice = ttk.Label(frame)
         self.notice.grid(row=2, column=0, sticky='w')
+        running = ttk.LabelFrame(frame, text='動いているタスク（出どころ付き）', padding=6)
+        running.grid(row=3, column=0, sticky='ew', pady=(0, 8))
+        running.columnconfigure(0, weight=1)
+        self.running_tree = ttk.Treeview(running, columns=RUNNING_COLUMNS, show='headings',
+                                         selectmode='none', height=5)
+        for key, label in zip(RUNNING_COLUMNS, RUNNING_HEADINGS):
+            self.running_tree.heading(key, text=label)
+            self.running_tree.column(key, width=170 if key == 'run' else 130, minwidth=70)
+        self.running_tree.grid(row=0, column=0, sticky='ew')
+        self._running_rows = {}
         self.inbox = None
         self.overview = None
         self.organization_map = None
@@ -156,7 +202,7 @@ class ManagerDashboardWindow:
             from .manager_organization_map import OrganizationMapView
             tabs = ttk.Notebook(frame)
             self.notebook = tabs
-            tabs.grid(row=3, column=0, sticky='nsew', pady=8)
+            tabs.grid(row=4, column=0, sticky='nsew', pady=8)
             table = ttk.Frame(tabs)
             self.inbox = ManagerInboxView(tabs, window=self.window)
             self.overview = OverviewView(tabs)
@@ -168,7 +214,7 @@ class ManagerDashboardWindow:
             tabs.select(self.organization_map.frame)
         else:
             table = ttk.Frame(frame)
-            table.grid(row=3, column=0, sticky='nsew', pady=8)
+            table.grid(row=4, column=0, sticky='nsew', pady=8)
         table.columnconfigure(0, weight=1)
         table.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(table, columns=COLUMNS, show='headings', selectmode='browse')
@@ -184,20 +230,21 @@ class ManagerDashboardWindow:
         # Keep TASK-only details inside its tab so Overview retains vertical
         # space at 1150x650 even after selecting a TASK in the other tab.
         details = ttk.LabelFrame(table if inbox else frame, text='選択TASKの詳細', padding=8)
-        details.grid(row=2 if inbox else 4, column=0, columnspan=2 if inbox else 1, sticky='ew')
+        details.grid(row=2 if inbox else 5, column=0, columnspan=2 if inbox else 1, sticky='ew')
         self.detail = ttk.Label(details, text='TASKを選択してください', justify='left', wraplength=1080)
         self.detail.pack(fill='x')
         self.tree.bind('<<TreeviewSelect>>', self._on_select)
         self.window.bind('<<ThemeChanged>>', self._apply_theme, add='+')
         self._apply_theme()
         self.set_snapshot(snapshot)
+        self.set_running_tasks([])
 
     def _apply_theme(self, _event=None):
         style = ttk.Style(self.window)
         key = (style.theme_use(), style.lookup('TFrame', 'background'))
         if key != getattr(self, '_theme_key', None):
             self._theme_key = key
-            apply_table_theme(self.window, self.tree, self.horizontal, self.vertical, style)
+            apply_table_theme(self.window, self.tree, self.horizontal, self.vertical, style, self.running_tree)
             if self.notebook is not None:
                 apply_notebook_theme(self.notebook, style)
             if self.inbox is not None:
@@ -227,6 +274,23 @@ class ManagerDashboardWindow:
         if selected is not None:
             self.tree.selection_set(selected)
         self._on_select()
+
+    def set_running_tasks(self, rows):
+        """Presentation only, independent of set_snapshot/the central loop (DCC Task UI-D1).
+
+        `rows` is the raw collect_running_tasks() shape (never pre-trusted); running_tasks_model
+        below does the actual allowlisting. The central Orchestrator loop board keeps showing the
+        same running Run unchanged -- this table is an additional, separate projection, never a
+        replacement."""
+        for iid in self.running_tree.get_children():
+            self.running_tree.delete(iid)
+        self._running_rows = {}
+        model = running_tasks_model(rows)
+        for index, row in enumerate(model):
+            iid = f'running-{index}'
+            self._running_rows[iid] = row
+            self.running_tree.insert('', 'end', iid=iid,
+                values=(row['origin_label'], row['run_id'], row['repo'], row['stage_label']))
 
     def _on_select(self, _event=None):
         selected = self.tree.selection()
