@@ -4,7 +4,7 @@ import struct
 import unittest
 import zlib
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 from scripts.dev_control_center import orchestrator_loop as loop, orchestrator_lanes as lanes, character
 from tests.test_dev_control_center_manager_dashboard_view import Widget, FakeCanvas, FakeStyle
 from tests.test_dev_control_center_orchestrator_lanes import run
@@ -85,14 +85,14 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual([len(result[g]) for g in ('Approval', 'Decision', 'Feedback', 'Archive')], [2, 1, 1, 2])
 
 class BoardTests(unittest.TestCase):
-    def make_board(self):
+    def make_board(self, on_copy_report=None):
         widgets = SimpleNamespace(Frame=FakeWidget, Label=FakeWidget, Button=FakeWidget, Scrollbar=FakeWidget, Style=FakeStyle)
         for module in (loop, lanes):
             ctx = patch.object(module, 'ttk', widgets); ctx.start(); self.addCleanup(ctx.stop)
         ctx = patch.object(loop, 'tk', SimpleNamespace(Canvas=Canvas)); ctx.start(); self.addCleanup(ctx.stop)
         for name, value in [('ArtWorker', lambda: Mock(available=False)), ('CanvasCard', FakeWidget), ('PanelSurface', lambda *args, **kwargs: Mock(content=FakeWidget()))]:
             ctx = patch.object(loop, name, value); ctx.start(); self.addCleanup(ctx.stop)
-        return loop.LoopBoard(FakeWidget(), Mock())
+        return loop.LoopBoard(FakeWidget(), Mock(), on_copy_report=on_copy_report)
 
     def test_diff_selection_move_archive_and_resize(self):
         board = self.make_board()
@@ -132,6 +132,44 @@ class BoardTests(unittest.TestCase):
             loop.configure_loop_styles(style); switch.assert_not_called()
         for name in loop.GROUPS:
             self.assertEqual(style.configurations[f'Loop{name}.TButton']['background'], loop.SURFACE)
+
+    def test_human_rows_show_repo_times_state_never_ai_with_own_copy_button(self):
+        """UI-E1 C2/C3: each Human-side row (Approval/Decision/Feedback here) shows repo/start/
+        stop/elapsed/state and never the assigned AI, and owns its own 'レポートをコピー' button --
+        invoking multiple rows' actual buttons copies only that row's own run_id, never another's."""
+        on_copy_report = Mock()
+        board = self.make_board(on_copy_report=on_copy_report)
+        runs = [run('failed', 'finished', rid='20261022-000000-000011', started_at='2026-10-22T09:00:00',
+                     finished_at='2026-10-22T09:05:30'),
+                run('needs_human', 'finished', rid='20261022-000000-000012'),
+                run('completed', 'finished', rid='20261022-000000-000013', candidate_sha='a' * 40, apply_status='ready')]
+        model = lanes.build_lanes([], runs, repo_names={'app'})
+        self.assertEqual(len(model['Human']), 3)
+        board.set_model(model)
+        human_cards = {c['key']: c for c in model['Human']}
+        self.assertEqual(set(board._report_buttons), set(human_cards))
+        failed_key = next(c['key'] for c in model['Human'] if c['run_id'] == '20261022-000000-000011')
+        text = board._widgets[failed_key].options['text']
+        self.assertIn('repo: app', text)
+        self.assertIn('開始 2026-10-22T09:00:00', text)
+        self.assertIn('停止 2026-10-22T09:05:30', text)
+        self.assertIn('かかった時間 5分30秒', text)
+        self.assertNotIn('claude', text)
+        self.assertNotIn('codex', text)
+        self.assertNotIn('担当設定', text)
+        for key, card in human_cards.items():
+            board._report_buttons[key].options['command']()
+        self.assertEqual(sorted(c.args for c in on_copy_report.call_args_list),
+                          sorted((c['run_id'],) for c in human_cards.values()))
+        on_copy_report.reset_mock()
+        board._report_buttons[failed_key].options['command']()
+        on_copy_report.assert_called_once_with('20261022-000000-000011')
+
+    def test_human_rows_without_copy_callback_or_run_id_get_no_button(self):
+        board = self.make_board()  # on_copy_report defaults to None
+        model = lanes.build_lanes([], [run('failed', 'finished', rid='20261022-000000-000021')])
+        board.set_model(model)
+        self.assertEqual(board._report_buttons, {})
 
 class SpriteTests(unittest.TestCase):
     def test_palette_key_preserves_pixels_and_existing_alpha(self):

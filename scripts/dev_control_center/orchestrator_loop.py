@@ -8,7 +8,7 @@ import math
 import tkinter as tk
 from tkinter import ttk
 
-from .orchestrator_lanes import LaneBoard, LANES
+from .orchestrator_lanes import LaneBoard, LANES, human_row_lines
 from .orchestrator_art import ArtWorker, Image
 from .orchestrator_cards import CanvasCard, PanelSurface
 from .character_layout import character_display_scale
@@ -90,8 +90,11 @@ def configure_loop_styles(style):
 class LoopBoard(LaneBoard):
     groups = GROUPS
     group_labels = LABELS
+    # UI-E1: the right-side Human panel's own sections (not Archive's own operational meaning --
+    # Archive is still just a view filter; it gets the same row-scoped copy button as the others).
+    human_groups = ('Approval', 'Decision', 'Feedback', 'Archive')
 
-    def __init__(self, parent, on_select):
+    def __init__(self, parent, on_select, *, on_copy_report=None):
         configure_loop_styles(ttk.Style(parent))
         self.frame = ttk.Frame(parent, style='OrchestratorLoop.TFrame')
         self.frame.rowconfigure(0, weight=1)
@@ -108,8 +111,9 @@ class LoopBoard(LaneBoard):
         self._header_text = {}
         self._surfaces = []
         self.on_select = on_select
+        self._on_copy_report = on_copy_report
         self.headers, self.bodies, self.canvases, self.cards = {}, {}, {}, {}
-        self._widgets, self._data, self._positions = {}, {}, {}
+        self._widgets, self._data, self._positions, self._report_buttons = {}, {}, {}, {}
         self._last = None
         self._selected_key = None
         self._archive_open = False
@@ -202,6 +206,9 @@ class LoopBoard(LaneBoard):
         self._update_headers()
 
     def _card_text(self, card, name, title):
+        if name in self.human_groups:
+            # UI-E1 (C2): repo / start・stop / elapsed・state -- never the assigned AI.
+            return '\n'.join(human_row_lines(card, title))
         ai = card.get('reviewer_ai') if name == 'Reviewing' else card.get('assigned_ai')
         ai = ai if ai in ('codex', 'claude') else '未設定・確認待ち'
         label = 'システム工程' if name == 'Testing' else '担当設定: '+ai
@@ -292,6 +299,8 @@ class LoopBoard(LaneBoard):
                 self.loop.after_cancel(job)
         for card in self._widgets.values():
             card.destroy()
+        for button in self._report_buttons.values():
+            button.destroy()
         for surface in self._surfaces:
             surface.close()
         self._art.close()

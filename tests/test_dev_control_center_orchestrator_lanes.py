@@ -20,6 +20,15 @@ def run(stage, live='running', rid=RID, **kw):
     return item(record(run_id=rid, stage=stage, repo='C:/repos/app', **kw), liveness=live)
 
 
+def wf_card(key, run_id=None, lane='Human'):
+    """A minimal hand-built Workflow row, bypassing workflow_cards() -- same shape build_lanes
+    expects from it. observed_stage stays 'unknown' so build_lanes never overrides `lane`."""
+    return dict(key=key, run_id=run_id, lane=lane, repo='app', title='T1', priority='P2',
+                state='承認待ち', hint='h', detail='d', association_confirmed=True,
+                workflow_status='proposed', cause=None, task_unknown=False,
+                assigned_ai='claude', reviewer_ai='codex', observed_stage='unknown')
+
+
 class LaneModelTests(GuardedTests):
     def test_stages_unknown_tests_and_conditional_human(self):
         cases = [('created', 'running', 'Manager'), ('implementing', 'running', 'Implementer'),
@@ -47,6 +56,26 @@ class LaneModelTests(GuardedTests):
         self.assertEqual(sum(map(len, data.values())), 3)
         self.assertNotIn('SECRET', str(data))
         self.assertNotIn('C:/repos', str(data))
+
+    def test_human_row_timing_never_falls_back_to_created_at(self):
+        """UI-E1 (review fix 1): created_at is set at record creation, before any worker actually
+        starts; it must never stand in for a missing started_at, for either an unmatched Run row
+        or a Workflow row carrying a matched Run's timestamps."""
+        r = run('failed', 'finished', rid='20261022-000000-000051', created_at='2026-10-22T09:00:00',
+                started_at=None, finished_at='2026-10-22T09:05:30')
+        run_card = lanes.build_lanes([], [r], repo_names={'app'})['Human'][0]
+        self.assertIsNone(run_card['started_at'])
+        self.assertEqual(run_card['finished_at'], '2026-10-22T09:05:30')
+        lines = lanes.human_row_lines(run_card, 'title')
+        self.assertIn(f'開始 {lanes.UNKNOWN_TIME_TEXT} ／ 停止 2026-10-22T09:05:30', lines)
+        self.assertIn(lanes.UNKNOWN_TIME_TEXT, lines[-1])
+
+        wf = wf_card('WF:T1', run_id='20261022-000000-000052')
+        matched_run = run('failed', 'finished', rid='20261022-000000-000052',
+                          created_at='2026-10-22T09:00:00', started_at=None, finished_at='2026-10-22T09:05:30')
+        wf_result = lanes.build_lanes([wf], [matched_run])['Human'][0]
+        self.assertIsNone(wf_result['started_at'])
+        self.assertEqual(wf_result['finished_at'], '2026-10-22T09:05:30')
 
     def test_workflow_analysis_association_and_latest_run_conflict(self):
         data = overview.build_snapshot([plan(dict(task('T1', 'running'), main_ai='codex'), task('T2', 'proposed'))],
@@ -309,6 +338,143 @@ class AppAndMonitorTests(unittest.TestCase):
             self.assertEqual(data['log'], 'log')
             reconcile.assert_not_called()
             stop.assert_not_called()
+
+
+class _OrderedWidget(Widget):
+    """A ttk-shaped fake that actually tracks pack order per master, honouring 'after'/'before'
+    like the real geometry manager does -- the existing Widget/Button fakes elsewhere just no-op
+    pack(), which can't catch a card/copy-button ordering bug (review fix 2)."""
+    _orders = {}
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.master = args[0] if args else None
+        self.destroyed = False
+
+    def _order(self):
+        return self._orders.setdefault(id(self.master), [])
+
+    def state(self, states):
+        self.options['state'] = states
+
+    def focus_get(self):
+        return None
+
+    def focus_set(self):
+        pass
+
+    def winfo_y(self):
+        return 0
+
+    def winfo_height(self):
+        return 0
+
+    def pack(self, **kwargs):
+        order = self._order()
+        if self in order:
+            order.remove(self)
+        after, before = kwargs.get('after'), kwargs.get('before')
+        if after is not None:
+            order.insert(order.index(after) + 1, self)
+        elif before is not None:
+            order.insert(order.index(before), self)
+        else:
+            order.append(self)
+
+    def pack_forget(self):
+        order = self._order()
+        if self in order:
+            order.remove(self)
+
+    def destroy(self):
+        self.destroyed = True
+        self.pack_forget()
+
+
+class _HumanLaneBoard(lanes.LaneBoard):
+    human_groups = ('Human',)
+
+
+class LaneBoardCopyButtonAdjacencyTests(unittest.TestCase):
+    """Regression coverage for review findings 2 and 3 against the real LaneBoard.set_model
+    (both LaneBoard and LoopBoard share it): a multi-row Human group must keep each row's own
+    copy button directly next to that row's own card through add/reorder/remove, and a row that
+    gains a run_id later (same key, same group) must grow its button on that same update."""
+
+    def make_board(self, on_copy_report=None):
+        _OrderedWidget._orders = {}
+
+        class Canvas(FakeCanvas):
+            def create_window(self, *args, **kw): return self._create(args, kw)
+            def itemconfigure(self, *args, **kw): pass
+            def yview_scroll(self, *args): pass
+            def bbox(self, *args): return (0, 0, 220, 1000)
+            def canvasy(self, y): return y
+            def winfo_height(self): return 300
+            def yview_moveto(self, fraction): self.fraction = fraction
+
+        widgets = SimpleNamespace(Frame=_OrderedWidget, Label=_OrderedWidget, Scrollbar=_OrderedWidget,
+                                   Button=_OrderedWidget, Style=FakeStyle)
+        ctx1 = patch.object(lanes, 'tk', SimpleNamespace(Canvas=Canvas)); ctx1.start(); self.addCleanup(ctx1.stop)
+        ctx2 = patch.object(lanes, 'ttk', widgets); ctx2.start(); self.addCleanup(ctx2.stop)
+        return _HumanLaneBoard(_OrderedWidget(), Mock(), on_copy_report=on_copy_report or Mock())
+
+    def _order_of(self, board):
+        body = board.bodies['Human']
+        return _OrderedWidget._orders.get(id(body), [])
+
+    def test_multi_row_group_keeps_card_and_button_adjacent_through_add_reorder_remove(self):
+        on_copy_report = Mock()
+        board = self.make_board(on_copy_report)
+        runs = [run('failed', 'finished', rid='20261022-000000-000061'),
+                run('needs_human', 'finished', rid='20261022-000000-000062'),
+                run('stopped', 'finished', rid='20261022-000000-000063')]
+        model = lanes.build_lanes([], runs, repo_names={'app'})
+        board.set_model(model)
+        human_cards = model['Human']
+        expected = []
+        for card in human_cards:
+            expected += [board._widgets[card['key']], board._report_buttons[card['key']]]
+        self.assertEqual(self._order_of(board), expected)
+        for card in human_cards:
+            on_copy_report.reset_mock()
+            board._report_buttons[card['key']].options['command']()
+            on_copy_report.assert_called_once_with(card['run_id'])
+
+        # Drop the middle run, move the third one up, and add a new one at the end --
+        # adjacency must survive the reorder/remove/add all happening on the same update.
+        runs2 = [run('failed', 'finished', rid='20261022-000000-000061'),
+                 run('stopped', 'finished', rid='20261022-000000-000063'),
+                 run('failed', 'finished', rid='20261022-000000-000064')]
+        model2 = lanes.build_lanes([], runs2, repo_names={'app'})
+        board.set_model(model2)
+        human_cards2 = model2['Human']
+        expected2 = []
+        for card in human_cards2:
+            expected2 += [board._widgets[card['key']], board._report_buttons[card['key']]]
+        self.assertEqual(self._order_of(board), expected2)
+        for card in human_cards2:
+            on_copy_report.reset_mock()
+            board._report_buttons[card['key']].options['command']()
+            on_copy_report.assert_called_once_with(card['run_id'])
+
+    def test_existing_row_gains_run_id_and_gets_its_button_on_the_same_update(self):
+        on_copy_report = Mock()
+        board = self.make_board(on_copy_report)
+        board.set_model(lanes.build_lanes([wf_card('WF:T1', run_id=None)], []))
+        self.assertNotIn('WF:T1', board._report_buttons)
+
+        board.set_model(lanes.build_lanes([wf_card('WF:T1', run_id='20261022-000000-000071')], []))
+        self.assertIn('WF:T1', board._report_buttons)
+        board._report_buttons['WF:T1'].options['command']()
+        on_copy_report.assert_called_once_with('20261022-000000-000071')
+
+    def test_row_losing_run_id_loses_its_button(self):
+        board = self.make_board()
+        board.set_model(lanes.build_lanes([wf_card('WF:T1', run_id='20261022-000000-000072')], []))
+        self.assertIn('WF:T1', board._report_buttons)
+        board.set_model(lanes.build_lanes([wf_card('WF:T1', run_id=None)], []))
+        self.assertNotIn('WF:T1', board._report_buttons)
 
 
 if __name__ == '__main__':

@@ -15,10 +15,37 @@ LANES = ('Manager', 'Implementer', 'Reviewer', 'Human')
 STAGES = dict(created='作成済み', preflight='事前確認', implementing='実装段階', repairing='修正段階',
               testing='Tests実行（システム工程）', reviewing='レビュー段階', finalizing='最終検証（システム工程）',
               stopping='安全停止処理', stopped='停止・確認待ち', failed='失敗・確認待ち', needs_human='人間判断待ち', completed='完了')
+REPORT_COPY_TEXT = 'レポートをコピー'
+UNKNOWN_TIME_TEXT = '不明'
 
 
 def valid_id(value):
     return isinstance(value, str) and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9]{6}', value) is not None
+
+
+def elapsed_text(start, finish):
+    """Fixed '不明' whenever either timestamp is missing or unparseable -- never guessed."""
+    try:
+        t0 = time.mktime(time.strptime(str(start), '%Y-%m-%dT%H:%M:%S'))
+        t1 = time.mktime(time.strptime(str(finish), '%Y-%m-%dT%H:%M:%S'))
+    except (ValueError, TypeError, OverflowError):
+        return UNKNOWN_TIME_TEXT
+    seconds = int(t1 - t0)
+    if seconds < 0:
+        return UNKNOWN_TIME_TEXT
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f'{hours}時間{minutes:02d}分' if hours else f'{minutes}分{secs:02d}秒'
+
+
+def human_row_lines(card, title):
+    """Fixed four-line Human-row text: repo / start・stop / elapsed・state -- never the AI
+    (UI-E1 C2). Each time field is the record's own recorded value verbatim, or '不明'."""
+    repo = card.get('repo') or UNKNOWN_TIME_TEXT
+    start = card.get('started_at') or UNKNOWN_TIME_TEXT
+    finish = card.get('finished_at') or UNKNOWN_TIME_TEXT
+    elapsed = elapsed_text(card.get('started_at'), card.get('finished_at'))
+    return [title, f'repo: {repo}', f'開始 {start} ／ 停止 {finish}', f'かかった時間 {elapsed} ／ {card["state"]}']
 
 
 def workflow_cards(payload, memory=False):
@@ -40,7 +67,7 @@ def workflow_cards(payload, memory=False):
         rid = s['run'].get('run_id')
         stage = STAGES.get(t['stage'], '稼働・所属確認待ち')
         cards.append(dict(key='WF:'+':'.join(t['identity']), run_id=rid if valid_id(rid) else None,
-            lane=lane, title=' / '.join(t['identity']), priority=t['priority'], state=stage if t['observed'] else
+            lane=lane, repo=s['repo_key'], title=' / '.join(t['identity']), priority=t['priority'], state=stage if t['observed'] else
             '状態・所属確認待ち' if t['unknown'] else STAGES.get(t['status'], dict(proposed='承認待ち', approved='開始条件確認待ち', held='保留', landed='完了', cancelled='取消').get(t['status'], '確認待ち')),
             hint=f'repo: {s["repo_key"]} ／ 担当設定: {t["main_ai"] or "未設定"} / {t["reviewer_ai"] or "未設定"}\n'
                  f'確認済みRun段階: {stage} ／ 理由: {t["reason"]} ／ 次の対応: {SHORT_ACTIONS[t["action_code"]]}',
@@ -69,6 +96,13 @@ def build_lanes(workflow, runs, *, repo_names=(), monitor_ok=True):
         keys.add(c['key'])
         item = dict(c)
         latest = current_runs.get(item['run_id'])
+        latest_record = latest['record'] if isinstance(latest, dict) and isinstance(latest.get('record'), dict) else None
+        # UI-E1 (C2): a run observed in the live Monitor list carries its own started_at /
+        # finished_at verbatim -- never guessed, '不明' (via human_row_lines) when unavailable.
+        # created_at is a different field (set at record creation, before any worker actually
+        # started) and must never stand in for started_at.
+        item['started_at'] = latest_record.get('started_at') if latest_record else None
+        item['finished_at'] = latest_record.get('finished_at') if latest_record else None
         conflict = item.get('observed_stage', 'unknown') != 'unknown' and (
             latest is None or latest.get('liveness') not in ('running', 'starting')
             or latest['record'].get('stage') != item['observed_stage'])
@@ -105,11 +139,14 @@ def build_lanes(workflow, runs, *, repo_names=(), monitor_ok=True):
         main = r.get('main_agent') if r.get('main_agent') in ('codex', 'claude') else '確認待ち'
         reviewer = r.get('review_agent') if r.get('review_agent') in ('codex', 'claude') else '確認待ち'
         state = STAGES[stage] if confirmed else 'Run稼働・所属確認待ち'
-        result[lane].append(dict(key='RUN:'+rid, run_id=rid, lane=lane, title='Run '+rid,
+        result[lane].append(dict(key='RUN:'+rid, run_id=rid, lane=lane, repo=repo, title='Run '+rid,
             priority=priority, state=state,
             hint=f'repo: {repo} ／ 担当設定: {main} / {reviewer}\n{state}／Workflow TASKとの紐付け未確認',
             detail='Runの詳細・テスト・レビュー結果・ログは既存の詳細パネルで確認できます。',
-            observed_stage=stage if confirmed else 'unknown', task_unknown=not confirmed, assigned_ai=main, reviewer_ai=reviewer))
+            observed_stage=stage if confirmed else 'unknown', task_unknown=not confirmed, assigned_ai=main, reviewer_ai=reviewer,
+            # UI-E1 (C2): the record's own started_at verbatim, never guessed -- created_at is a
+            # different field (set before any worker actually started) and is not a substitute.
+            started_at=r.get('started_at'), finished_at=r.get('finished_at')))
     return result
 
 
@@ -172,7 +209,11 @@ class WorkflowFeed:
 class LaneBoard:
     groups = LANES
     group_labels = {}
-    def __init__(self, parent, on_select):
+    # UI-E1: groups whose cards get the row-scoped 'レポートをコピー' button (C3). Empty here --
+    # the base four-lane board is never the live screen (LoopBoard overrides this for its own
+    # Human-side groups); nothing here changes for the base board's own existing tests.
+    human_groups = ()
+    def __init__(self, parent, on_select, *, on_copy_report=None):
         from .app import DARK_BG, DARK_FIELD, DARK_FG, DARK_BORDER, DARK_SELECTION
         self.frame = ttk.Frame(parent)
         self.frame.rowconfigure(2, weight=1)
@@ -185,8 +226,10 @@ class LaneBoard:
         self.headers, self.bodies, self.canvases, self.cards = {}, {}, {}, {}
         self.review_header = None
         self.on_select = on_select
+        self._on_copy_report = on_copy_report
         self._last = None
         self._widgets = {}
+        self._report_buttons = {}
         self._data = {}
         self._positions = {}
         self._selected_key = None
@@ -232,6 +275,8 @@ class LaneBoard:
             if key not in current:
                 self._widgets.pop(key).destroy()
                 self._positions.pop(key, None)
+                if key in self._report_buttons:
+                    self._report_buttons.pop(key).destroy()
                 if key == self._selected_key:
                     self._selected_key = None
         self._data = current
@@ -247,6 +292,8 @@ class LaneBoard:
                     was_focused = hasattr(old, 'focus_get') and old.focus_get() is old
                     old.destroy()  # Tk parents cannot be moved between scroll canvases.
                     self._positions.pop(key, None)
+                    if key in self._report_buttons:
+                        self._report_buttons.pop(key).destroy()
                 fresh = key not in self._widgets
                 if fresh:
                     button = self._make_card(name, key)
@@ -258,6 +305,19 @@ class LaneBoard:
                     button.bind('<Return>', lambda e, k=key: self._activate(k))
                     button.bind('<MouseWheel>', lambda e, k=key: self.canvases[self._data[k]['lane']].yview_scroll(-int(e.delta/120), 'units'))
                 button = self._widgets[key]
+                # UI-E1 (C3): a sibling 'レポートをコピー' button for this row, kept in sync with
+                # this row's current group/run_id/callback on every update -- not only when the
+                # row itself is freshly created. A Workflow row keeps the same key across updates
+                # even after a run_id first appears on it (run_id is not part of its identity), so
+                # a fresh-only check would leave such a row without its button forever.
+                wants_report = name in self.human_groups and self._on_copy_report is not None and bool(card.get('run_id'))
+                has_report = key in self._report_buttons
+                if wants_report and not has_report:
+                    self._report_buttons[key] = ttk.Button(
+                        self.bodies[name], text=REPORT_COPY_TEXT, command=self._report_command(key))
+                    self._positions.pop(key, None)  # force a re-pack so the new button lands next to its own card
+                elif has_report and not wants_report:
+                    self._report_buttons.pop(key).destroy()
                 if fresh or previous.get(key) != card:
                     title = card['title'] if len(card['title']) <= 30 else card['title'][:29]+'…'
                     button.configure(text=self._card_text(card, name, title))
@@ -265,10 +325,18 @@ class LaneBoard:
                     button.pack_forget()
                     kwargs = dict(fill='x', pady=4, padx=2)
                     if index:
-                        kwargs['after'] = self._widgets[ordered[index-1]['key']]
+                        # UI-E1 (C3 regression): pack after the previous row's own trailing widget
+                        # -- its copy button when it has one, otherwise its card -- so this row's
+                        # card can never be inserted between a previous row and its own button.
+                        prev_key = ordered[index-1]['key']
+                        kwargs['after'] = self._report_buttons.get(prev_key, self._widgets.get(prev_key))
                     elif len(ordered) > 1 and ordered[1]['key'] in self._widgets and self._positions.get(ordered[1]['key'], (None,))[0] == name:
                         kwargs['before'] = self._widgets[ordered[1]['key']]
                     button.pack(**kwargs)
+                    report_button = self._report_buttons.get(key)
+                    if report_button is not None:
+                        report_button.pack_forget()
+                        report_button.pack(fill='x', pady=(0, 4), padx=2, after=button)
                     if was_focused:
                         button.focus_set()
                     self._positions[key] = (name, index)
@@ -276,6 +344,16 @@ class LaneBoard:
 
     def _make_card(self, name, key):
         return ttk.Button(self.bodies[name], style=self._card_style(name), command=lambda k=key: self._activate(k))
+
+    def _report_command(self, key):
+        """Looks up the row's run_id in self._data at click time (C3): always this row's own,
+        current Run -- never one captured when the button was first created."""
+        def copy():
+            card = self._data.get(key)
+            rid = card.get('run_id') if card else None
+            if rid and self._on_copy_report is not None:
+                self._on_copy_report(rid)
+        return copy
 
     def _card_text(self, card, name, title):
         return f'{title}\n{card["state"]}\n{card["priority"]} ／ {self.group_labels.get(name, name)}'

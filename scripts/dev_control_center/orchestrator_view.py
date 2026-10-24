@@ -341,7 +341,7 @@ class OrchestratorWindow:
             self.automation_status_button.state(['disabled'])
         ttk.Button(header, text='新規Task・開始設定', command=lambda: self._show_details('form')).pack(side='left', padx=4)
         ttk.Button(header, text='詳細を閉じる', command=self._hide_details).pack(side='left', padx=4)
-        self.board = LaneBoard(outer, self._select_card)
+        self.board = LaneBoard(outer, self._select_card, on_copy_report=self._copy_run_report_for)
         self.board.frame.grid(row=1, column=0, columnspan=2, sticky='nsew', pady=8)
         self.board_notice = ttk.Label(outer, text='Run／Workflow：確認待ち', wraplength=1100)
         self.board_notice.grid(row=2, column=0, columnspan=2, sticky='ew')
@@ -918,6 +918,18 @@ class OrchestratorWindow:
         self.window.clipboard_clear()
         self.window.clipboard_append(text)
         self.notice_var.set(f"run {item['record']['run_id']} のログをClipboardへコピーしました（{len(text):,} 文字）。")
+
+    def _copy_run_report_for(self, run_id: str) -> None:
+        """UI-E1: the existing Human欄の each row's own 'レポートをコピー' button -- the same
+        rs.run_report content as copy_run_log above, but for that row's own run_id specifically,
+        regardless of which run (if any) is currently selected in Run履歴."""
+        item = next((i for i in self.run_items if i["record"]["run_id"] == run_id), None)
+        if item is None:
+            return
+        text = rs.run_report(item["run_dir"])
+        self.window.clipboard_clear()
+        self.window.clipboard_append(text)
+        self.notice_var.set(f"run {run_id} のレポートをClipboardへコピーしました（{len(text):,} 文字）。")
 
     def open_run_dir(self) -> None:
         item = self._selected_item()

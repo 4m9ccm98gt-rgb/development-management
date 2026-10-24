@@ -1490,5 +1490,39 @@ class CharacterMoodTests(ViewCase):
         self.assertIsNone(character._after_id)
 
 
+class CopyRunReportForRowTests(FakeOrchestratorWindowCase):
+    """UI-E1 C3: the existing Human欄 row's own 'レポートをコピー' button calls this -- the same
+    rs.run_report content copy_run_log puts on the clipboard for the Run履歴 tab, but scoped to
+    that row's own run_id, for exactly that run and no other. Fake clipboard / temp run dirs
+    only, no real Tk (board itself is faked away by FakeOrchestratorWindowCase.setUp; the row-to-
+    button wiring is covered separately in test_dev_control_center_orchestrator_loop.py)."""
+
+    def test_copies_only_the_requested_runs_report_and_ignores_others(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir_a = Path(tmp) / "20261022-000000-000001"
+            run_dir_a.mkdir()
+            write_json_atomic(run_dir_a / "run.json", record(run_id="20261022-000000-000001"))
+            run_dir_b = Path(tmp) / "20261022-000000-000002"
+            run_dir_b.mkdir()
+            write_json_atomic(run_dir_b / "run.json", record(run_id="20261022-000000-000002", stage=rs.FAILED))
+            self.window.run_items = [item(record(run_id="20261022-000000-000001"), run_dir=run_dir_a),
+                                     item(record(run_id="20261022-000000-000002", stage=rs.FAILED), run_dir=run_dir_b)]
+            with mock.patch.object(self.window.window, "clipboard_append") as append, \
+                 mock.patch.object(self.window.window, "clipboard_clear") as clear:
+                self.window._copy_run_report_for("20261022-000000-000002")
+            clear.assert_called_once_with()
+            copied = append.call_args.args[0]
+        self.assertIn("run id: 20261022-000000-000002", copied)
+        self.assertNotIn("run id: 20261022-000000-000001", copied)
+        self.assertIn("run 20261022-000000-000002", self.window.notice_var.get())
+        self.assertIn("コピーしました", self.window.notice_var.get())
+
+    def test_unknown_run_id_is_a_no_op(self):
+        self.window.run_items = []
+        with mock.patch.object(self.window.window, "clipboard_append") as append:
+            self.window._copy_run_report_for("20261022-000000-999999")
+        append.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
