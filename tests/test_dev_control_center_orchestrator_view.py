@@ -1355,6 +1355,90 @@ class RequeueLabelDisplayTests(FakeOrchestratorWindowCase):
         self.assertNotIn("  [", lines[0])  # no appended requeue-status bracket (the role's own [C→C] stays)
 
 
+class StartButtonAfterStopTests(FakeOrchestratorWindowCase):
+    """UI-FIX1: 開始 must recover from a blocked attempt -- its enabled state has to track only
+    whether its own request is in flight (_start_pending), never whichever run happens to be
+    selected in the list. Before this fix, _confirm_start disabled 開始 and the only code that
+    ever re-enabled it was _render_selected's "no run selected" branch; once a start attempt
+    failed (e.g. the target repo's previous run had not finished AI安全停止 yet) while some run
+    was selected, 開始 stayed disabled forever -- even after that run fully stopped -- because
+    nothing re-evaluated it for a "run selected" state. Only a fresh DCC restart (a new window
+    with nothing selected) cleared it. Built without any real Tk widget (FakeOrchestratorWindowCase)
+    and without the real one-run-per-repo lock -- orch.start_run is always mocked here, exactly as
+    the rest of this file already does, so these exercise only this window's own button logic."""
+
+    def push_and_tick(self, rec, *, liveness):
+        snapshot = {"runs": [{"record": rec, "liveness": liveness, "run_dir": None, "reason": "",
+                               "heartbeat_age": 1.0}],
+                    "usage": {}, "selected": None, "log": "", "log_reset": False, "at": 0}
+        self.window.monitor.queue.put(snapshot)
+        self.window._tick()
+
+    def _start(self, *, side_effect=None, result_path=None):
+        self.window.task_text.delete("1.0", "end")
+        self.window.task_text.insert("1.0", "x")
+        captured = []
+
+        def fake_start_run(r, **_k):
+            captured.append(r)
+            return result_path or Path("C:/runs/r")
+
+        with mock.patch.object(orch, "start_run", side_effect=side_effect or fake_start_run):
+            self.window.start_run()
+            self.window._confirm_start()
+            self.pump(lambda: (self.window._tick(), not self.window._start_pending)[1])
+        return captured
+
+    def test_start_is_blocked_while_the_run_is_still_stopping_and_the_button_recovers(self):
+        """C2: before the stop finishes, starting the same repo is still refused, exactly as
+        before (the repo lock, not this button, is what refuses it) -- and the refusal itself
+        must not leave 開始 stuck disabled."""
+        rec = record(run_id="r1", repo=str(Path("C:/repos/app")), stage=rs.STOPPING)
+        self.window.selected_run = "r1"
+        self.push_and_tick(rec, liveness=rs.LIVE_RUNNING)
+        with mock.patch.object(view.messagebox, "showerror") as error:
+            captured = self._start(side_effect=rs.ActiveRunExists("r1", rs.LIVE_RUNNING))
+        self.assertEqual(captured, [])
+        self.assertTrue(error.called)
+        self.assertIn("実行中", error.call_args.args[1])
+        self.assertTrue(self.window.start_button.instate(["!disabled"]))
+
+    def test_start_succeeds_once_the_stop_has_actually_completed(self):
+        """C1: once the repo's run reaches stopped (terminal), the same window -- still showing
+        that now-stopped run selected, no restart -- can start a new Task for that repo."""
+        rec = record(run_id="r1", repo=str(Path("C:/repos/app")), stage=rs.STOPPING)
+        self.window.selected_run = "r1"
+        self.push_and_tick(rec, liveness=rs.LIVE_RUNNING)
+        with mock.patch.object(view.messagebox, "showerror"):
+            self._start(side_effect=rs.ActiveRunExists("r1", rs.LIVE_RUNNING))
+        self.assertTrue(self.window.start_button.instate(["!disabled"]))
+        stopped = dict(rec, stage=rs.STOPPED,
+                       final_result={"stage": rs.STOPPED, "code": "USER_SAFETY_STOP", "message": "ok"})
+        self.push_and_tick(stopped, liveness=rs.LIVE_FINISHED)
+        self.assertTrue(self.window.start_button.instate(["!disabled"]))
+        captured = self._start(result_path=Path("C:/runs/r2"))
+        self.assertEqual(len(captured), 1)
+
+    def test_start_is_blocked_only_for_the_repo_whose_run_is_active(self):
+        """C3: a run active in one repo ("other") still refuses a second run in that same repo,
+        but never blocks starting a different, free repo ("app") -- and the refused attempt does
+        not leave 開始 stuck disabled for that other repo either."""
+        rec = record(run_id="r1", repo=str(Path("C:/repos/other")), stage="testing")
+        self.window.selected_run = "r1"
+        self.push_and_tick(rec, liveness=rs.LIVE_RUNNING)
+        self.window.repo_var.set("other")
+        self.window._on_repo_changed()
+        with mock.patch.object(view.messagebox, "showerror") as error:
+            captured = self._start(side_effect=rs.ActiveRunExists("r1", rs.LIVE_RUNNING))
+        self.assertEqual(captured, [])
+        self.assertTrue(error.called)
+        self.assertTrue(self.window.start_button.instate(["!disabled"]))
+        self.window.repo_var.set("app")
+        self.window._on_repo_changed()
+        captured = self._start(result_path=Path("C:/runs/r3"))
+        self.assertEqual(len(captured), 1)
+
+
 class CharacterMoodTests(ViewCase):
     def test_character_follows_the_selected_run(self):
         character = self.window.character

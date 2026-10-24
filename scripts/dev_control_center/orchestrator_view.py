@@ -250,6 +250,15 @@ class OrchestratorWindow:
         self.spec_path: Path | None = None
         self._spec_invalid = False
         self._pending_start: dict | None = None
+        # UI-FIX1: whether a 開始 request is between "確認の開始を押した" and its own ok/error
+        # event -- the only thing start_button's enabled state should ever track. Previously the
+        # button was disabled here and only ever re-enabled by _render_selected's `item is None`
+        # branch, so once any run (including the one just started) was selected it stayed
+        # disabled forever -- even after that run later stopped -- until DCC was restarted (a
+        # fresh window starts with no run selected). The repo-busy / one-run-per-repo rule itself
+        # is unaffected: it is still enforced by orchestrator.prepare_run's own repo lock
+        # (ActiveRunExists), never by this button.
+        self._start_pending = False
         # Worker threads must never hold `self`: a Tk object released on a non-main thread aborts Tcl.
         self._closed_event = threading.Event()
         self.snapshot: dict = {}
@@ -817,7 +826,8 @@ class OrchestratorWindow:
             expected_branch=pending["expected_branch"], prepare_source=True, spec=pending["spec"])
         self.confirm_frame.grid_remove()
         self.input_frame.grid()
-        self.start_button.state(["disabled"])
+        self._start_pending = True
+        self._refresh_start_button()
         branch_text = pending["expected_branch"] or "対象branch"
         self.notice_var.set(f"source repoを{branch_text}の最新へ揃え（clean時のみ）、独立したrun workerを起動しています...")
 
@@ -964,6 +974,7 @@ class OrchestratorWindow:
             while True:
                 kind, value = self._events.get_nowait()
                 if kind == "ok":
+                    self._start_pending = False
                     self._selected_card_key = None
                     self._pending_run_selection = value.name
                     self._selection_explicit = True
@@ -973,6 +984,8 @@ class OrchestratorWindow:
                     self._render_selected()
                     self.notice_var.set(f"run {value.name} を独立workerで開始しました。この画面やDCCを閉じても継続します。")
                 elif kind == "error":
+                    self._start_pending = False
+                    self._refresh_start_button()
                     self.notice_var.set(value)
                     messagebox.showerror("AI Orchestrator", value, parent=self.window)
                 else:
@@ -1071,7 +1084,6 @@ class OrchestratorWindow:
         if hasattr(self, 'board'):
             self._refresh_board()
         item = self._selected_item()
-        # busy start button while a start is in flight is handled by the notice; recompute here
         self.character.set_mood(mood_for(item["record"]["stage"], item["liveness"]) if item else "idle")
         if item is None:
             for var in (self.stage_var, self.counts_var, self.calls_var, self.fp_var, self.time_var,
@@ -1081,7 +1093,7 @@ class OrchestratorWindow:
             _set_enabled(self.apply_button, False)
             _set_enabled(self.copy_button, False)
             _set_enabled(self.open_button, False)
-            _set_enabled(self.start_button, True)
+            self._refresh_start_button()
             return
         record, liveness = item["record"], item["liveness"]
         limits = record.get("limits", {})
@@ -1123,6 +1135,16 @@ class OrchestratorWindow:
         applicable = (stage == rs.COMPLETED and bool(record.get("candidate_sha"))
                       and record.get("apply_status") != "applied" and self.on_apply is not None)
         _set_enabled(self.apply_button, applicable)
+        self._refresh_start_button()
+
+    def _refresh_start_button(self) -> None:
+        """開始 is enabled whenever no 開始 request of its own is in flight (UI-FIX1). This used
+        to be computed as "no run is selected", so once any run -- including the one just
+        started -- was selected, the button stayed disabled even after that run finished or was
+        safely stopped, until DCC was restarted (a fresh window starts with nothing selected).
+        The one-run-per-repo rule is still enforced by orchestrator.prepare_run's own repo lock
+        (ActiveRunExists raised on the actual start attempt), never by this button."""
+        _set_enabled(self.start_button, not self._start_pending)
 
     def _set_log(self, text: str) -> None:
         self.log.configure(state="normal")
