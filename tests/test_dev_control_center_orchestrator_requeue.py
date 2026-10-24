@@ -1182,5 +1182,93 @@ class DisplayLabelTests(unittest.TestCase):
                                           req.RequeueConfig(enabled=False, daily_limit=1), state, "2026-03-10"), "")
 
 
+class QuotaBucketTests(unittest.TestCase):
+    """DCC Task UI-D2 (C1/C2/C4/C5): orchestrator_requeue.quota_bucket/quota_display is the one
+    振り分け function every display model must reuse unchanged. Every scenario here uses only a
+    fake RequeueState -- never a real requeue cycle, real Tk or real %LOCALAPPDATA%."""
+
+    def test_not_a_provider_quota_stop_is_not_classified_at_all(self):
+        # C4: any other needs_human reason (NO_CHANGES/TASK_BLOCKED/REVIEWER_NEEDS_HUMAN/...) is
+        # never touched by this classifier, regardless of RequeueState content.
+        state = req.RequeueState()
+        state.pending["run-x"] = req._Pending(scheduled_at=NOW, lineage_root="run-x", attempt=1)
+        record = make_record(run_id="run-x", code="NO_CHANGES")
+        self.assertIsNone(req.quota_bucket(record, state=state))
+        self.assertIsNone(req.quota_display(record, state=state, now=NOW))
+        # A record whose stage is not even needs_human is likewise never a candidate.
+        self.assertIsNone(req.quota_bucket(make_record(run_id="run-y", stage="failed"), state=req.RequeueState()))
+
+    def test_scheduled_run_is_quota_waiting_with_manager_eta(self):
+        # C1/C5 (予定あり): a run discovery has actually scheduled for an automatic requeue.
+        state = req.RequeueState()
+        state.pending["run-sched"] = req._Pending(
+            scheduled_at=NOW.replace(hour=17, minute=5), lineage_root="run-sched", attempt=1)
+        record = make_record(run_id="run-sched")
+        self.assertEqual(req.quota_bucket(record, state=state), req.QUOTA_WAITING)
+        display = req.quota_display(record, state=state, now=NOW)
+        self.assertEqual(display, dict(bucket=req.QUOTA_WAITING,
+                                       manager_label="使用枠待ち（再実行まで約15分）"))
+
+    def test_excluded_at_startup_is_permanently_manual(self):
+        # C2(b)/C5 (起動時に除外): a run already PROVIDER_QUOTA-stopped before this DCC process
+        # started -- permanently out of scope for automatic requeue, never a temporary state.
+        state = req.RequeueState()
+        state.excluded_at_startup.add("run-excl")
+        record = make_record(run_id="run-excl")
+        self.assertEqual(req.quota_bucket(record, state=state), req.QUOTA_MANUAL_PERMANENT)
+        self.assertEqual(req.quota_display(record, state=state, now=NOW),
+                         dict(bucket=req.QUOTA_MANUAL_PERMANENT, manager_label=req.MANAGER_MANUAL_TEXT))
+
+    def test_lineage_limit_reached_is_permanently_manual(self):
+        # C2(c)/C5 (上限到達): this lineage has already used every automatic requeue it is ever
+        # allowed -- permanently out of scope, same bucket as excluded_at_startup.
+        state = req.RequeueState()
+        state.lineage_attempts["run-cap"] = req.MAX_LINEAGE_ATTEMPTS
+        record = make_record(run_id="run-cap")
+        self.assertEqual(req.quota_bucket(record, state=state), req.QUOTA_MANUAL_PERMANENT)
+        # A run already recorded needs_human by discovery (e.g. missing required fields, or a
+        # rejected start) is likewise permanently manual, even without a lineage cap.
+        state2 = req.RequeueState()
+        state2.needs_human.add("run-rejected")
+        self.assertEqual(req.quota_bucket(make_record(run_id="run-rejected"), state=state2),
+                         req.QUOTA_MANUAL_PERMANENT)
+
+    def test_switch_off_and_undiscovered_is_temporarily_unclassified(self):
+        # C2(a)/C5 (設定がオフ): discovery never looked at this run at all (e.g. the global or
+        # this feature's own switch is OFF) -- temporarily unclassified, distinct from the
+        # permanent buckets above even though the Manager-facing sentence is the same.
+        state = req.RequeueState()
+        record = make_record(run_id="run-untouched")
+        self.assertEqual(req.quota_bucket(record, state=state), req.QUOTA_MANUAL_TEMPORARY)
+        self.assertEqual(req.quota_display(record, state=state, now=NOW),
+                         dict(bucket=req.QUOTA_MANUAL_TEMPORARY, manager_label=req.MANAGER_MANUAL_TEXT))
+        self.assertNotEqual(req.QUOTA_MANUAL_TEMPORARY, req.QUOTA_MANUAL_PERMANENT)
+
+    def test_switch_turned_off_after_a_schedule_already_exists_is_temporarily_unclassified(self):
+        # Reviewer finding 3/C2(a)/C5 (設定がオフ、予定登録後): a run already has an actual
+        # schedule in state.pending (discovery happened while both switches were ON), but by the
+        # time the display is computed, either switch is now OFF. run_requeue_once's own cycle
+        # returns STATUS_DISABLED immediately whenever either switch is off (no discovery, no
+        # start attempt), so this pending candidate cannot actually be requeued right now --
+        # quota_bucket/quota_display must demote it to QUOTA_MANUAL_TEMPORARY (never keep
+        # QUOTA_WAITING just because state.pending still holds the stale schedule), and must not
+        # promote it to QUOTA_MANUAL_PERMANENT either (turning the switch back on resumes it).
+        state = req.RequeueState()
+        state.pending["run-sched"] = req._Pending(
+            scheduled_at=NOW.replace(hour=17, minute=5), lineage_root="run-sched", attempt=1)
+        record = make_record(run_id="run-sched")
+        self.assertEqual(
+            req.quota_bucket(record, state=state, global_enabled=False, requeue_enabled=True),
+            req.QUOTA_MANUAL_TEMPORARY)
+        self.assertEqual(
+            req.quota_bucket(record, state=state, global_enabled=True, requeue_enabled=False),
+            req.QUOTA_MANUAL_TEMPORARY)
+        self.assertEqual(
+            req.quota_display(record, state=state, now=NOW, global_enabled=False, requeue_enabled=True),
+            dict(bucket=req.QUOTA_MANUAL_TEMPORARY, manager_label=req.MANAGER_MANUAL_TEXT))
+        # Both switches back ON (the default): the same still-pending record reverts to waiting.
+        self.assertEqual(req.quota_bucket(record, state=state), req.QUOTA_WAITING)
+
+
 if __name__ == "__main__":
     unittest.main()

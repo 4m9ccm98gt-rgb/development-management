@@ -27,6 +27,9 @@ COLUMNS = ('task', 'plan', 'repo', 'ai', 'status', 'dependencies', 'run')
 HEADINGS = ('TASK ID', '計画 ID', '対象アプリ', '担当AI（設定）', '状態', '依存TASKの状態', 'Run ID')
 # DCC Task UI-D1: 動いているタスク（準備中・実装中・テスト中・修理中・レビュー中・最終処理中）だけの
 # 固定語ラベル。完了・失敗・停止・needs_human はここに現れない（overview.RUNNING_STAGES の対象外）。
+# DCC Task UI-D2 (C1)の例外: needs_human の Run でも、overview.running_tasks が quota_bucket ==
+# QUOTA_WAITING を付けた行だけは、その行自身の quota_label（使用枠待ち＋予定時刻の目安）を
+# stage_label としてここに出す。
 RUNNING_STAGE_LABELS = dict(preflight='準備中', implementing='実装中', testing='テスト中',
                             repairing='修理中', reviewing='レビュー中', finalizing='最終処理中')
 RUNNING_ORIGIN_LABELS = {overview.ORIGIN_PLAN: '計画', overview.ORIGIN_REPORT: '報告',
@@ -47,7 +50,14 @@ def _fixed(value, labels):
 def running_tasks_model(rows):
     """Pure allowlisted presentation for 動いているタスク (DCC Task UI-D1): never forward an
     arbitrary string. Only a valid Run ID, a known running stage and a known fixed origin word
-    produce a row; anything else (wrong shape, unknown stage/origin) is dropped, never guessed."""
+    produce a row; anything else (wrong shape, unknown stage/origin) is dropped, never guessed.
+
+    DCC Task UI-D2 (C1): a row whose own stage is needs_human is still dropped UNLESS its own
+    quota_bucket is exactly overview.QUOTA_WAITING and its own quota_label is a non-empty string
+    (both already allowlisted upstream by overview.running_tasks/manager_collector) -- in which
+    case that quota_label text (使用枠待ち＋予定時刻の目安) is shown as stage_label instead of a
+    RUNNING_STAGE_LABELS lookup. The row's own shape (run_id/repo/stage_label/origin_label) never
+    changes either way."""
     result = []
     if not isinstance(rows, list):
         return result
@@ -58,11 +68,19 @@ def running_tasks_model(rows):
         stage = row.get('stage')
         origin = row.get('origin')
         if (not (isinstance(rid, str) and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9]{6}', rid))
-                or stage not in RUNNING_STAGE_LABELS or origin not in RUNNING_ORIGIN_LABELS):
+                or origin not in RUNNING_ORIGIN_LABELS):
             continue
+        if stage in RUNNING_STAGE_LABELS:
+            stage_label = RUNNING_STAGE_LABELS[stage]
+        else:
+            quota_label = row.get('quota_label')
+            if not (stage == 'needs_human' and row.get('quota_bucket') == overview.QUOTA_WAITING
+                    and isinstance(quota_label, str) and quota_label):
+                continue
+            stage_label = quota_label
         repo = row.get('repo')
         repo_text = repo if isinstance(repo, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', repo) else UNKNOWN
-        result.append(dict(run_id=rid, repo=repo_text, stage_label=RUNNING_STAGE_LABELS[stage],
+        result.append(dict(run_id=rid, repo=repo_text, stage_label=stage_label,
                            origin_label=RUNNING_ORIGIN_LABELS[origin]))
     return result
 

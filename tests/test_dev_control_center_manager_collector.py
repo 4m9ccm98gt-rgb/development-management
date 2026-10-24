@@ -127,6 +127,31 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(result['status'], expected)
                 self.assertNotIn('SECRET', str(result))
 
+    def test_quota_display_fn_flows_through_collect_for_a_plan_linked_task(self):
+        """DCC Task UI-D2 (C3): the actual model-generation path for a Workflow-plan TASK (not a
+        hand-built snapshot) -- a real RequeueState through orchestrator_requeue.quota_display,
+        injected as quota_display_fn, reaching collect()'s own snapshot (and so 判断受信箱 /
+        組織図, which both read snapshot['plans'][*]['tasks'][*]['run'] directly)."""
+        from scripts.dev_control_center import orchestrator_requeue as requeue
+        from datetime import datetime, timezone
+
+        state = requeue.RequeueState()
+        state.excluded_at_startup.add(RID)
+
+        def quota_record(rid):
+            return dict(record=dict(run_id=rid, stage='needs_human',
+                                    final_result=dict(stage='needs_human', code='PROVIDER_QUOTA', message='')),
+                       liveness='finished')
+
+        result = self.collector([plan(task('T1', 'needs_human'))],
+            read_association=lambda *args: {'run_id': RID}, inspect_run=quota_record,
+            quota_display_fn=lambda record: requeue.quota_display(
+                record, state=state, now=datetime(2026, 3, 10, 16, 50, 0, tzinfo=timezone.utc))
+        ).collect()
+        run = result['snapshot']['plans'][0]['tasks'][0]['run']
+        self.assertEqual(run['quota_bucket'], 'manual_permanent')
+        self.assertEqual(run['quota_label'], '手動で再投入が必要')
+
     def test_missing_corrupt_and_mismatched_run_never_normal(self):
         for assoc, obs in ((None, observed()), ({'run_id': 'C:/SECRET'}, observed()),
                            ({'run_id': RID}, None), ({'run_id': RID}, observed(OTHER_RID)),
@@ -501,6 +526,36 @@ class CollectRunningTasksTests(unittest.TestCase):
                         inspect_run=lambda rid, live=live: observed(rid, stage='testing', live=live))
                     rows = collector.collect_running_tasks()
                     self.assertEqual([r['run_id'] for r in rows], [RID])
+
+    def test_quota_display_fn_flows_through_the_real_active_runs_reader(self):
+        """DCC Task UI-D2 (C3): the actual model-generation path -- a real RequeueState through
+        orchestrator_requeue.quota_display, injected as quota_display_fn, reaching
+        collect_running_tasks()'s own output via the real default _active_runs_reader (not a
+        hand-built row)."""
+        from scripts.dev_control_center import orchestrator_requeue as requeue
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime(2026, 3, 10, 16, 50, 0, tzinfo=timezone.utc)
+        state = requeue.RequeueState()
+        state.pending[RID] = requeue._Pending(
+            scheduled_at=now + timedelta(minutes=15), lineage_root=RID, attempt=1)
+
+        def quota_record(rid):
+            return dict(record=dict(run_id=rid, stage='needs_human', repo='sample-repo',
+                                    final_result=dict(stage='needs_human', code='PROVIDER_QUOTA', message='')),
+                       liveness='finished')
+
+        with tempfile.TemporaryDirectory() as temp:
+            runs = Path(temp)
+            (runs / RID).mkdir()
+            collector = self.collector(runs_root=runs, list_active_runs=None,
+                inspect_run=quota_record,
+                quota_display_fn=lambda record: requeue.quota_display(record, state=state, now=now))
+            rows = collector.collect_running_tasks()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]['run_id'], RID)
+            self.assertEqual(rows[0]['quota_bucket'], 'quota_waiting')
+            self.assertEqual(rows[0]['quota_label'], '使用枠待ち（再実行まで約15分）')
 
     def test_running_run_beyond_200_newer_finished_runs_still_appears(self):
         """Repair regression: a run-directory cap must not drop a still-running task just

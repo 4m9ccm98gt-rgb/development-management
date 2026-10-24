@@ -415,6 +415,81 @@ def limit_notice(global_config: "auto.AutoModeConfig", requeue_config: RequeueCo
     return ""
 
 
+# --------------------------------------------------------------------------- DCC Task UI-D2: 振り分け（純関数）
+
+QUOTA_WAITING = "quota_waiting"
+QUOTA_MANUAL_TEMPORARY = "manual_temporary"
+QUOTA_MANUAL_PERMANENT = "manual_permanent"
+QUOTA_BUCKETS = frozenset((QUOTA_WAITING, QUOTA_MANUAL_TEMPORARY, QUOTA_MANUAL_PERMANENT))
+
+MANAGER_WAITING_TEXT = "使用枠待ち"
+MANAGER_MANUAL_TEXT = "手動で再投入が必要"
+
+
+def quota_bucket(record: dict, *, state: RequeueState, global_enabled: bool = True,
+                  requeue_enabled: bool = True) -> str | None:
+    """DCC Task UI-D2 (C1/C2): the one 振り分け function every display model (Manager's own
+    動いているタスク, 判断受信箁, 組織図) must reuse unchanged -- never re-derive the same
+    decision independently. Returns None when `record` is not itself a PROVIDER_QUOTA stop
+    (is_quota_stop); callers keep their existing needs_human handling for every other reason
+    completely unchanged (C4). Otherwise one of:
+      - QUOTA_WAITING: this run is in state.pending AND both switches (`global_enabled`,
+        `requeue_enabled` -- the caller's own fresh read of reports_auto.AutoModeConfig.enabled
+        and RequeueConfig.enabled, mirroring run_requeue_once's own re-read-fresh guard) are ON --
+        an automatic requeue is actually still going to happen; C1's own 使用枠待ち bucket.
+      - QUOTA_MANUAL_PERMANENT: this run_id was excluded at this process's own startup, or its
+        lineage has already used every automatic requeue it will ever be allowed
+        (MAX_LINEAGE_ATTEMPTS), or discovery itself already gave up on it (state.needs_human --
+        e.g. missing required fields, or a rejected start) -- none of these can ever become a
+        candidate again without a human acting; C2(b)/C2(c)'s 恒久的に自動再投入の対象外 bucket.
+      - QUOTA_MANUAL_TEMPORARY: either discovery has not (yet) placed this run_id in any of the
+        sets above -- most commonly because the global or this feature's own switch was OFF at
+        discovery time (C2(a)), but also a brief race before the next discovery cycle runs --
+        or this run_id IS in state.pending but one of the two switches is OFF right now (C2(a)
+        applying even after a schedule already exists: run_requeue_once's own cycle never even
+        starts while either switch is off, so a pending candidate cannot actually be requeued
+        until a human turns it back on). Nothing here rules it out forever, so it stays the
+        一時的に未分類 bucket until classified otherwise.
+    Never reads final_result.message -- only RequeueState's own already-computed bookkeeping."""
+    if not is_quota_stop(record):
+        return None
+    run_id = record.get("run_id")
+    if not isinstance(run_id, str):
+        return QUOTA_MANUAL_PERMANENT
+    if run_id in state.pending:
+        return QUOTA_WAITING if (global_enabled and requeue_enabled) else QUOTA_MANUAL_TEMPORARY
+    if run_id in state.excluded_at_startup:
+        return QUOTA_MANUAL_PERMANENT
+    if state.lineage_attempts.get(state.lineage_root_for(run_id), 0) >= MAX_LINEAGE_ATTEMPTS:
+        return QUOTA_MANUAL_PERMANENT
+    if run_id in state.needs_human:
+        return QUOTA_MANUAL_PERMANENT
+    return QUOTA_MANUAL_TEMPORARY
+
+
+def quota_display(record: dict, *, state: RequeueState, now: datetime | None = None,
+                   global_enabled: bool = True, requeue_enabled: bool = True) -> dict | None:
+    """DCC Task UI-D2 (C1/C2): the fixed-word Manager-facing projection of quota_bucket above --
+    None when `record` is not a PROVIDER_QUOTA stop at all (C4), else
+    {"bucket": one of QUOTA_BUCKETS, "manager_label": the fixed Manager-side sentence}. The
+    waiting bucket's own sentence reuses the same wait-estimate math run_status_label already
+    computes (再実行まで約N分); both manual buckets share the one fixed 手動で再投入が必要
+    sentence -- the temporary/permanent distinction lives in `bucket`, never in separate wording.
+    `global_enabled`/`requeue_enabled` are forwarded unchanged to quota_bucket (default True,
+    matching every pre-existing caller/test that never passes them)."""
+    bucket = quota_bucket(record, state=state, global_enabled=global_enabled, requeue_enabled=requeue_enabled)
+    if bucket is None:
+        return None
+    if bucket == QUOTA_WAITING:
+        pending = state.pending.get(record.get("run_id"))
+        moment = now or datetime.now(timezone.utc)
+        minutes = max(0, math.ceil((pending.scheduled_at - moment).total_seconds() / 60)) if pending else 0
+        label = f"{MANAGER_WAITING_TEXT}（再実行まで約{minutes}分）"
+    else:
+        label = MANAGER_MANUAL_TEXT
+    return dict(bucket=bucket, manager_label=label)
+
+
 # --------------------------------------------------------------------------- 仕様5: 実行ごとの記録
 
 _LOG_SEQUENCE_LOCK = threading.Lock()

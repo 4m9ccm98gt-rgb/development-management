@@ -23,7 +23,11 @@ STATUS_TEXT = {'available': '取得済み', 'partial': '一部取得不能・確
 CAUSES = dict(UNKNOWN='状態を確定できない', APPROVAL='人間の承認が必要', FAILED='失敗内容の確認が必要',
               HUMAN='人間の判断が必要', CANDIDATE='候補への対応が必要', DEPENDENCY='先行TASKが未完了',
               ACTIVE='処理中（Run観測済み）', HELD='保留状態', START='Runner基準の開始候補',
-              QUEUED='Runnerの選択待ち', TERMINAL='現在の対応不要')
+              QUEUED='Runnerの選択待ち', TERMINAL='現在の対応不要',
+              # DCC Task UI-D2 (C1/C2): a needs_human TASK whose Run stopped on PROVIDER_QUOTA,
+              # reclassified via orchestrator_requeue.quota_bucket (see analyze_task below).
+              QUOTA_WAITING='使用枠待ち（自動再実行を予定）',
+              QUOTA_MANUAL='手動で再投入が必要')
 OWNERS = dict(UNKNOWN='確認待ち', HUMAN='人間', HUMAN_CHECK='人間／確認待ち', DEPENDENCY='依存TASK',
               AI_CODEX='Codex（実行担当設定）', AI_CLAUDE='Claude（実行担当設定）',
               START_CHECK='開始判断の確認先（未特定）', NONE='なし')
@@ -60,6 +64,26 @@ def analyze_task(task, reason, *, memory_available):
         'APPROVED_READY': ('P2', 'START', 'START_CHECK', 'CHECK'),
         'QUEUED': ('P3', 'QUEUED', 'UNKNOWN', 'WAIT'),
     }
+    # DCC Task UI-D2 (C1/C2/C4): a needs_human TASK whose Run stopped on PROVIDER_QUOTA is
+    # reclassified using orchestrator_requeue's own already-computed bucket (manager_overview._run
+    # -> task['run']['quota_bucket'], never re-derived here). candidate_ready and every other
+    # reason are completely untouched; so is a needs_human TASK whose Run carries no quota_bucket
+    # at all (C4 -- every non-PROVIDER_QUOTA needs_human reason falls straight through to the
+    # original HUMAN_REQUIRED rule above).
+    if reason == 'HUMAN_REQUIRED' and task.get('status') == 'needs_human':
+        run = task.get('run')
+        quota = run.get('quota_bucket') if isinstance(run, dict) else None
+        if quota == 'quota_waiting':
+            # C1: removed from the human-facing cause/owner entirely -- the Manager's own
+            # 動いているタスク view (overview.running_tasks) is where 使用枠待ち with its ETA
+            # actually shows; this inbox row only needs to stop looking like 人の確認が必要.
+            rules['HUMAN_REQUIRED'] = ('P4', 'QUOTA_WAITING', 'NONE', 'WAIT')
+        elif quota in ('manual_temporary', 'manual_permanent'):
+            # C2: stays owned by HUMAN (human side keeps 人の確認が必要 unchanged) -- only the
+            # cause text changes, to the Manager-facing 手動で再投入が必要 sentence. The
+            # temporary/permanent distinction itself lives in task['run']['quota_bucket'], not in
+            # a second display cause (both share the one fixed sentence).
+            rules['HUMAN_REQUIRED'] = ('P1', 'QUOTA_MANUAL', 'HUMAN', 'CHECK')
     if reason == 'TASK_ACTIVE':
         run = task.get('run')
         if (not memory_available or not isinstance(run, dict) or run.get('availability') != 'available'
@@ -162,6 +186,11 @@ def build_inbox(snapshot, *, observation_id, collection_status, memory_available
             category=group, source='rules', snapshot_id=item['snapshot_id'], observation_id=observation_id,
             workflow_status=tasks[(pid, tid)]['status'],
             **analyze_task(tasks[(pid, tid)], reason, memory_available=memory_available)))
+        # DCC Task UI-D2 (C1/C3): a PROVIDER_QUOTA run with an actually-scheduled requeue moves
+        # out of the human-facing group entirely -- analyze_task already set cause to
+        # QUOTA_WAITING only for exactly that case, never for any other reason/cause.
+        if model['rows'][-1]['cause'] == 'QUOTA_WAITING':
+            model['rows'][-1]['category'] = 'waiting'
         model['rows'][-1]['proposals'] = proposals.build_proposals(model['rows'][-1])
     return model
 

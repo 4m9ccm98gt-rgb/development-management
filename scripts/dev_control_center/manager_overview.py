@@ -34,6 +34,14 @@ ORIGIN_REPORT = '報告'
 ORIGIN_REQUEST = '依頼'
 ORIGINS = frozenset((ORIGIN_PLAN, ORIGIN_REPORT, ORIGIN_REQUEST))
 
+# DCC Task UI-D2: closed vocabulary for a needs_human run's own PROVIDER_QUOTA 振り分け (computed
+# upstream by orchestrator_requeue.quota_bucket/quota_display, never derived here) -- see _run
+# and running_tasks below.
+QUOTA_WAITING = 'quota_waiting'
+QUOTA_MANUAL_TEMPORARY = 'manual_temporary'
+QUOTA_MANUAL_PERMANENT = 'manual_permanent'
+QUOTA_BUCKETS = frozenset((QUOTA_WAITING, QUOTA_MANUAL_TEMPORARY, QUOTA_MANUAL_PERMANENT))
+
 _RUN_ID = re.compile(r'[0-9]{8}-[0-9]{6}-[0-9]{6}')
 _REPO_NAME = re.compile(r'[A-Za-z0-9_.-]{1,80}')
 
@@ -64,7 +72,14 @@ def running_tasks(all_runs, *, plan_run_ids, report_run_ids):
     if its saved stage still looks active -- a stage alone never proves the worker is alive.
     `all_runs` entries missing/invalid required fields are dropped, never guessed; a duplicate
     run_id keeps only its first entry. Only run_id/stage/repo/main_agent/review_agent/origin are
-    exposed -- no other field of an `all_runs` entry passes through."""
+    exposed -- no other field of an `all_runs` entry passes through.
+
+    DCC Task UI-D2 (C1): a run whose own entry already carries quota_bucket == QUOTA_WAITING
+    (computed upstream by orchestrator_requeue.quota_display, never derived here) is also
+    included even though its own stage (needs_human) is never in RUNNING_STAGES and its own
+    liveness (finished) is never in ALIVE_LIVENESS -- it reached that terminal state only because
+    an automatic requeue is actually scheduled, so the Manager's own 動いているタスク view keeps
+    showing it (as 使用枠待ち, with the manager_label's own ETA) instead of letting it vanish."""
     rows = []
     seen = set()
     plan_run_ids = plan_run_ids or ()
@@ -75,9 +90,12 @@ def running_tasks(all_runs, *, plan_run_ids, report_run_ids):
         rid = item.get('run_id')
         stage = item.get('stage')
         liveness = item.get('liveness')
-        if not (isinstance(rid, str) and _RUN_ID.fullmatch(rid)):
+        if not (isinstance(rid, str) and _RUN_ID.fullmatch(rid)) or rid in seen:
             continue
-        if rid in seen or stage not in RUNNING_STAGES or liveness not in ALIVE_LIVENESS:
+        quota_label = item.get('quota_label')
+        is_quota_waiting = (stage == 'needs_human' and item.get('quota_bucket') == QUOTA_WAITING
+                            and liveness == 'finished' and isinstance(quota_label, str) and quota_label)
+        if not is_quota_waiting and (stage not in RUNNING_STAGES or liveness not in ALIVE_LIVENESS):
             continue
         seen.add(rid)
         main_agent = item.get('main_agent')
@@ -86,6 +104,8 @@ def running_tasks(all_runs, *, plan_run_ids, report_run_ids):
             run_id=rid, stage=stage, repo=_repo_name(item.get('repo')),
             main_agent=main_agent if main_agent in ('claude', 'codex') else None,
             review_agent=review_agent if review_agent in ('claude', 'codex') else None,
+            quota_bucket=QUOTA_WAITING if is_quota_waiting else None,
+            quota_label=quota_label if is_quota_waiting else '',
             origin=task_origin(rid, plan_run_ids=plan_run_ids, report_run_ids=report_run_ids)))
     return rows
 
@@ -100,7 +120,8 @@ def _id(value, limit):
 
 
 def _run(association, observations):
-    result = dict(run_id=None, stage='unknown', liveness='unknown', availability='unavailable')
+    result = dict(run_id=None, stage='unknown', liveness='unknown', availability='unavailable',
+                   quota_bucket=None, quota_label='')
     if not isinstance(association, dict):
         return result
     rid = association.get('run_id')
@@ -117,6 +138,15 @@ def _run(association, observations):
     result['liveness'] = _word(observation.get('liveness'), LIVENESS)
     if result['stage'] != 'unknown' and result['liveness'] != 'unknown':
         result['availability'] = 'available'
+    # DCC Task UI-D2 (C3): only ever trusted for a needs_human run -- quota_bucket/quota_label
+    # are the collector's own closed-vocabulary projection (manager_collector._quota_fields),
+    # never derived here and never present for any other stage.
+    if result['stage'] == 'needs_human':
+        qb = observation.get('quota_bucket')
+        if qb in QUOTA_BUCKETS:
+            result['quota_bucket'] = qb
+            ql = observation.get('quota_label')
+            result['quota_label'] = ql if isinstance(ql, str) else ''
     return result
 
 

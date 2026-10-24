@@ -698,7 +698,7 @@ class App(ttk.Frame):
             drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT,
             requeue_label_fn=self._requeue_label, on_reports_inbox=self.open_reports_inbox,
             on_workflow_plan=self.open_workflow_plan, on_automation_status=self.open_automation_status,
-            runner_state=self._workflow_runner_state)
+            runner_state=self._workflow_runner_state, quota_display_fn=self._quota_display)
 
     def open_reports_inbox(self) -> None:
         """Open (or focus) the reports inbox window. Display/local-decision only; see
@@ -771,7 +771,7 @@ class App(ttk.Frame):
             window = OrchestratorWindow(
                 self.master, self.definitions, initial_repo=None,
                 drafts=self.ai_drafts, on_apply=self.apply_ai_candidate, repos_root=REPOS_ROOT,
-                requeue_label_fn=self._requeue_label)
+                requeue_label_fn=self._requeue_label, quota_display_fn=self._quota_display)
             self.orchestrator_window = window
         else:
             # An existing window may already have a specific repo selected (Task 10 default);
@@ -1627,6 +1627,19 @@ class App(ttk.Frame):
         from . import orchestrator_requeue as req
 
         return req.run_status_label(run_id, self._requeue_state)
+
+    def _quota_display(self, record: dict) -> dict | None:
+        """DCC Task UI-D2: the real 振り分け classifier for OrchestratorWindow's default
+        workflow collector (and so the lane board's Human lane / 動いているタスク) -- reads only
+        this App's in-memory RequeueState and the two persisted switches, fresh on every call,
+        same pattern as _requeue_label/_requeue_limit_notice above."""
+        from . import orchestrator_requeue as req
+        from . import reports_auto as auto
+
+        global_config = auto.load_auto_mode_config(self._auto_mode_config_path())
+        requeue_config = req.load_requeue_config(req.requeue_config_path())
+        return req.quota_display(record, state=self._requeue_state,
+                                  global_enabled=global_config.enabled, requeue_enabled=requeue_config.enabled)
 
     def _requeue_limit_notice(self) -> str:
         """DCC Task 19b, 仕様4: the fixed "本日の再実行の上限に達しました" sentence for the reports

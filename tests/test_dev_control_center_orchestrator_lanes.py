@@ -226,7 +226,7 @@ class OperationWiringTests(FakeOrchestratorWindowCase):
         master = Mock()
         holder = SimpleNamespace(
             orchestrator_window=None, master=master, definitions=self.definitions,
-            ai_drafts={}, apply_ai_candidate=Mock(), _requeue_label=Mock(),
+            ai_drafts={}, apply_ai_candidate=Mock(), _requeue_label=Mock(), _quota_display=Mock(return_value=None),
             _workflow_runner_state=object(), open_reports_inbox=Mock(),
             open_workflow_plan=Mock(), open_automation_status=Mock(), current=None,
             _closed=False, _heartbeat=Mock(beat=Mock(return_value=0.0)),
@@ -277,7 +277,8 @@ class AppAndMonitorTests(unittest.TestCase):
     def test_app_callback_and_existing_window_reuse(self):
         from scripts.dev_control_center.app import App
         holder = SimpleNamespace(orchestrator_window=None, master=Mock(), definitions=[], ai_drafts={},
-            apply_ai_candidate=Mock(), _requeue_label=Mock(), _workflow_runner_state=object(),
+            apply_ai_candidate=Mock(), _requeue_label=Mock(), _quota_display=Mock(return_value=None),
+            _workflow_runner_state=object(),
             open_reports_inbox=Mock(), open_workflow_plan=Mock(), open_automation_status=Mock(), current=None)
         with patch.object(view, 'OrchestratorWindow') as factory:
             App.open_orchestrator(holder)
@@ -285,6 +286,7 @@ class AppAndMonitorTests(unittest.TestCase):
             self.assertIs(factory.call_args.kwargs['on_workflow_plan'], holder.open_workflow_plan)
             self.assertIs(factory.call_args.kwargs['on_automation_status'], holder.open_automation_status)
             self.assertIs(factory.call_args.kwargs['runner_state'], holder._workflow_runner_state)
+            self.assertIs(factory.call_args.kwargs['quota_display_fn'], holder._quota_display)
             App.open_orchestrator(holder)
             self.assertEqual(factory.call_count, 1)
             factory.return_value.focus.assert_called_once()

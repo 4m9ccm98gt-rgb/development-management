@@ -73,13 +73,25 @@ def _launch(job):
 
 class PreviewController:
     def __init__(self, view, *, collector=None, runner_state=None, scheduler=None,
-                 launch=None, now=None, on_close=None):
+                 launch=None, now=None, on_close=None, quota_display_fn=None):
         self.view = view
         self._inbox = getattr(view, 'inbox', None)
         self._overview = getattr(view, 'overview', None)
         self._map = getattr(view, 'organization_map', None)
         self.scheduler = scheduler if scheduler is not None else view.window
-        self.collector = collector if collector is not None else ManagerCollector(runner_state=runner_state)
+        if collector is not None:
+            self.collector = collector
+        else:
+            # DCC Task UI-D2: quota_display_fn is omitted entirely (never passed as None) for
+            # every existing caller (standalone preview, every pre-existing test) -- the
+            # ManagerCollector(...) call is then byte-for-byte what it was before this task. An
+            # in-process caller (app.py, via orchestrator_view.py's OrchestratorWindow) injects
+            # orchestrator_requeue.quota_display bound to its own RequeueState, mirroring how
+            # runner_state is already optionally injected above.
+            collector_kwargs = dict(runner_state=runner_state)
+            if quota_display_fn is not None:
+                collector_kwargs['quota_display_fn'] = quota_display_fn
+            self.collector = ManagerCollector(**collector_kwargs)
         self.memory_available = runner_state is not None
         self._launch = launch or _launch
         self._now = now or datetime.now

@@ -193,6 +193,22 @@ class PreviewTests(unittest.TestCase):
         scheduler.run(preview.POLL_MS)
         self.assertIn(preview.MEMORY_SCOPE, view.notice.configure.call_args.kwargs['text'])
 
+    def test_quota_display_fn_is_forwarded_only_when_explicitly_given(self):
+        """DCC Task UI-D2 (Repair): quota_display_fn is never passed to ManagerCollector at all
+        (not even as None) unless the caller actually supplies one -- a prior regression passed
+        quota_display_fn=None unconditionally, which broke every existing caller's own
+        ManagerCollector(runner_state=...)-only call contract (see
+        test_runner_state_injection_and_scope above, which must keep passing unmodified)."""
+        state = object()
+        classifier = Mock()
+        view, scheduler, work = View(), Scheduler(), []
+        collector = Mock()
+        collector.collect.return_value = dict(status='available', snapshot=snapshot())
+        with patch.object(preview, 'ManagerCollector', return_value=collector) as factory:
+            preview.PreviewController(view, runner_state=state, scheduler=scheduler, launch=work.append,
+                                      quota_display_fn=classifier)
+        factory.assert_called_once_with(runner_state=state, quota_display_fn=classifier)
+
     def test_close_cancels_timers_discards_late_result_and_no_more_reads(self):
         controller = self.make()
         controller.close()

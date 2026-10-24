@@ -108,11 +108,37 @@ def _safe_observation(rid, raw):
     return dict(record=dict(run_id=rid, stage=stage), liveness=live)
 
 
+# DCC Task UI-D2 (C1-C3): closed vocabulary for the optional, injected quota classifier's return
+# value -- never trust its shape beyond this allowlist.
+_QUOTA_BUCKETS = frozenset(('quota_waiting', 'manual_temporary', 'manual_permanent'))
+
+
+def _quota_fields(raw, quota_display_fn):
+    """Project an injected quota classifier's output into exactly two closed-vocabulary fields
+    (quota_bucket, quota_label) -- never forwards the classifier's own record, message or
+    exception text. `raw` is the collector's own self._inspect(rid) result; only its 'record'
+    sub-dict (when present) is ever handed to quota_display_fn, and only a well-shaped
+    {bucket, manager_label} return value is ever trusted."""
+    if quota_display_fn is None or not isinstance(raw, dict):
+        return None, ''
+    record = raw.get('record')
+    if not isinstance(record, dict):
+        return None, ''
+    try:
+        quota = quota_display_fn(record)
+    except Exception:  # noqa: BLE001 - a broken classifier must not break collection
+        return None, ''
+    if not (isinstance(quota, dict) and quota.get('bucket') in _QUOTA_BUCKETS
+            and isinstance(quota.get('manager_label'), str)):
+        return None, ''
+    return quota['bucket'], quota['manager_label']
+
+
 class ManagerCollector:
     def __init__(self, *, registered_keys=None, plans_root=None, records_root=None,
                  runs_root=None, runner_state=None, list_plans=None, load_plan=None,
                  read_association=None, inspect_run=None, next_observation=None,
-                 list_active_runs=None, report_run_ids=None,
+                 list_active_runs=None, report_run_ids=None, quota_display_fn=None,
                  now=None, max_age_seconds=300):
         if (type(max_age_seconds) not in (int, float) or not math.isfinite(max_age_seconds)
             or max_age_seconds <= 0):
@@ -133,9 +159,28 @@ class ManagerCollector:
         # -- display data only, never execution permission (see collect_running_tasks).
         self._list_active_runs = list_active_runs or self._active_runs_reader(runs_root)
         self._report_run_ids = report_run_ids or self._default_report_run_ids
+        # DCC Task UI-D2: optional closed-vocabulary quota classifier (orchestrator_requeue.
+        # quota_display bound to the caller's own RequeueState). None (every pre-existing
+        # caller/test) leaves every observation's quota_bucket/quota_label at their inert
+        # defaults (None/''), unchanged from before this task.
+        self._quota_display_fn = quota_display_fn
         self._last_generation = -1
         self._previous = None  # safe comparison metadata only, never fallback data
         self._lock = threading.Lock()
+
+    def _observe_raw(self, rid):
+        """DCC Task UI-D2: one self._inspect(rid) call, projected into the existing safe
+        observation shape (_safe_observation) plus the two closed-vocabulary quota fields
+        (_quota_fields) -- both derived from the exact same raw read, so every caller comparing
+        two observations for change-detection (_collect's own bounded double-read) sees a
+        consistent shape on both sides. Returns (safe, raw); raw is never exposed beyond this
+        method's own quota projection."""
+        raw = self._inspect(rid)
+        safe = _safe_observation(rid, raw)
+        bucket, label = (None, '')
+        if safe['record'] is not None:
+            bucket, label = _quota_fields(raw, self._quota_display_fn)
+        return dict(safe, quota_bucket=bucket, quota_label=label), raw
 
     @staticmethod
     def _disk_reader(root):
@@ -178,16 +223,16 @@ class ManagerCollector:
             for directory in directories:
                 rid = directory.name
                 try:
-                    info = self._inspect(rid)
+                    safe, raw = self._observe_raw(rid)
                 except Exception:
                     continue
-                safe = _safe_observation(rid, info)
                 if safe['record'] is None:
                     continue
-                record = info['record']
+                record = raw['record']
                 items.append(dict(run_id=rid, stage=safe['record']['stage'], liveness=safe['liveness'],
                                   repo=record.get('repo'), main_agent=record.get('main_agent'),
-                                  review_agent=record.get('review_agent')))
+                                  review_agent=record.get('review_agent'),
+                                  quota_bucket=safe.get('quota_bucket'), quota_label=safe.get('quota_label')))
             return items
         return list_active
 
@@ -367,7 +412,7 @@ class ManagerCollector:
                         run_owners[rid] = (pid, tid)
                         associations[(pid, tid)] = dict(run_id=rid)
                         if rid not in observations:
-                            observations[rid] = _safe_observation(rid, self._inspect(rid))
+                            observations[rid], _ = self._observe_raw(rid)
                         safe = observations[rid]
                         if safe['record'] is None or safe['liveness'] in ('unknown', 'lost', 'unresponsive'):
                             issue('RUN_UNAVAILABLE', pid, tid)
@@ -411,7 +456,7 @@ class ManagerCollector:
                         issue('ASSOCIATION_UNAVAILABLE', pid, tid)
             for rid, before in list(observations.items()):
                 try:
-                    after = _safe_observation(rid, self._inspect(rid))
+                    after, _ = self._observe_raw(rid)
                     if after != before:
                         observations[rid] = dict(record=None, liveness='unknown')
                         issue('RUN_CHANGED')

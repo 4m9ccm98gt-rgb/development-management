@@ -163,6 +163,44 @@ class ModelTests(GuardedTests):
         self.assertEqual(model(empty)['rows'], [])
         self.assertEqual(model(empty)['status'], 'available')
 
+    def test_quota_waiting_needs_human_task_leaves_the_human_group(self):
+        """DCC Task UI-D2 (C1/C3): a needs_human TASK whose Run carries quota_bucket ==
+        quota_waiting (set via build_snapshot's real observations path, not a hand-built row)
+        moves to the 'waiting' category with the Manager-facing cause, instead of 'human'."""
+        data = overview.build_snapshot([plan(task('T1', 'needs_human'))], registered_keys=KEYS,
+            associations={('Plan-1', 'T1'): dict(run_id=RID)},
+            observations={RID: dict(record=dict(run_id=RID, stage='needs_human'), liveness='finished',
+                                    quota_bucket='quota_waiting', quota_label='使用枠待ち（再実行まで約15分）')})
+        row = model(data)['rows'][0]
+        self.assertEqual(row['category'], 'waiting')
+        self.assertEqual(row['cause'], 'QUOTA_WAITING')
+        self.assertEqual(row['owner'], 'NONE')
+        self.assertEqual(set(row), {'plan_id', 'task_id', 'kind', 'reason_code', 'category',
+                                    'source', 'snapshot_id', 'observation_id', 'priority',
+                                    'cause', 'owner', 'action', 'dependencies', 'workflow_status', 'proposals'})
+
+    def test_manual_quota_buckets_stay_in_the_human_group_with_their_own_cause(self):
+        """DCC Task UI-D2 (C2/C4): both manual buckets keep owner HUMAN / category 'human'
+        (unchanged human-facing text), only the cause differs from a plain HUMAN_REQUIRED."""
+        for bucket in ('manual_temporary', 'manual_permanent'):
+            with self.subTest(bucket=bucket):
+                data = overview.build_snapshot([plan(task('T1', 'needs_human'))], registered_keys=KEYS,
+                    associations={('Plan-1', 'T1'): dict(run_id=RID)},
+                    observations={RID: dict(record=dict(run_id=RID, stage='needs_human'), liveness='finished',
+                                            quota_bucket=bucket, quota_label='手動で再投入が必要')})
+                row = model(data)['rows'][0]
+                self.assertEqual(row['category'], 'human')
+                self.assertEqual(row['cause'], 'QUOTA_MANUAL')
+                self.assertEqual(row['owner'], 'HUMAN')
+
+    def test_non_quota_needs_human_is_unaffected(self):
+        """C4: a needs_human TASK with no Run association at all (no quota_bucket ever set) keeps
+        the original plain HUMAN cause/owner/category -- the PROVIDER_QUOTA override never fires
+        without an actual quota_bucket."""
+        data = snapshot(task('T1', 'needs_human'))
+        row = model(data)['rows'][0]
+        self.assertEqual((row['category'], row['cause'], row['owner']), ('human', 'HUMAN', 'HUMAN'))
+
     def test_disk_running_is_unconfirmed_and_safe_display_drops_free_text(self):
         data = overview.build_snapshot([plan(task('T1', 'running'))], registered_keys=KEYS,
             associations={('Plan-1', 'T1'): dict(run_id=RID)},

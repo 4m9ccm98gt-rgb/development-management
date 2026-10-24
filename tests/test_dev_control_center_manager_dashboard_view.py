@@ -167,6 +167,24 @@ class RunningTasksModelTests(unittest.TestCase):
         self.assertEqual(rows[0]['repo'], view.UNKNOWN)
         self.assertNotIn('private', str(rows))
 
+    def test_quota_waiting_row_shows_its_own_label_as_stage(self):
+        """DCC Task UI-D2 (C1): a needs_human row with quota_bucket == QUOTA_WAITING shows its own
+        quota_label (使用枠待ち＋予定時刻の目安) as stage_label, with the exact same output shape
+        as any other row (never a new key)."""
+        rows = view.running_tasks_model([dict(
+            run_id=RID, repo='sample-repo', stage='needs_human', origin='報告',
+            quota_bucket='quota_waiting', quota_label='使用枠待ち（再実行まで約15分）')])
+        self.assertEqual(rows, [dict(run_id=RID, repo='sample-repo',
+                                     stage_label='使用枠待ち（再実行まで約15分）', origin_label='報告')])
+
+    def test_manual_quota_bucket_or_missing_label_is_still_dropped(self):
+        base = dict(run_id=RID, repo='sample-repo', stage='needs_human', origin='報告')
+        for bad in (dict(base, quota_bucket='manual_temporary', quota_label='手動で再投入が必要'),
+                    dict(base, quota_bucket='manual_permanent', quota_label='手動で再投入が必要'),
+                    dict(base, quota_bucket='quota_waiting', quota_label=''),
+                    dict(base, quota_bucket='quota_waiting'), base):
+            self.assertEqual(view.running_tasks_model([bad]), [])
+
 
 class WindowTests(unittest.TestCase):
     def test_notebook_dark_elements_states_and_light_restore(self):

@@ -937,12 +937,13 @@ class FakeOrchestratorWindowCase(unittest.TestCase):
                             SimpleNamespace(name="other", branch="main", initial_ai_task="", initial_test="")]
         self.window = self.make_window(initial_repo="app")
 
-    def make_window(self, *, initial_repo, monitor=None, drafts=None, definitions=None, requeue_label_fn=None):
+    def make_window(self, *, initial_repo, monitor=None, drafts=None, definitions=None, requeue_label_fn=None,
+                     quota_display_fn=None):
         return view.OrchestratorWindow(
             object(), definitions if definitions is not None else self.definitions, initial_repo=initial_repo,
             drafts=drafts if drafts is not None else self.drafts, on_apply=self.on_apply,
             monitor=monitor or self.monitor, repos_root=Path("C:/repos"), auto_usage=False,
-            requeue_label_fn=requeue_label_fn)
+            requeue_label_fn=requeue_label_fn, quota_display_fn=quota_display_fn)
 
     def confirm_visible(self) -> bool:
         return bool(self.window.confirm_frame.grid_info())
@@ -1437,6 +1438,37 @@ class StartButtonAfterStopTests(FakeOrchestratorWindowCase):
         self.window._on_repo_changed()
         captured = self._start(result_path=Path("C:/runs/r3"))
         self.assertEqual(len(captured), 1)
+
+
+class QuotaDisplayCollectorWiringTests(FakeOrchestratorWindowCase):
+    """DCC Task UI-D2 (C3, Reviewer finding 2): app.py's own quota_display_fn (bound to its
+    in-memory RequeueState) must actually reach ManagerCollector(...) inside this window's own
+    default workflow collector -- the real screen-generation path the lane board (and so the
+    Human lane / Manager's own 動いているタスク) uses in production -- not just be exercised in
+    isolation against orchestrator_requeue.py or manager_collector.py directly. WorkflowFeed
+    itself stays mocked (FakeOrchestratorWindowCase's own setUp); only the workflow_collector
+    closure actually handed to it is exercised here."""
+
+    def test_default_collector_forwards_the_injected_quota_display_fn(self):
+        classifier = mock.Mock()
+        with mock.patch('scripts.dev_control_center.manager_collector.ManagerCollector') as collector_cls:
+            collector_cls.return_value.collect.return_value = {'status': 'unavailable'}
+            self.make_window(initial_repo="app", quota_display_fn=classifier)
+            workflow_collector = view.WorkflowFeed.call_args.args[0]
+            workflow_collector()
+        collector_cls.assert_called_once_with(runner_state=None, quota_display_fn=classifier)
+
+    def test_absent_quota_display_fn_keeps_the_original_call_contract(self):
+        """Every caller/test before this feature must still get exactly the same
+        ManagerCollector(runner_state=...)-only call -- quota_display_fn is never passed at all
+        (not even as None) unless the caller actually supplies one (see the Repair fix in
+        manager_dashboard_preview.py for the regression this guards against)."""
+        with mock.patch('scripts.dev_control_center.manager_collector.ManagerCollector') as collector_cls:
+            collector_cls.return_value.collect.return_value = {'status': 'unavailable'}
+            self.make_window(initial_repo="app")  # quota_display_fn defaults to None
+            workflow_collector = view.WorkflowFeed.call_args.args[0]
+            workflow_collector()
+        collector_cls.assert_called_once_with(runner_state=None)
 
 
 class CharacterMoodTests(ViewCase):

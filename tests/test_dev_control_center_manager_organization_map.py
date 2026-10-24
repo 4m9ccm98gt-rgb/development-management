@@ -47,6 +47,33 @@ class MapTests(GuardedTests):
                 self.assertFalse(t['human'])
         self.assertEqual(data, before)
 
+    def test_quota_waiting_needs_human_task_is_not_in_the_human_lane(self):
+        """DCC Task UI-D2 (C1/C3): a needs_human TASK whose Run carries quota_bucket ==
+        quota_waiting is known (not UNKNOWN) but never counted as human -- it must not appear in
+        the Human Action Lane, unlike a plain needs_human TASK (C4, still P1/human below)."""
+        data = overview.build_snapshot([plan(task('T1', 'needs_human'))], registered_keys=KEYS,
+            associations={('Plan-1', 'T1'): dict(run_id=RID)},
+            observations={RID: dict(record=dict(run_id=RID, stage='needs_human'), liveness='finished',
+                                    quota_bucket='quota_waiting', quota_label='使用枠待ち（再実行まで約15分）')})
+        m, box, _ = models(data)
+        self.assertEqual(box['rows'][0]['category'], 'waiting')
+        self.assertFalse(m['tasks'][0]['human'])
+        self.assertNotIn(('Plan-1', 'T1'), m['lane'])
+
+    def test_manual_quota_bucket_needs_human_task_stays_in_the_human_lane(self):
+        """DCC Task UI-D2 (C2/C4): a needs_human TASK whose Run is manually-required (either
+        bucket) stays human -- same Human Action Lane membership as any other needs_human TASK."""
+        for bucket in ('manual_temporary', 'manual_permanent'):
+            with self.subTest(bucket=bucket):
+                data = overview.build_snapshot([plan(task('T1', 'needs_human'))], registered_keys=KEYS,
+                    associations={('Plan-1', 'T1'): dict(run_id=RID)},
+                    observations={RID: dict(record=dict(run_id=RID, stage='needs_human'), liveness='finished',
+                                            quota_bucket=bucket, quota_label='手動で再投入が必要')})
+                m, box, _ = models(data)
+                self.assertEqual(box['rows'][0]['category'], 'human')
+                self.assertTrue(m['tasks'][0]['human'])
+                self.assertIn(('Plan-1', 'T1'), m['lane'])
+
     def test_configured_roles_distinct_even_same_ai_without_inferred_activity(self):
         data = observed(ai='codex', reviewer='codex')
         disk, _, _ = models(data)

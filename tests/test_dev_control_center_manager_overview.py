@@ -112,6 +112,30 @@ class OverviewTests(unittest.TestCase):
                 self.assertEqual(row['category'], 'check_required')
                 self.assertEqual(row['run']['availability'], 'unavailable')
 
+    def test_run_quota_bucket_is_exposed_only_for_needs_human_stage(self):
+        """DCC Task UI-D2 (C3): build_snapshot's own task['run'] carries quota_bucket/quota_label
+        exactly as given for a needs_human stage, and never for any other stage (even if an
+        observation maliciously sets them)."""
+        source = [plan(task('T1', 'needs_human'))]
+        assoc = {('Plan-1', 'T1'): dict(run_id=RID)}
+        observation = {RID: dict(record=dict(run_id=RID, stage='needs_human'), liveness='finished',
+                                 quota_bucket='quota_waiting', quota_label='使用枠待ち（再実行まで約15分）')}
+        row = self.snapshot(source, associations=assoc, observations=observation)['plans'][0]['tasks'][0]
+        self.assertEqual(row['run']['quota_bucket'], 'quota_waiting')
+        self.assertEqual(row['run']['quota_label'], '使用枠待ち（再実行まで約15分）')
+        # An unknown bucket word is never forwarded, even for a needs_human stage.
+        observation[RID]['quota_bucket'] = 'SECRET'
+        row = self.snapshot(source, associations=assoc, observations=observation)['plans'][0]['tasks'][0]
+        self.assertIsNone(row['run']['quota_bucket'])
+        self.assertEqual(row['run']['quota_label'], '')
+        # A non-needs_human stage never exposes quota_bucket/quota_label, even if present.
+        source2 = [plan(task('T1', 'running'))]
+        observation2 = {RID: dict(record=dict(run_id=RID, stage='testing'), liveness='running',
+                                  quota_bucket='quota_waiting', quota_label='使用枠待ち')}
+        row2 = self.snapshot(source2, associations=assoc, observations=observation2)['plans'][0]['tasks'][0]
+        self.assertIsNone(row2['run']['quota_bucket'])
+        self.assertEqual(row2['run']['quota_label'], '')
+
     def test_no_storage_or_execution_calls(self):
         with patch.object(wf, 'load_plan', side_effect=AssertionError), \
              patch.object(wf, 'save_plan', side_effect=AssertionError), \
@@ -220,6 +244,35 @@ class RunningTasksTests(unittest.TestCase):
         self.assertIsNone(rows[0]['main_agent'])
         self.assertEqual(rows[0]['review_agent'], 'codex')
         self.assertNotIn('PRIVATE', json.dumps(rows))
+
+    def test_quota_waiting_run_is_included_despite_terminal_stage(self):
+        """DCC Task UI-D2 (C1): a run tagged quota_bucket == QUOTA_WAITING upstream is kept even
+        though its own stage (needs_human) and liveness (finished) are otherwise excluded."""
+        rows = overview.running_tasks(
+            [dict(run_id=RID, stage='needs_human', liveness='finished', repo='sample-repo',
+                 quota_bucket='quota_waiting', quota_label='使用枠待ち（再実行まで約15分）')],
+            plan_run_ids={RID}, report_run_ids=set())
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['quota_bucket'], overview.QUOTA_WAITING)
+        self.assertEqual(rows[0]['quota_label'], '使用枠待ち（再実行まで約15分）')
+        self.assertEqual(rows[0]['origin'], overview.ORIGIN_PLAN)
+
+    def test_quota_waiting_requires_the_exact_shape_or_is_excluded(self):
+        base = dict(run_id=RID, stage='needs_human', liveness='finished', quota_bucket='quota_waiting',
+                    quota_label='使用枠待ち（再実行まで約15分）')
+        for bad in (dict(base, quota_bucket='manual_temporary'), dict(base, quota_bucket='manual_permanent'),
+                    dict(base, quota_bucket=None), dict(base, liveness='running'),
+                    dict(base, quota_label=''), dict(base, quota_label=None), dict(base, stage='failed')):
+            self.assertEqual(overview.running_tasks([bad], plan_run_ids=set(), report_run_ids=set()), [],
+                             f'must be excluded: {bad}')
+
+    def test_manual_quota_buckets_do_not_appear_in_running_tasks(self):
+        for bucket in ('manual_temporary', 'manual_permanent', None):
+            rows = overview.running_tasks(
+                [dict(run_id=RID, stage='needs_human', liveness='finished', quota_bucket=bucket,
+                     quota_label='手動で再投入が必要')],
+                plan_run_ids=set(), report_run_ids=set())
+            self.assertEqual(rows, [])
 
 
 if __name__ == '__main__':

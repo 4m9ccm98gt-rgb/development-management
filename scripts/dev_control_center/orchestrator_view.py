@@ -220,7 +220,7 @@ class OrchestratorWindow:
                  on_reports_inbox: Callable[[], None] | None = None,
                  on_workflow_plan: Callable[[], None] | None = None,
                  on_automation_status: Callable[[], None] | None = None,
-                 runner_state=None, workflow_collector=None) -> None:
+                 runner_state=None, workflow_collector=None, quota_display_fn=None) -> None:
         from .app import DARK_BG, DARK_MUTED, configure_dark_listbox, configure_dark_text
 
         self._events: queue.Queue = queue.Queue()
@@ -237,8 +237,21 @@ class OrchestratorWindow:
         self._workflow_notice = 'Workflow：確認待ち'
         if workflow_collector is None:
             from .manager_collector import ManagerCollector
+
+            # DCC Task UI-D2: quota_display_fn is omitted entirely (never passed as None) unless
+            # the caller actually supplies one -- every existing caller/test keeps exactly the
+            # same ManagerCollector(runner_state=...)-only call it always made. app.py's real
+            # caller injects its own in-memory RequeueState-bound classifier here so the real
+            # lane board (the Human lane via manager_organization_map.build_map) actually applies
+            # the 使用枠待ち/手動で再投入が必要 分け described by C1/C2, not just in unit tests.
+            def _default_workflow_collector():
+                collector_kwargs = dict(runner_state=runner_state)
+                if quota_display_fn is not None:
+                    collector_kwargs['quota_display_fn'] = quota_display_fn
+                return ManagerCollector(**collector_kwargs).collect()
+
             # Lazy construction keeps registry/data access off the UI thread.
-            workflow_collector = lambda: ManagerCollector(runner_state=runner_state).collect()
+            workflow_collector = _default_workflow_collector
         self._workflow_feed = WorkflowFeed(workflow_collector, memory=runner_state is not None)
         # DCC Task 19b: optional fixed-word requeue status (枠の回復待ち / 人の確認が必要) appended
         # to a run's own list line. None (the default, and every existing caller/test) leaves the

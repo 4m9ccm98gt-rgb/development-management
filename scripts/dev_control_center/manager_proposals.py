@@ -49,6 +49,11 @@ RULES = {
     'START': (('approved',), 'PROPOSE_START', 'APPROVED_READY', 'CHECK_START', 'RUNNER_GATES'),
     'ACTIVE': (('running',), 'WAIT', 'TASK_ACTIVE', 'WAIT_FOR_CHANGE', 'RUN_OBSERVATION'),
     'TERMINAL': (('landed', 'cancelled'), 'NO_ACTION', 'TERMINAL', 'NO_FOLLOWUP', None),
+    # DCC Task UI-D2: manager_inbox.analyze_task's own PROVIDER_QUOTA reclassification of a
+    # needs_human TASK -- kind/reason stay REQUEST_HUMAN/HUMAN_REQUIRED (manager_inbox never
+    # rewrites those for this cause), only cause/action/check differ from 'HUMAN' above.
+    'QUOTA_WAITING': (('needs_human',), 'REQUEST_HUMAN', 'HUMAN_REQUIRED', 'WAIT_FOR_CHANGE', None),
+    'QUOTA_MANUAL': (('needs_human',), 'REQUEST_HUMAN', 'HUMAN_REQUIRED', 'REQUEST_HUMAN', 'HUMAN_CONTEXT'),
 }
 DRAFTS = dict(FAILED='CONSIDER_INVESTIGATION', HUMAN='CONSIDER_SPEC', DEPENDENCY='CONSIDER_DEPENDENCIES')
 UNKNOWN_REASONS = frozenset(('STATE_UNAVAILABLE', 'COLLECTION_PARTIAL', 'COLLECTION_UNAVAILABLE', 'SNAPSHOT_INVALID', 'TASK_ACTIVE'))
